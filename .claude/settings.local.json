@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node checkpages.mjs f1cfabb4-c0ce-4956-94c1-6e1cb32deda7)",
+      "Bash(rm -f \"c:/Users/User/Desktop/AIFF/packages/db/checkiso.mjs\" \"c:/Users/User/Desktop/AIFF/packages/db/checkpages.mjs\")",
+      "Bash(pnpm add *)",
+      "Bash(node -e \"const {createCanvas} = require\\('@napi-rs/canvas'\\); const c = createCanvas\\(100,100\\); console.log\\('canvas ok', c.width, c.height\\);\")",
+      "Bash(node testiso.mjs)",
+      "Bash(node testiso2.mjs)",
+      "Bash(pnpm exec *)",
+      "Bash(node rerunextract.mjs)",
+      "PowerShell(Get-Process -Name node -ErrorAction SilentlyContinue)",
+      "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node fixdoctype2.mjs)"
+    ]
+  }
+}

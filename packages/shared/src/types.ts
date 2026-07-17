@@ -1,0 +1,33 @@
+export const DOC_TYPES = ["pid", "hmb", "pfd", "spec_sheet", "iso", "ga", "pll"] as const;
+export type DocType = (typeof DOC_TYPES)[number];
+
+// 'spec_class' is a special case: spec sheets define rules keyed by class
+// code (e.g. "A1A"), not physical tags -- P&ID/PFD lines carry a spec_class
+// field that joins against this during rule evaluation, rather than an
+// exact tag_number match like the other tag types use.
+//
+// 'bom_item' rows come from an ISO's Bill of Material (keyed by item_no, not
+// cross-document-correlated by tag number -- they're checked against their
+// referenced spec_class instead, see lib/verifyIso.ts). 'support' rows come
+// from a GA's pipe support schedule (keyed by support_tag).
+export const TAG_TYPES = ["line", "equipment", "instrument", "valve", "stream", "spec_class", "bom_item", "support"] as const;
+export type TagType = (typeof TAG_TYPES)[number];
+
+export const ORG_ROLES = ["owner", "admin", "reviewer", "viewer"] as const;
+export type OrgRole = (typeof ORG_ROLES)[number];
+
+export const FINDING_STATUSES = ["open", "investigating", "resolved", "false_positive"] as const;
+export type FindingStatus = (typeof FINDING_STATUSES)[number];
+
+export const SEVERITIES = ["error", "warning", "info"] as const;
+export type Severity = (typeof SEVERITIES)[number];
+
+export const EXTRACTION_JOB_STATUSES = ["queued", "running", "succeeded", "failed"] as const;
+export type ExtractionJobStatus = (typeof EXTRACTION_JOB_STATUSES)[number];
+
+export interface ExtractionProgressEvent {
+  phase: string; // e.g. 'locate_sections' | 'sheet_3_of_12' | 'merge'
+  current: number;
+  total: number;
+  detail?: string;
+}
