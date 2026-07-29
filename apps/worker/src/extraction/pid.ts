@@ -1,38 +1,82 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { eq, and } from "drizzle-orm";
+import { extractedTags } from "@easy/db";
 import {
   LOCATE_PID_SECTIONS_TOOL,
   PID_SHEET_TOOL,
+  PID_LEGEND_TOOL,
   buildSystemPrompt,
   buildNumberedText,
   sliceText,
   type PageRange,
 } from "@easy/extraction-schemas";
+import { normalizeSlope } from "@easy/shared";
 import { callTool, callWithRetry } from "./claudeClient";
+import { renderPdfPages } from "../pdfImages";
 import type { DocTypeExtractor, TagDraft } from "./types";
 
 interface LocatePidResult {
-  sheets: Array<{ sheet_number: string; drawing_title?: string; pages: PageRange }>;
+  sheets: Array<{ sheet_number: string; drawing_title?: string; sheet_type?: "process" | "legend"; pages: PageRange }>;
 }
 
 interface PidSheetResult {
-  lines: Array<{ line_number: string; size?: string; spec_class?: string; service?: string; from_equipment?: string; to_equipment?: string }>;
+  lines: Array<{
+    line_number: string;
+    size?: string;
+    spec_class?: string;
+    service?: string;
+    from_equipment?: string;
+    to_equipment?: string;
+    slope?: string;
+    continues_on?: string;
+  }>;
   valves?: Array<{ tag_number: string; valve_type?: string; line_number?: string }>;
-  instruments?: Array<{ tag_number: string; instrument_type?: string; line_or_equipment_ref?: string }>;
+  fittings?: Array<{ fitting_type: string; line_number?: string; size?: string; quantity?: string }>;
+  instruments?: Array<{
+    tag_number: string;
+    instrument_type?: string;
+    line_or_equipment_ref?: string;
+    parent_valve?: string;
+    parent_instrument?: string;
+  }>;
+}
+
+interface PidLegendResult {
+  items: Array<{ symbol: string; meaning: string; category?: string; applies_to?: string; implied_components?: string }>;
 }
 
 const SYSTEM_PROMPT = buildSystemPrompt("P&ID (Piping & Instrumentation Diagram)");
 
-export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProgress) => {
+function pageRangeToNumbers(range: PageRange): number[] {
+  const numbers: number[] = [];
+  for (let n = range.start; n <= range.end; n++) numbers.push(n);
+  return numbers;
+}
+
+export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProgress, pdfBuffer, context) => {
   const client = new Anthropic({ apiKey });
-  const fullText = buildNumberedText(pages.map((p) => ({ pageNumber: p.pageNumber, pageText: p.pageText })));
+  const pageList = pages.map((p) => ({ pageNumber: p.pageNumber, pageText: p.pageText }));
+  const fullText = buildNumberedText(pageList);
+
+  // Valve/instrument TYPE is conveyed by symbol shape, not text, so every
+  // sheet is read from a rendered image, not text alone (confirmed
+  // necessary the same way the ISO title block was: symbol-to-meaning
+  // association doesn't survive plain text extraction). Rendered before the
+  // locate call so it, too, reads the title block visually -- a text-only
+  // locate misread a connector box's "0011" as the drawing number on a real
+  // sheet whose title block says "...PID-0010".
+  const allPageNumbers = pages.map((p) => p.pageNumber);
+  const renderedPages = pdfBuffer ? await renderPdfPages(pdfBuffer, allPageNumbers) : [];
+  const imageByPage = new Map(renderedPages.map((r) => [r.pageNumber, r.pngBase64]));
 
   const locate = await callWithRetry(() =>
     callTool<LocatePidResult>(client, {
       tool: LOCATE_PID_SECTIONS_TOOL,
       systemPrompt: SYSTEM_PROMPT,
-      userText: `${fullText}\n\nIdentify each P&ID sheet's page range via the locate_pid_sheets tool call.`,
+      userText: `${fullText}\n\nThe attached page image(s) are the actual drawings. Identify each P&ID sheet's page range and type via the locate_pid_sheets tool call. Read each sheet_number from the TITLE BLOCK in the bottom-right corner of its page image -- never from an off-page connector box or a reference in the notes.`,
       maxTokens: 8000,
       useThinking: true,
+      images: renderedPages.map((r) => r.pngBase64),
     })
   );
 
@@ -41,22 +85,84 @@ export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProg
   }
   onProgress?.({ phase: "locate", current: 1, total: 1 });
 
+  // If this project already has a legend/symbols sheet extracted (from any
+  // P&ID document, not just this one), give Claude that project's own
+  // symbol definitions so a project that customizes symbols is read
+  // correctly instead of by generic assumption.
+  let legendContext = "";
+  if (context) {
+    const legendTags = await context.db
+      .select()
+      .from(extractedTags)
+      // Not filtered by docType: a project's legend may come from an inline
+      // legend sheet within a "pid" document, or from the dedicated
+      // "pid_legend" upload -- either way it's the same tagType.
+      .where(and(eq(extractedTags.projectId, context.projectId), eq(extractedTags.tagType, "legend_item")));
+    if (legendTags.length > 0) {
+      // Grouped by category so the model can consult the right table (valve
+      // symbols vs instrument letters vs line notation...) instead of
+      // scanning one flat 300-line dump.
+      const byCategory = new Map<string, string[]>();
+      for (const t of legendTags) {
+        const attrs = t.attributes as Record<string, unknown>;
+        const category = typeof attrs.category === "string" && attrs.category ? attrs.category : "general";
+        let line = `${t.tagNumber} = ${attrs.meaning}`;
+        if (typeof attrs.implied_components === "string" && attrs.implied_components) {
+          line += ` [applies to: ${attrs.applies_to ?? "?"}; implies on ISO: ${attrs.implied_components}]`;
+        }
+        const list = byCategory.get(category) ?? [];
+        list.push(line);
+        byCategory.set(category, list);
+      }
+      const sections = [...byCategory.entries()].map(([category, lines]) => `### ${category}\n${lines.join("\n")}`);
+      legendContext = `\n\nThis project's P&ID legend defines the following symbols/abbreviations, grouped by category -- use these definitions, not generic assumptions, when identifying valve_type/instrument_type, decoding line numbers, and reading equipment shapes:\n\n${sections.join("\n\n")}`;
+    }
+  }
+
   const allSheets: Array<{ sheet_number: string; result: PidSheetResult }> = [];
-  const pageList = pages.map((p) => ({ pageNumber: p.pageNumber, pageText: p.pageText }));
+  const legendSheets: Array<{ sheet_number: string; result: PidLegendResult }> = [];
 
   for (let i = 0; i < locate.sheets.length; i++) {
     const sheet = locate.sheets[i];
     const sheetText = sliceText(pageList, sheet.pages);
-    const result = await callWithRetry(() =>
-      callTool<PidSheetResult>(client, {
-        tool: PID_SHEET_TOOL,
-        systemPrompt: SYSTEM_PROMPT,
-        userText: `${sheetText}\n\nThis is P&ID sheet "${sheet.sheet_number}". Extract its lines/valves/instruments via the record_pid_sheet tool call.`,
-        maxTokens: 16000,
-        useThinking: true,
-      })
-    );
-    allSheets.push({ sheet_number: sheet.sheet_number, result });
+    const sheetImages = pageRangeToNumbers(sheet.pages)
+      .map((n) => imageByPage.get(n))
+      .filter((img): img is string => Boolean(img));
+
+    if (sheet.sheet_type === "legend") {
+      const result = await callWithRetry(() =>
+        callTool<PidLegendResult>(client, {
+          tool: PID_LEGEND_TOOL,
+          systemPrompt: SYSTEM_PROMPT,
+          userText:
+            `${sheetText}\n\nThis is legend/symbols sheet "${sheet.sheet_number}". The attached page image is the actual sheet -- read each symbol and its meaning directly from the image.\n\n` +
+            `Sweep the WHOLE sheet systematically: go column by column, table by table, top to bottom, and record EVERY row of EVERY table until the end -- line notation, tag format decoders and their letter tables, pipe identification sub-tables, abbreviations, valve and in-line symbols, safety devices, primary elements, instrument bubbles, the instrument identification letter table (as "INSTRUMENT LETTER A"..."INSTRUMENT LETTER Z"), tag prefix numbers, equipment shapes, typicals (with applies_to/implied_components), and numbered NOTES. Use the schema's category vocabulary exactly; completeness matters more than brevity.\n\n` +
+            `Extract every definition via the record_pid_legend tool call.`,
+          maxTokens: 32000,
+          useThinking: true,
+          images: sheetImages,
+        })
+      );
+      legendSheets.push({ sheet_number: sheet.sheet_number, result });
+    } else {
+      const result = await callWithRetry(() =>
+        callTool<PidSheetResult>(client, {
+          tool: PID_SHEET_TOOL,
+          systemPrompt: SYSTEM_PROMPT,
+          userText:
+            `${sheetText}\n\nThis is P&ID sheet "${sheet.sheet_number}". The attached page image is the actual drawing -- read valve and instrument symbol shapes from the image to determine their type, not just the text labels.${legendContext}\n\n` +
+            `For each line, trace it across the sheet from end to end. Record from/to as equipment TAGS (prefer "V-A100" over a display name like "CONTACTOR A"); where the line enters or leaves via an off-page connector (two-way "FROM / TO" arrow box), record the far-side equipment tag from the connector label, and put the connector's target drawing/sheet reference in continues_on. Record any printed slope annotation (e.g. "1:100").\n\n` +
+            `Control valves (PCV/TCV/LCV/FCV/XV...) go under valves as the primary device. Accessories drawn mounted on a valve's actuator -- positioner ZC, position indicator ZI, position transmitter ZIT, limit switches ZSO/ZSC, solenoid XY, attached handswitch HS -- go under instruments with parent_valve set to that valve's tag, so the whole assembly is grouped under its primary valve. ` +
+            `Likewise, group whole instrument loops under one primary via parent_instrument: follow the signal chain from the primary element and set parent_instrument on EVERY instrument in the loop, all pointing at the one primary (never chained to each other). The thermowell TW is ALWAYS the primary when present (TW-A111 primary; TT-A111, TI-A111, TIC-A111 all get parent_instrument "TW-A111"); with no TW the field transmitter is the primary and its indicators/controllers point at it.\n\n` +
+            `Also record inline fitting symbols drawn on each line (flange pairs incl. nozzle mating flanges, blind/spectacle flanges and blanked stubs, reducers, expansion joints/bellows -- including tagged ones like EJ-A101 -- strainers, removable spools) under fittings with the line number they sit on. Classify valve-vs-fitting per the legend's categories: only symbols in the legend's VALVE category are valves; expansion joints and other in-line symbols are fittings even when tagged.\n\n` +
+            `Extract its lines/valves/fittings/instruments via the record_pid_sheet tool call.`,
+          maxTokens: 16000,
+          useThinking: true,
+          images: sheetImages,
+        })
+      );
+      allSheets.push({ sheet_number: sheet.sheet_number, result });
+    }
     onProgress?.({ phase: "sheet", current: i + 1, total: locate.sheets.length, detail: sheet.sheet_number });
   }
 
@@ -66,23 +172,60 @@ export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProg
       tags.push({
         tagType: "line",
         tagNumber: line.line_number,
-        attributes: { sheet_number, size: line.size, spec_class: line.spec_class, service: line.service, from_equipment: line.from_equipment, to_equipment: line.to_equipment },
+        attributes: {
+          sheet_number,
+          size: line.size,
+          spec_class: line.spec_class,
+          service: line.service,
+          from_equipment: line.from_equipment,
+          to_equipment: line.to_equipment,
+          slope: normalizeSlope(line.slope),
+          continues_on: line.continues_on,
+        },
       });
     }
     for (const valve of result.valves ?? []) {
       tags.push({ tagType: "valve", tagNumber: valve.tag_number, attributes: { sheet_number, valve_type: valve.valve_type, line_number: valve.line_number } });
     }
+    for (const fitting of result.fittings ?? []) {
+      tags.push({
+        tagType: "fitting",
+        tagNumber: fitting.fitting_type,
+        attributes: { sheet_number, fitting_type: fitting.fitting_type, line_number: fitting.line_number, size: fitting.size, quantity: fitting.quantity },
+      });
+    }
     for (const instrument of result.instruments ?? []) {
       tags.push({
         tagType: "instrument",
         tagNumber: instrument.tag_number,
-        attributes: { sheet_number, instrument_type: instrument.instrument_type, line_or_equipment_ref: instrument.line_or_equipment_ref },
+        attributes: {
+          sheet_number,
+          instrument_type: instrument.instrument_type,
+          line_or_equipment_ref: instrument.line_or_equipment_ref,
+          parent_valve: instrument.parent_valve,
+          parent_instrument: instrument.parent_instrument,
+        },
+      });
+    }
+  }
+  for (const { sheet_number, result } of legendSheets) {
+    for (const item of result.items ?? []) {
+      tags.push({
+        tagType: "legend_item",
+        tagNumber: item.symbol,
+        attributes: {
+          sheet_number,
+          meaning: item.meaning,
+          category: item.category,
+          applies_to: item.applies_to,
+          implied_components: item.implied_components,
+        },
       });
     }
   }
 
   return {
-    rawJson: { sheets: allSheets },
+    rawJson: { sheets: allSheets, legends: legendSheets },
     tags,
   };
 };

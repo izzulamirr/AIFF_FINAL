@@ -6,6 +6,7 @@ import { extractSpecSheetDocument } from "./specSheet";
 import { extractIsoDocument } from "./iso";
 import { extractGaDocument } from "./ga";
 import { extractPllDocument } from "./pll";
+import { extractPidLegendDocument } from "./pidLegend";
 
 export const EXTRACTORS: ExtractorRegistry = {
   pid: extractPidDocument,
@@ -15,6 +16,7 @@ export const EXTRACTORS: ExtractorRegistry = {
   iso: extractIsoDocument,
   ga: extractGaDocument,
   pll: extractPllDocument,
+  pid_legend: extractPidLegendDocument,
 };
 
 export * from "./types";

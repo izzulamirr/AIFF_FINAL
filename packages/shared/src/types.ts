@@ -1,4 +1,4 @@
-export const DOC_TYPES = ["pid", "hmb", "pfd", "spec_sheet", "iso", "ga", "pll"] as const;
+export const DOC_TYPES = ["pid", "hmb", "pfd", "spec_sheet", "iso", "ga", "pll", "pid_legend"] as const;
 export type DocType = (typeof DOC_TYPES)[number];
 
 // 'spec_class' is a special case: spec sheets define rules keyed by class
@@ -9,8 +9,13 @@ export type DocType = (typeof DOC_TYPES)[number];
 // 'bom_item' rows come from an ISO's Bill of Material (keyed by item_no, not
 // cross-document-correlated by tag number -- they're checked against their
 // referenced spec_class instead, see lib/verifyIso.ts). 'support' rows come
-// from a GA's pipe support schedule (keyed by support_tag).
-export const TAG_TYPES = ["line", "equipment", "instrument", "valve", "stream", "spec_class", "bom_item", "support"] as const;
+// from a GA's pipe support schedule (keyed by support_tag). 'legend_item'
+// rows come from a P&ID's legend/symbols/abbreviations sheet -- keyed by
+// the symbol or abbreviation itself, not a physical tag.
+// 'fitting' rows are untagged inline piping symbols drawn on a P&ID line
+// (flange pairs, blinds, reducers, expansion joints, strainers...) -- keyed
+// by their fitting type, referenced to a line via attributes.line_number.
+export const TAG_TYPES = ["line", "equipment", "instrument", "valve", "stream", "spec_class", "bom_item", "support", "legend_item", "fitting"] as const;
 export type TagType = (typeof TAG_TYPES)[number];
 
 export const ORG_ROLES = ["owner", "admin", "reviewer", "viewer"] as const;

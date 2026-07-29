@@ -12,6 +12,7 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   iso: "ISO",
   ga: "GA",
   pll: "Line List (PLL)",
+  pid_legend: "P&ID Legend",
 };
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -39,29 +40,50 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
     await uploadDocument(id, formData);
   }
 
+  async function handleLegendUpload(formData: FormData) {
+    "use server";
+    formData.set("docType", "pid_legend");
+    await uploadDocument(id, formData);
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-semibold">{project.name}</h1>
 
-      <form action={handleUpload} className="flex max-w-md flex-col gap-2 rounded border p-4">
-        <label className="text-sm">
-          Document type
-          <select name="docType" required className="mt-1 block w-full rounded border px-3 py-2">
-            <option value="pid">P&ID</option>
-            <option value="hmb">H&MB</option>
-            <option value="pfd">PFD</option>
-            <option value="spec_sheet">Spec Sheet</option>
-            <option value="iso">ISO</option>
-            <option value="ga">GA</option>
-            <option value="pll">Line List (PLL)</option>
-          </select>
-        </label>
-        <label className="text-sm">
-          PDF, CSV, or XLSX file
-          <input type="file" name="file" accept="application/pdf,.csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required className="mt-1 block w-full" />
-        </label>
-        <button className="rounded bg-black px-4 py-2 text-white">Upload</button>
-      </form>
+      <div className="flex flex-wrap gap-4">
+        <form action={handleUpload} className="flex max-w-md flex-col gap-2 rounded border p-4">
+          <label className="text-sm">
+            Document type
+            <select name="docType" required className="mt-1 block w-full rounded border px-3 py-2">
+              <option value="pid">P&ID</option>
+              <option value="hmb">H&MB</option>
+              <option value="pfd">PFD</option>
+              <option value="spec_sheet">Spec Sheet</option>
+              <option value="iso">ISO</option>
+              <option value="ga">GA</option>
+              <option value="pll">Line List (PLL)</option>
+            </select>
+          </label>
+          <label className="text-sm">
+            PDF, CSV, or XLSX file
+            <input type="file" name="file" accept="application/pdf,.csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required className="mt-1 block w-full" />
+          </label>
+          <button className="rounded bg-black px-4 py-2 text-white">Upload</button>
+        </form>
+
+        <form action={handleLegendUpload} className="flex max-w-md flex-col gap-2 rounded border p-4">
+          <p className="text-sm font-medium">Upload P&ID Legend</p>
+          <p className="text-xs text-gray-500">
+            This project&apos;s symbol/abbreviation key. Upload it once per project (before other P&IDs, if possible) -- other
+            P&amp;IDs in this project will read their valve/instrument symbols against it.
+          </p>
+          <label className="text-sm">
+            PDF file
+            <input type="file" name="file" accept="application/pdf" required className="mt-1 block w-full" />
+          </label>
+          <button className="rounded bg-black px-4 py-2 text-white">Upload legend</button>
+        </form>
+      </div>
 
       <table className="w-full text-left text-sm">
         <thead>

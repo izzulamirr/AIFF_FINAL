@@ -1,8 +1,11 @@
 import Link from "next/link";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray, and } from "drizzle-orm";
 import { documents, extractionJobs, extractionResults, extractedTags, findings } from "@easy/db";
+import { normalizeTagNumber, enrichIsoLineAttrs } from "@easy/shared";
 import { getDb } from "@/lib/db";
+import { buildDesignBasisComparison, buildRoutingFittingComparison, type DesignBasisRow, type RoutingFittingRow } from "@/lib/verifyIso";
 import { verifyIsoAction } from "./actions";
+import { ExtractedTagsTable, type TagGroup } from "./ExtractedTagsTable";
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   pid: "P&ID",
@@ -12,6 +15,7 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   iso: "ISO",
   ga: "GA",
   pll: "Line List (PLL)",
+  pid_legend: "P&ID Legend",
 };
 
 const GATE_LABELS: Record<string, string> = {
@@ -42,6 +46,31 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
   const tags = await db.select().from(extractedTags).where(eq(extractedTags.documentId, docId));
 
+  // Nest assembly accessories under their primary device: an instrument
+  // carrying a parent_valve (valve-actuator accessories: positioner, ZI/ZIT,
+  // limit switches, solenoid, handswitch) or a parent_instrument (e.g. a TT
+  // installed in a TW thermowell -- the TW is always the primary) is a
+  // subset of that primary and is rendered indented beneath it, not as a
+  // flat top-level row. Docs with no parent links (every non-P&ID type)
+  // fall through to the original flat listing unchanged.
+  const tagByNorm = new Map(tags.map((t) => [normalizeTagNumber(t.tagNumber), t] as const));
+  const accessoriesByParent = new Map<number, typeof tags>();
+  const accessoryIds = new Set<number>();
+  for (const t of tags) {
+    const attrs = t.attributes as Record<string, unknown>;
+    const parent = [attrs.parent_valve, attrs.parent_instrument].find((p): p is string => typeof p === "string" && p.trim().length > 0);
+    if (!parent) continue;
+    const parentTag = tagByNorm.get(normalizeTagNumber(parent));
+    if (!parentTag || parentTag.id === t.id) continue; // orphan link stays top-level
+    const list = accessoriesByParent.get(parentTag.id) ?? [];
+    list.push(t);
+    accessoriesByParent.set(parentTag.id, list);
+    accessoryIds.add(t.id);
+  }
+  const topLevelTags = tags.filter((t) => !accessoryIds.has(t.id));
+  const toRow = (t: (typeof tags)[number]) => ({ id: t.id, tagType: t.tagType, tagNumber: t.tagNumber, sourcePage: t.sourcePage, attributes: t.attributes });
+  const tagGroups: TagGroup[] = topLevelTags.map((t) => ({ tag: toRow(t), accessories: (accessoriesByParent.get(t.id) ?? []).map(toRow) }));
+
   const isIso = document.docType === "iso";
   let pllOptions: (typeof documents.$inferSelect)[] = [];
   let specOptions: (typeof documents.$inferSelect)[] = [];
@@ -49,6 +78,12 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
   let gaOptions: (typeof documents.$inferSelect)[] = [];
   let isoFindings: (typeof findings.$inferSelect)[] = [];
   let docNameById = new Map<string, string>();
+  // One entry per ISO line: its design-basis comparison against the PLL
+  // (or null when the line isn't in the PLL / no PLL is uploaded yet).
+  let designBasis: Array<{ lineNumber: string; pllDocName: string | null; rows: DesignBasisRow[] | null }> = [];
+  // One entry per ISO line: routing + fitting count vs the project's P&IDs
+  // (rows null when the line isn't found on any P&ID / none uploaded yet).
+  let routingFittings: Array<{ lineNumber: string; pidDocNames: string[]; rows: RoutingFittingRow[] | null }> = [];
 
   if (isIso) {
     const siblingDocs = await db
@@ -77,6 +112,70 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
     docNameById.set(document.id, document.fileName);
 
     isoFindings = await db.select().from(findings).where(eq(findings.docAId, docId)).orderBy(desc(findings.createdAt));
+
+    // Design-basis comparison, ISO title block vs the PLL row for the same
+    // line number -- rendered for every ISO line whether or not Verify has
+    // been run, so the side-by-side view is always current.
+    const isoLineTags = tags.filter((t) => t.tagType === "line");
+    if (pllOptions.length > 0 && isoLineTags.length > 0) {
+      const pllTags = await db
+        .select()
+        .from(extractedTags)
+        .where(and(inArray(extractedTags.documentId, pllOptions.map((d) => d.id)), eq(extractedTags.tagType, "line")));
+      const pllByNorm = new Map(pllTags.map((t) => [t.tagNumberNormalized, t] as const));
+
+      designBasis = isoLineTags.map((line) => {
+        const pll = pllByNorm.get(normalizeTagNumber(line.tagNumber));
+        // Same enrichment the gate chain applies: title-block blanks and
+        // "XX.XX" placeholders are filled from the line-number decode.
+        const isoAttrs = enrichIsoLineAttrs(line.tagNumber, line.attributes as Record<string, unknown>);
+        return {
+          lineNumber: line.tagNumber,
+          pllDocName: pll ? docNameById.get(pll.documentId) ?? null : null,
+          rows: pll ? buildDesignBasisComparison(isoAttrs, pll.attributes as Record<string, unknown>) : null,
+        };
+      });
+    }
+
+    // Routing & fitting count, ISO vs the project's P&IDs -- same always-on
+    // pattern as design basis, aggregated across every extracted P&ID (a
+    // line legitimately spans several sheets/documents).
+    if (pidOptions.length > 0 && isoLineTags.length > 0) {
+      const pidTags = await db
+        .select()
+        .from(extractedTags)
+        .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), inArray(extractedTags.tagType, ["line", "valve", "fitting"])));
+      const isoBomTags = tags.filter((t) => t.tagType === "bom_item");
+
+      routingFittings = isoLineTags.map((line) => {
+        const norm = line.tagNumberNormalized;
+        const pidLineMatches = pidTags.filter((t) => t.tagType === "line" && t.tagNumberNormalized === norm);
+        if (pidLineMatches.length === 0) return { lineNumber: line.tagNumber, pidDocNames: [], rows: null };
+
+        const pidLineAttrs = pidLineMatches.map((t) => t.attributes as Record<string, unknown>);
+        const pidValveCount = pidTags.filter((t) => {
+          if (t.tagType !== "valve") return false;
+          const ref = (t.attributes as Record<string, unknown>).line_number;
+          return typeof ref === "string" && normalizeTagNumber(ref) === norm;
+        }).length;
+        const bomForLine = isoBomTags
+          .filter((b) => {
+            const ln = (b.attributes as Record<string, unknown>).line_number;
+            return typeof ln === "string" && normalizeTagNumber(ln) === norm;
+          })
+          .map((b) => b.attributes as Record<string, unknown>);
+        const pidLineFittings = pidTags
+          .filter((t) => {
+            if (t.tagType !== "fitting") return false;
+            const ref = (t.attributes as Record<string, unknown>).line_number;
+            return typeof ref === "string" && normalizeTagNumber(ref) === norm;
+          })
+          .map((t) => t.attributes as Record<string, unknown>);
+        const isoAttrs = enrichIsoLineAttrs(line.tagNumber, line.attributes as Record<string, unknown>);
+        const pidDocNames = Array.from(new Set(pidLineMatches.map((t) => docNameById.get(t.documentId) ?? t.documentId)));
+        return { lineNumber: line.tagNumber, pidDocNames, rows: buildRoutingFittingComparison(isoAttrs, bomForLine, pidLineAttrs, pidValveCount, pidLineFittings) };
+      });
+    }
   }
 
   return (
@@ -123,9 +222,13 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
               </select>
             </label>
             <label className="text-sm">
-              P&amp;ID
-              <select name="pidDocumentId" className="mt-1 block rounded border px-3 py-2">
-                <option value="">None</option>
+              P&amp;ID (ctrl/cmd-click to select more than one -- a line can span several sheets)
+              <select name="pidDocumentIds" multiple size={Math.min(4, Math.max(2, pidOptions.length))} className="mt-1 block w-56 rounded border px-3 py-2">
+                {pidOptions.length === 0 && (
+                  <option value="" disabled>
+                    None uploaded
+                  </option>
+                )}
                 {pidOptions.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.fileName}
@@ -146,6 +249,84 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
             </label>
             <button className="rounded bg-black px-4 py-2 text-white">Verify</button>
           </form>
+
+          <h3 className="mb-2 mt-4 font-medium">Design basis: ISO vs PLL</h3>
+          {designBasis.length === 0 && <p className="mb-4 text-sm text-gray-500">No PLL uploaded/extracted in this project yet.</p>}
+          {designBasis.map(({ lineNumber, pllDocName, rows }) => (
+            <div key={lineNumber} className="mb-4">
+              <p className="mb-1 text-sm">
+                Line <span className="font-mono">{lineNumber}</span>{" "}
+                {rows ? <span className="text-gray-500">vs {pllDocName ?? "PLL"}</span> : <span className="text-red-600">-- not found in the PLL</span>}
+              </p>
+              {rows && (
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="py-1">Field</th>
+                      <th>ISO</th>
+                      <th>PLL</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.field} className="border-b">
+                        <td className="py-1">{row.field}</td>
+                        <td>{row.isoValue ?? "-"}</td>
+                        <td>{row.pllValue ?? "-"}</td>
+                        <td className={row.status === "match" ? "text-green-600" : row.status === "mismatch" ? "text-red-600" : "text-gray-400"}>
+                          {row.status}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ))}
+
+          <h3 className="mb-2 mt-4 font-medium">Routing &amp; fittings: ISO vs P&amp;ID</h3>
+          {routingFittings.length === 0 && <p className="mb-4 text-sm text-gray-500">No P&amp;ID uploaded/extracted in this project yet.</p>}
+          {routingFittings.map(({ lineNumber, pidDocNames, rows }) => (
+            <div key={lineNumber} className="mb-4">
+              <p className="mb-1 text-sm">
+                Line <span className="font-mono">{lineNumber}</span>{" "}
+                {rows ? <span className="text-gray-500">vs {pidDocNames.join(", ")}</span> : <span className="text-red-600">-- not found on any P&amp;ID</span>}
+              </p>
+              {rows && (
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="py-1">Item</th>
+                      <th>ISO</th>
+                      <th>P&amp;ID</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.field} className="border-b">
+                        <td className="py-1">{row.field}</td>
+                        <td>{row.isoValue ?? "-"}</td>
+                        <td>{row.pidValue ?? "-"}</td>
+                        <td
+                          className={
+                            row.status === "match"
+                              ? "text-green-600"
+                              : row.status === "mismatch"
+                                ? "text-red-600"
+                                : "text-gray-400"
+                          }
+                        >
+                          {row.status}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ))}
 
           <h3 className="mb-2 mt-4 font-medium">Findings ({isoFindings.length})</h3>
           <table className="w-full text-left text-sm">
@@ -198,35 +379,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         <>
           <section>
             <h2 className="mb-2 font-medium">Extracted tags ({tags.length})</h2>
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="py-2">Tag type</th>
-                  <th>Tag number</th>
-                  <th>Page</th>
-                  <th>Attributes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tags.map((tag) => (
-                  <tr key={tag.id} className="border-b align-top">
-                    <td className="py-2">{tag.tagType}</td>
-                    <td>{tag.tagNumber}</td>
-                    <td>{tag.sourcePage ?? "-"}</td>
-                    <td>
-                      <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(tag.attributes, null, 2)}</pre>
-                    </td>
-                  </tr>
-                ))}
-                {tags.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="py-4 text-gray-500">
-                      No tags extracted.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+            <ExtractedTagsTable groups={tagGroups} />
           </section>
 
           <section>

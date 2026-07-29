@@ -7,8 +7,10 @@ import {
   sliceText,
   type PageRange,
 } from "@easy/extraction-schemas";
+import { enrichIsoLineAttrs, normalizeSlope } from "@easy/shared";
 import { callTool, callWithRetry } from "./claudeClient";
 import { renderPdfPages } from "../pdfImages";
+import { normalizeCellValue } from "./pll";
 import type { DocTypeExtractor, TagDraft } from "./types";
 
 interface LocateIsoResult {
@@ -22,6 +24,9 @@ interface IsoSheetResult {
   size?: string;
   spec_class?: string;
   service?: string;
+  from_location?: string;
+  to_location?: string;
+  slope?: string;
   scale?: string;
   sheet?: string;
   revision?: string;
@@ -101,7 +106,18 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       callTool<IsoSheetResult>(client, {
         tool: ISO_SHEET_TOOL,
         systemPrompt: SYSTEM_PROMPT,
-        userText: `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}". The attached page image(s) are the actual drawing -- read the title block and Bill of Material table directly from the image(s); the text above (if any) is often just a footer/watermark, not the real content. Extract the full title block (document number, drawing number, line number, size, spec, service, scale, sheet, revision, owner P&ID no., P&ID no., owner GA drawing no., GA drawing no., design/operating/hydrotest pressure and temperature, painting system, radiograph, test type, insulation spec, insulation thickness) and Bill of Material rows via the record_iso_sheet tool call.`,
+        userText:
+          `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}". The attached page image(s) are the actual drawing -- ` +
+          `read the title block and Bill of Material table directly from the image(s); the text above (if any) is often just a footer/watermark, not the real content. ` +
+          `Extract the full title block (document number, drawing number, line number, size, spec, service, scale, sheet, revision, owner P&ID no., P&ID no., ` +
+          `owner GA drawing no., GA drawing no., any slope annotation, design/operating/hydrotest pressure and temperature, painting system, radiograph, test type, insulation spec, insulation thickness) ` +
+          `and Bill of Material rows via the record_iso_sheet tool call. ` +
+          `For from_location/to_location: trace the drawn pipe run itself from one end to the other -- the start is the callout where the piping begins ` +
+          `(equipment/nozzle connection, tie-in flag, or a "CONT'D FROM ..." continuation box) and the end is the callout where it terminates ` +
+          `("CONT'D ON ...", equipment/nozzle, or tie-in). These callouts sit at the ends of the drawn pipeline, not in the title block. ` +
+          `Read each unit from its column header and append it to the value (e.g. under a "PRESS. kPag" header the value 5 becomes "5 kPag"; under "TEMP. °C" the value 90 becomes "90 °C"; ` +
+          `"INSUL/THK(MM)" of 25 becomes "25 mm"). Leave non-numeric placeholders such as NA, NIL. or AMB. exactly as printed. ` +
+          `Where one field holds more than one value, join them with " / " -- never a line break.`,
         maxTokens: 16000,
         useThinking: true,
         images: sheetImages,
@@ -112,36 +128,44 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
   }
 
   const tags: TagDraft[] = [];
+  const n = normalizeCellValue; // collapse any embedded newlines to " / "
   for (const { drawing_number, result } of allSheets) {
     if (result.line_number) {
+      const lineNumber = n(result.line_number) ?? result.line_number;
       tags.push({
         tagType: "line",
-        tagNumber: result.line_number,
-        attributes: {
-          drawing_number: result.drawing_number ?? drawing_number,
-          document_number: result.document_number,
-          size: result.size,
-          spec_class: result.spec_class,
-          service: result.service,
-          scale: result.scale,
-          sheet: result.sheet,
-          revision: result.revision,
-          owner_pid_no: result.owner_pid_no,
-          pid_no: result.pid_no,
-          owner_ga_dwg_no: result.owner_ga_dwg_no,
-          ga_dwg_no: result.ga_dwg_no,
-          design_pressure: result.design_pressure,
-          design_temperature: result.design_temperature,
-          operating_pressure: result.operating_pressure,
-          operating_temperature: result.operating_temperature,
-          hydrotest_pressure: result.hydrotest_pressure,
-          hydrotest_temperature: result.hydrotest_temperature,
-          painting_system: result.painting_system,
-          radiograph: result.radiograph,
-          test_type: result.test_type,
-          insul_spec: result.insul_spec,
-          insul_thickness_mm: result.insul_thickness_mm,
-        },
+        tagNumber: lineNumber,
+        // enrichIsoLineAttrs decodes the line-number convention
+        // (size-service-class-unique-insulation-heattrace) and fills any
+        // field the title block left blank or as an "XX.XX" placeholder.
+        attributes: enrichIsoLineAttrs(lineNumber, {
+          drawing_number: n(result.drawing_number) ?? drawing_number,
+          document_number: n(result.document_number),
+          size: n(result.size),
+          spec_class: n(result.spec_class),
+          service: n(result.service),
+          from_location: n(result.from_location),
+          to_location: n(result.to_location),
+          slope: normalizeSlope(n(result.slope)),
+          scale: n(result.scale),
+          sheet: n(result.sheet),
+          revision: n(result.revision),
+          owner_pid_no: n(result.owner_pid_no),
+          pid_no: n(result.pid_no),
+          owner_ga_dwg_no: n(result.owner_ga_dwg_no),
+          ga_dwg_no: n(result.ga_dwg_no),
+          design_pressure: n(result.design_pressure),
+          design_temperature: n(result.design_temperature),
+          operating_pressure: n(result.operating_pressure),
+          operating_temperature: n(result.operating_temperature),
+          hydrotest_pressure: n(result.hydrotest_pressure),
+          hydrotest_temperature: n(result.hydrotest_temperature),
+          painting_system: n(result.painting_system),
+          radiograph: n(result.radiograph),
+          test_type: n(result.test_type),
+          insul_spec: n(result.insul_spec),
+          insul_thickness_mm: n(result.insul_thickness_mm),
+        }),
       });
     }
     for (const item of result.bom_items ?? []) {

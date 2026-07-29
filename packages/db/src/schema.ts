@@ -85,7 +85,7 @@ export const documents = pgTable(
   },
   (table) => [
     uniqueIndex("documents_project_hash_unique").on(table.projectId, table.fileHash),
-    check("documents_doc_type_check", sql`${table.docType} in ('pid','hmb','pfd','spec_sheet','iso','ga','pll')`),
+    check("documents_doc_type_check", sql`${table.docType} in ('pid','hmb','pfd','spec_sheet','iso','ga','pll','pid_legend')`),
   ]
 );
 

@@ -13,6 +13,10 @@ function optionalId(formData: FormData, key: string): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function multiId(formData: FormData, key: string): string[] {
+  return formData.getAll(key).filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
 export async function verifyIsoAction(isoDocumentId: string, formData: FormData) {
   const supabase = await createClient();
   const {
@@ -32,7 +36,7 @@ export async function verifyIsoAction(isoDocumentId: string, formData: FormData)
     isoDocumentId,
     pllDocumentId: optionalId(formData, "pllDocumentId"),
     specDocumentId: optionalId(formData, "specDocumentId"),
-    pidDocumentId: optionalId(formData, "pidDocumentId"),
+    pidDocumentIds: multiId(formData, "pidDocumentIds"),
     gaDocumentId: optionalId(formData, "gaDocumentId"),
   });
 

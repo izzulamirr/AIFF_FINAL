@@ -10,7 +10,14 @@
       "Bash(pnpm exec *)",
       "Bash(node rerunextract.mjs)",
       "PowerShell(Get-Process -Name node -ErrorAction SilentlyContinue)",
-      "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node fixdoctype2.mjs)"
+      "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node fixdoctype2.mjs)",
+      "PowerShell(Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -gt \\(Get-Date\\).AddMinutes\\(-30\\) } | Select-Object Id, StartTime | Format-Table)",
+      "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node checkpll.mjs)",
+      "Bash(rm -f checkpll.mjs)",
+      "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node showfindings2.mjs)",
+      "Bash(rm -f showfindings2.mjs)",
+      "Bash(rm -f \"c:/Users/User/Desktop/AIFF/apps/web/src/testVerify.ts\" \"c:/Users/User/Desktop/AIFF/apps/worker/src/reExtractPid.ts\")",
+      "Bash(pnpm remove *)"
     ]
   }
 }

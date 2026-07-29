@@ -68,9 +68,10 @@ export async function runExtractionJob(db: Db, storage: SupabaseClient, jobId: s
           .set({ progressPhase: evt.phase, progressCurrent: evt.current, progressTotal: evt.total })
           .where(eq(extractionJobs.id, jobId));
       },
-      // Page-image rendering (used by the ISO extractor) only makes sense
-      // for PDFs -- a CSV/XLSX buffer would crash pdfjs.
-      isCsv || isXlsx ? undefined : buffer
+      // Page-image rendering (used by the ISO and P&ID extractors) only
+      // makes sense for PDFs -- a CSV/XLSX buffer would crash pdfjs.
+      isCsv || isXlsx ? undefined : buffer,
+      { db, projectId: document.projectId }
     );
 
     await db.insert(extractionResults).values({
