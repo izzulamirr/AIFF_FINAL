@@ -1,6 +1,14 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { extractedTags, findings, documents } from "@easy/db";
-import { normalizeTagNumber, decodeLineNumber, enrichIsoLineAttrs, normalizeSlope } from "@easy/shared";
+import {
+  normalizeTagNumber,
+  decodeLineNumber,
+  enrichIsoLineAttrs,
+  normalizeSlope,
+  parsePressureRating,
+  higherRating,
+  type SpecBreakEntry,
+} from "@easy/shared";
 import { getDb } from "./db";
 
 type ExtractedTag = typeof extractedTags.$inferSelect;
@@ -48,7 +56,29 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
     pidDocIds.length > 0 ? (await db.select().from(documents).where(inArray(documents.id, pidDocIds))).map((d) => [d.id, d.fileName] as const) : []
   );
 
-  const isoLines = allTags.filter((t) => t.documentId === isoDocumentId && t.tagType === "line");
+  // A multi-sheet drawing yields one line tag per sheet, all carrying the
+  // same line number. Collapse them into one line so each gate reports a
+  // finding once instead of once per sheet, merging attributes across sheets
+  // (a field blank on sheet 1 but filled on sheet 3 -- notably spec_breaks,
+  // which only exist on the sheet that draws the break -- must survive).
+  const isoLinesRaw = allTags.filter((t) => t.documentId === isoDocumentId && t.tagType === "line");
+  const mergedByNorm = new Map<string, ExtractedTag>();
+  for (const line of [...isoLinesRaw].sort((a, b) => (a.sourcePage ?? 0) - (b.sourcePage ?? 0))) {
+    const existing = mergedByNorm.get(line.tagNumberNormalized);
+    if (!existing) {
+      mergedByNorm.set(line.tagNumberNormalized, line);
+      continue;
+    }
+    const merged: Record<string, unknown> = { ...(existing.attributes as Record<string, unknown>) };
+    for (const [key, value] of Object.entries(line.attributes as Record<string, unknown>)) {
+      const isEmptyArray = Array.isArray(value) && value.length === 0;
+      if (isBlank(value) && !Array.isArray(value)) continue;
+      if (isEmptyArray) continue;
+      if (isBlank(merged[key]) || (Array.isArray(merged[key]) && (merged[key] as unknown[]).length === 0)) merged[key] = value;
+    }
+    mergedByNorm.set(line.tagNumberNormalized, { ...existing, attributes: merged });
+  }
+  const isoLines = [...mergedByNorm.values()];
   const isoBomItems = allTags.filter((t) => t.documentId === isoDocumentId && t.tagType === "bom_item");
   const pllLines = pllDocumentId ? allTags.filter((t) => t.documentId === pllDocumentId && t.tagType === "line") : [];
   const specClasses = specDocumentId ? allTags.filter((t) => t.documentId === specDocumentId && t.tagType === "spec_class") : [];
@@ -476,7 +506,28 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
   }
 
   // ---- Gate 4: Specs ---------------------------------------------------
+  // A drawing with a spec break carries two classes ("MATL <class>" callouts
+  // either side of a joint), so each BOM item is governed by its own class,
+  // not the title block's -- specForItem below resolves that per item.
   const specClassByLine = new Map<string, ExtractedTag | undefined>();
+  const specBreaksByLine = new Map<string, SpecBreakEntry[]>();
+  for (const line of isoLines) {
+    const attrs = isoAttrsByTagId.get(line.id)!;
+    const breaks = Array.isArray(attrs.spec_breaks) ? (attrs.spec_breaks as SpecBreakEntry[]) : [];
+    if (breaks.length > 1) specBreaksByLine.set(line.tagNumber, breaks);
+  }
+
+  // The class governing one BOM item: its own item_spec_class when the
+  // drawing has a break, else the line's class.
+  const itemSpecCode = (attrs: Record<string, unknown>, lineNumber: string | undefined): string | undefined => {
+    const own = typeof attrs.item_spec_class === "string" && attrs.item_spec_class.trim() ? attrs.item_spec_class : undefined;
+    if (own) return own;
+    if (lineNumber == null) return undefined;
+    const lineAttrs = isoLines.find((l) => l.tagNumber === lineNumber);
+    const lineSpec = lineAttrs ? isoAttrsByTagId.get(lineAttrs.id)?.spec_class : undefined;
+    return typeof lineSpec === "string" ? lineSpec : undefined;
+  };
+
   if (!stopped && specDocumentId) {
     for (const line of isoLines) {
       const attrs = isoAttrsByTagId.get(line.id)!;
@@ -489,13 +540,74 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
           makeFinding(projectId, line, isoDocumentId, specDocumentId, "4.spec_class", specClassCode, null, "error", `Line ${line.tagNumber} references spec class "${specClassCode}", which was not found in the uploaded spec sheet.`)
         );
       }
+
+      // Every class introduced by a spec break needs its own spec sheet, or
+      // the items on that side of the break can't be checked at all.
+      for (const entry of specBreaksByLine.get(line.tagNumber) ?? []) {
+        if (isBlank(entry.spec_class) || normalizeTagNumber(entry.spec_class) === normalizeTagNumber(specClassCode)) continue;
+        if (!specByNorm.get(normalizeTagNumber(entry.spec_class))) {
+          out.push(
+            makeFinding(projectId, line, isoDocumentId, specDocumentId, "4.break_spec_class", entry.spec_class, null, "error", `Line ${line.tagNumber} has a spec break to class "${entry.spec_class}"${entry.location_note ? ` (${entry.location_note})` : ""}, but no spec sheet for that class is uploaded -- items on that side of the break cannot be verified.`)
+          );
+        }
+      }
+    }
+
+    // Spec-break joint rule: every component belongs to its own side of the
+    // break -- the two mating flanges and the bolts each stay with their own
+    // class. The single exception is the GASKET: one part sandwiched between
+    // the two flanges, so it must be rate-matched to the HIGHER-rated class
+    // (a 150#/300# break takes the 300# gasket).
+    for (const line of isoLines) {
+      const breaks = specBreaksByLine.get(line.tagNumber);
+      if (!breaks || breaks.length < 2) continue;
+      const ratings = breaks.map((b) => (b.rating == null ? null : Number(b.rating))).filter((r): r is number => r != null && Number.isFinite(r));
+      if (ratings.length < 2) continue;
+      const required = Math.max(...ratings);
+      if (required === Math.min(...ratings)) continue; // same rating both sides: nothing to match up
+
+      // The joint is rate-matched to the higher class: the lower side's mating
+      // flange, the gasket between them and their bolts are all made to the
+      // higher rating so they bolt together. (Those parts still BELONG to the
+      // side they sit on -- a 300# flange upstream of a 150#/300# break is a
+      // 150#-class item rated up -- which is why placement is by position and
+      // only the RATING is checked here.)
+      const lineNorm = normalizeTagNumber(line.tagNumber);
+      const onLine = (b: ExtractedTag) => {
+        const a = b.attributes as Record<string, unknown>;
+        return typeof a.line_number === "string" && normalizeTagNumber(a.line_number) === lineNorm;
+      };
+      const bestRatingOf = (pattern: RegExp): number | null =>
+        isoBomItems
+          .filter((b) => {
+            const a = b.attributes as Record<string, unknown>;
+            return onLine(b) && pattern.test(`${a.component_type ?? ""} ${a.description ?? ""}`);
+          })
+          .reduce<number | null>((max, b) => {
+            const a = b.attributes as Record<string, unknown>;
+            return higherRating(max, parsePressureRating(`${a.description ?? ""} ${a.item_code ?? ""}`));
+          }, null);
+
+      for (const part of [
+        { label: "flange", field: "4.break_flange_rating", pattern: /flange/i, why: "the two mating flanges at the break must be the same rating to bolt together" },
+        { label: "gasket", field: "4.break_gasket_rating", pattern: /gasket/i, why: "the gasket at the break is a single part shared between both flanges" },
+      ] as const) {
+        const best = bestRatingOf(part.pattern);
+        if (best == null || best >= required) continue;
+        out.push(
+          makeFinding(projectId, line, isoDocumentId, undefined, part.field, `${best}#`, `${required}#`, "error", `Line ${line.tagNumber} breaks between classes rated ${ratings.join("# / ")}#, and ${part.why}, so the break joint needs a ${required}# ${part.label} -- but the highest ${part.label} rating in the BOM is ${best}#.`)
+        );
+      }
     }
 
     for (const item of isoBomItems) {
       const attrs = item.attributes as Record<string, unknown>;
       const lineNumber = typeof attrs.line_number === "string" ? attrs.line_number : undefined;
       if (!lineNumber) continue;
-      const spec = specClassByLine.get(lineNumber);
+      // The item's OWN class on a spec-break drawing, so a 300# flange is
+      // checked against the 300# spec rather than the title block's 150# one.
+      const ownCode = itemSpecCode(attrs, lineNumber);
+      const spec = (ownCode ? specByNorm.get(normalizeTagNumber(ownCode)) : undefined) ?? specClassByLine.get(lineNumber);
       if (!spec) continue;
 
       const category = mapComponentCategory(typeof attrs.component_type === "string" ? attrs.component_type : undefined);
@@ -555,7 +667,10 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
       const itemCode = typeof attrs.item_code === "string" ? attrs.item_code : undefined;
       const lineNumber = typeof attrs.line_number === "string" ? attrs.line_number : undefined;
       if (!itemCode || !lineNumber) continue;
-      const spec = specClassByLine.get(lineNumber);
+      // Resolve against the item's own class on a spec-break drawing, so a
+      // 300# item isn't reported as "not-in-spec" against the 150# catalogue.
+      const ownCode = itemSpecCode(attrs, lineNumber);
+      const spec = (ownCode ? specByNorm.get(normalizeTagNumber(ownCode)) : undefined) ?? specClassByLine.get(lineNumber);
       if (!spec) continue;
 
       const category = mapComponentCategory(typeof attrs.component_type === "string" ? attrs.component_type : undefined);

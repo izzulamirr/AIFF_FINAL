@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getDb } from "@/lib/db";
 import { getQueue, EXTRACT_DOCUMENT_QUEUE } from "@/lib/queue";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/uploadLimits";
 
 const STORAGE_BUCKET = "documents";
 
@@ -37,6 +38,12 @@ export async function uploadDocument(projectId: string, formData: FormData) {
   const docType = String(formData.get("docType") ?? "") as DocType;
   if (!file || file.size === 0) throw new Error("No file selected.");
   if (!DOC_TYPES.includes(docType)) throw new Error("Invalid document type.");
+  // Checked explicitly so an oversized file reports its own size instead of
+  // surfacing the framework's generic body-limit error. Must stay in step
+  // with next.config.ts's serverActions.bodySizeLimit.
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`File is ${(file.size / 1024 / 1024).toFixed(1)} MB -- the upload limit is ${MAX_UPLOAD_MB} MB.`);
+  }
 
   const lowerName = file.name.toLowerCase();
   const isCsv = lowerName.endsWith(".csv");

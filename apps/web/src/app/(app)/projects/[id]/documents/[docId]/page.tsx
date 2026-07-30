@@ -84,6 +84,20 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
   // One entry per ISO line: routing + fitting count vs the project's P&IDs
   // (rows null when the line isn't found on any P&ID / none uploaded yet).
   let routingFittings: Array<{ lineNumber: string; pidDocNames: string[]; rows: RoutingFittingRow[] | null }> = [];
+  // BOM grouped by the class that governs each item, one block per SHEET --
+  // a multi-sheet drawing carries a separate BOM per sheet and a spec break
+  // ("MATL <class>" callouts either side of a joint) applies to the sheet
+  // that draws it, so QC is done sheet by sheet.
+  let bomBySpec: Array<{
+    lineNumber: string;
+    sheetLabel: string;
+    page: number | null;
+    breaks: Array<{ spec_class: string; rating?: string | number | null; location_note?: string }>;
+    groups: Array<{
+      specClass: string;
+      items: Array<{ id: number; itemNo: string; description: string; itemCode: string; qty: string; basis: string }>;
+    }>;
+  }> = [];
 
   if (isIso) {
     const siblingDocs = await db
@@ -116,7 +130,11 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
     // Design-basis comparison, ISO title block vs the PLL row for the same
     // line number -- rendered for every ISO line whether or not Verify has
     // been run, so the side-by-side view is always current.
-    const isoLineTags = tags.filter((t) => t.tagType === "line");
+    const isoLineTagsAll = tags.filter((t) => t.tagType === "line");
+    // A multi-sheet drawing has one line tag per sheet, all with the same line
+    // number -- collapse to one per line so the comparison tables aren't
+    // repeated per sheet. The per-sheet tags stay available via sourcePage.
+    const isoLineTags = [...new Map(isoLineTagsAll.map((t) => [t.tagNumberNormalized, t] as const)).values()];
     if (pllOptions.length > 0 && isoLineTags.length > 0) {
       const pllTags = await db
         .select()
@@ -136,6 +154,61 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         };
       });
     }
+
+    // One block per sheet, in sheet order -- including sheets with no break,
+    // whose rows all sit under the title-block class. Only the "Unassigned"
+    // group means the drawing didn't show which side a row is on.
+    bomBySpec = [...isoLineTagsAll]
+      .sort((a, b) => (a.sourcePage ?? 0) - (b.sourcePage ?? 0))
+      .map((line) => {
+        const lineAttrs = line.attributes as Record<string, unknown>;
+        const breaks = (Array.isArray(lineAttrs.spec_breaks) ? lineAttrs.spec_breaks : []) as Array<{
+          spec_class: string;
+          rating?: string | number | null;
+          location_note?: string;
+        }>;
+        const lineClass = typeof lineAttrs.spec_class === "string" ? lineAttrs.spec_class : "";
+
+        const norm = normalizeTagNumber(line.tagNumber);
+        const items = tags.filter((t) => {
+          if (t.tagType !== "bom_item") return false;
+          // Scope to this sheet so each sheet's BOM is reviewed on its own.
+          if (line.sourcePage != null && t.sourcePage !== line.sourcePage) return false;
+          const ln = (t.attributes as Record<string, unknown>).line_number;
+          return typeof ln === "string" && normalizeTagNumber(ln) === norm;
+        });
+        if (items.length === 0) return null;
+
+        const byClass = new Map<string, Array<{ id: number; itemNo: string; description: string; itemCode: string; qty: string; basis: string }>>();
+        for (const item of items) {
+          const a = item.attributes as Record<string, unknown>;
+          // With no break on this sheet the title-block class governs every
+          // row, so an unset class there is not an open question.
+          const own =
+            typeof a.item_spec_class === "string" && a.item_spec_class.trim()
+              ? a.item_spec_class
+              : breaks.length < 2 && lineClass
+                ? lineClass
+                : "Unassigned";
+          const list = byClass.get(own) ?? [];
+          list.push({
+            id: item.id,
+            itemNo: item.tagNumber,
+            description: String(a.description ?? ""),
+            itemCode: String(a.item_code ?? "-"),
+            qty: String(a.quantity ?? "-"),
+            basis: typeof a.item_spec_basis === "string" ? a.item_spec_basis : breaks.length < 2 ? "sheet has no spec break" : "",
+          });
+          byClass.set(own, list);
+        }
+        const order = [...(breaks.length > 1 ? breaks.map((b) => b.spec_class) : [lineClass]), "Unassigned"];
+        const groups = [...byClass.entries()]
+          .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+          .map(([specClass, groupItems]) => ({ specClass, items: groupItems.sort((x, y) => Number(x.itemNo) - Number(y.itemNo)) }));
+        const sheetLabel = typeof lineAttrs.sheet === "string" && lineAttrs.sheet ? lineAttrs.sheet : line.sourcePage != null ? `page ${line.sourcePage}` : "";
+        return { lineNumber: line.tagNumber, sheetLabel, page: line.sourcePage, breaks, groups };
+      })
+      .filter((v): v is NonNullable<typeof v> => v !== null);
 
     // Routing & fitting count, ISO vs the project's P&IDs -- same always-on
     // pattern as design basis, aggregated across every extracted P&ID (a
@@ -327,6 +400,72 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
               )}
             </div>
           ))}
+
+          {bomBySpec.length > 0 && (
+            <>
+              <h3 className="mb-2 mt-4 font-medium">BOM by spec, per sheet</h3>
+              {bomBySpec.map(({ lineNumber, sheetLabel, page, breaks, groups }) => (
+                <div key={`${lineNumber}-${page ?? sheetLabel}`} className="mb-6 rounded border p-3">
+                  <p className="mb-1 text-sm font-medium">
+                    Sheet {sheetLabel || "?"} <span className="font-normal text-gray-500">&middot; line</span>{" "}
+                    <span className="font-mono font-normal">{lineNumber}</span>
+                  </p>
+                  <p className="mb-2 text-xs text-gray-500">
+                    {breaks.length > 1 ? (
+                      <>Spec break: {breaks.map((b) => `${b.spec_class}${b.rating ? ` (${b.rating}#)` : ""}`).join(" → ")}</>
+                    ) : (
+                      <>No spec break on this sheet -- the whole sheet is the title-block class.</>
+                    )}
+                  </p>
+                  {breaks.length > 1 && breaks.some((b) => b.location_note) && (
+                    <ul className="mb-2 list-disc pl-5 text-xs text-gray-500">
+                      {breaks
+                        .filter((b) => b.location_note)
+                        .map((b) => (
+                          <li key={b.spec_class}>
+                            {b.spec_class}: {b.location_note}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                  {groups.map(({ specClass, items }) => (
+                    <div key={specClass} className="mb-3">
+                      <p className={`text-sm font-medium ${specClass === "Unassigned" ? "text-amber-600" : ""}`}>
+                        {specClass} <span className="font-normal text-gray-500">({items.length} item{items.length > 1 ? "s" : ""})</span>
+                        {specClass === "Unassigned" && (
+                          <span className="ml-2 font-normal text-xs text-amber-600">
+                            -- the drawing doesn&apos;t show which side of the break these sit on; confirm against the isometric
+                          </span>
+                        )}
+                      </p>
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="py-1 w-12">Item</th>
+                            <th>Description</th>
+                            <th className="w-32">Item code</th>
+                            <th className="w-16">Qty</th>
+                            <th className="w-40">Basis</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {items.map((item) => (
+                            <tr key={item.id} className="border-b">
+                              <td className="py-1">{item.itemNo}</td>
+                              <td>{item.description}</td>
+                              <td className="font-mono text-xs">{item.itemCode}</td>
+                              <td>{item.qty}</td>
+                              <td className="text-xs text-gray-500">{item.basis || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
 
           <h3 className="mb-2 mt-4 font-medium">Findings ({isoFindings.length})</h3>
           <table className="w-full text-left text-sm">

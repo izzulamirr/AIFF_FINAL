@@ -2,6 +2,7 @@ import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { documents, extractionJobs, projects } from "@easy/db";
 import { getDb } from "@/lib/db";
+import { MAX_UPLOAD_MB } from "@/lib/uploadLimits";
 import { uploadDocument } from "./actions";
 
 const DOC_TYPE_LABELS: Record<string, string> = {
@@ -65,7 +66,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
             </select>
           </label>
           <label className="text-sm">
-            PDF, CSV, or XLSX file
+            PDF, CSV, or XLSX file (max {MAX_UPLOAD_MB} MB)
             <input type="file" name="file" accept="application/pdf,.csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required className="mt-1 block w-full" />
           </label>
           <button className="rounded bg-black px-4 py-2 text-white">Upload</button>
@@ -78,7 +79,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
             P&amp;IDs in this project will read their valve/instrument symbols against it.
           </p>
           <label className="text-sm">
-            PDF file
+            PDF file (max {MAX_UPLOAD_MB} MB)
             <input type="file" name="file" accept="application/pdf" required className="mt-1 block w-full" />
           </label>
           <button className="rounded bg-black px-4 py-2 text-white">Upload legend</button>

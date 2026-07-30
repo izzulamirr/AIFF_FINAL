@@ -6,7 +6,11 @@ import { PAGE_RANGE_SCHEMA, type ClaudeTool } from "./common";
 // same locate -> per-sheet pattern as pid.ts.
 export const LOCATE_ISO_SECTIONS_TOOL: ClaudeTool = {
   name: "locate_iso_sheets",
-  description: "Identifies which page(s) contain each isometric drawing, keyed by its drawing number in the title block.",
+  description:
+    "Identifies each isometric SHEET in this document -- one entry per sheet, never one entry covering several sheets. " +
+    'A multi-sheet drawing repeats the SAME drawing number on every sheet and distinguishes them only by the title block\'s "SHEET n OF m" field, ' +
+    "so key each entry by drawing number AND sheet number and give it its own single-page range. A 3-page document showing " +
+    '"SHEET 1 OF 3", "SHEET 2 OF 3", "SHEET 3 OF 3" must return three entries, each with pages start = end = that page.',
   input_schema: {
     type: "object",
     properties: {
@@ -16,6 +20,10 @@ export const LOCATE_ISO_SECTIONS_TOOL: ClaudeTool = {
           type: "object",
           properties: {
             drawing_number: { type: "string" },
+            sheet: {
+              type: "string",
+              description: 'The title block\'s sheet field for THIS sheet, e.g. "1 OF 3". Required when the document holds more than one sheet.',
+            },
             pages: PAGE_RANGE_SCHEMA,
           },
           required: ["drawing_number", "pages"],
@@ -74,6 +82,27 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
       test_type: { type: "string" },
       insul_spec: { type: "string" },
       insul_thickness_mm: { type: "string", description: 'Insulation thickness with unit, e.g. "25 mm"' },
+      spec_breaks: {
+        type: "array",
+        description:
+          'Spec (material class) breaks drawn on this isometric. A break is marked by "MATL <class>" callout boxes either side of a joint (usually a flanged joint), and/or by a continuation line number carrying a different class. Record one entry per class present on the drawing, INCLUDING the title-block class. Leave the array empty only when the whole drawing is one class.',
+        items: {
+          type: "object",
+          properties: {
+            spec_class: { type: "string", description: 'The piping/material class code, e.g. "AC03N", "BC70N"' },
+            rating: {
+              type: "string",
+              description:
+                'This class\'s ASME pressure class as a bare number when it can be told from the drawing or BOM, e.g. "150" or "300". A 150#/300# spec break shows both ratings in the BOM (150# flanges/gaskets/150RF bolts vs 300# ones); the class on the higher-rated side is the higher number. Blank if not determinable.',
+            },
+            location_note: {
+              type: "string",
+              description: 'Where this class applies / where the break sits, as drawn, e.g. "downstream of flanged joint at check valve, toward CONT. ON 18\\"-22-214-01-CRD-0001-BC70N-N"',
+            },
+          },
+          required: ["spec_class"],
+        },
+      },
       bom_items: {
         type: "array",
         items: {
@@ -86,6 +115,21 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
             quantity: { type: "string" },
             material: { type: "string" },
             item_code: { type: "string" }, // the BOM's "ITEM CODE" column (e.g. "P9610-C", "HK9511") -- references a specific row in the piping spec, NOT a class code like "150JY11"
+            item_spec_basis: {
+              type: "string",
+              description:
+                'How item_spec_class was decided, so it can be audited: "position" (traced the item\'s balloon to a point up/downstream of the MATL callout), "rating" (placed by its own pressure class), "rate-matched gasket" (the break-joint gasket taking the higher class), or "sheet has no spec break". Blank when item_spec_class is blank.',
+            },
+            item_spec_class: {
+              type: "string",
+              description:
+                'When the drawing has a spec break (see spec_breaks), the class that governs THIS item -- the side of the break it belongs to. A spec break is a POINT on the run, so EVERY item sits on one definite side; assign all of them, including un-rated ones. ' +
+                'Use two signals. (1) POSITION -- follow each BOM item number\'s balloon/leader to where it sits on the drawn run and see whether that point is upstream or downstream of the "MATL" callouts; this is the only way to place plain pipe, weldolets and butt-weld elbows/tees/reducers, which carry no rating. A repeated item code split across two BOM rows is the giveaway that one row is each side of the break (e.g. TUBE-9 28.1M on the long upstream run and TUBE-9 1.5M on the short stub past the break; ELBO-31 qty 7 upstream and ELBO-31 qty 1 downstream) -- place each row by where its balloons actually are. ' +
+                '(2) RATING, for rated items AWAY FROM THE BREAK JOINT -- a "150# RF" flange, gasket, 150RF bolt or 150# valve is the 150# class, a "300# RF" one or an alloy-overlay valve is the 300# class. ' +
+                'CRITICAL: rating does NOT identify the side AT the break joint, because the joint is rate-matched to the HIGHER class. The mating flange on the lower-rated side, together with the joint gasket and its bolts, is made to the higher rating so the two flanges bolt together -- yet that flange still BELONGS to the lower class, because the break is at the joint face, after it. So on a 150#/300# break, a 300# flange sitting upstream of the MATL callout is a 150#-class (AC03N) item rate-matched up, NOT a 300#-class item. Place all break-joint hardware by POSITION and record basis "position (rate-matched to the higher class)". ' +
+                'Never place by rating where the rating comes from the component\'s own standard rather than the line class either: ASME B16.36 orifice flanges (and their gaskets) start at 300#, so a 150# line\'s orifice assembly is 300# with no break involved -- place those by position too. ' +
+                'Leave blank ONLY when the drawing genuinely does not show which side an item is on. Blank on single-class drawings and on sheets with no break.',
+            },
           },
           required: ["item_no", "description"],
         },
