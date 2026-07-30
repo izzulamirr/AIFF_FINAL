@@ -56,29 +56,7 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
     pidDocIds.length > 0 ? (await db.select().from(documents).where(inArray(documents.id, pidDocIds))).map((d) => [d.id, d.fileName] as const) : []
   );
 
-  // A multi-sheet drawing yields one line tag per sheet, all carrying the
-  // same line number. Collapse them into one line so each gate reports a
-  // finding once instead of once per sheet, merging attributes across sheets
-  // (a field blank on sheet 1 but filled on sheet 3 -- notably spec_breaks,
-  // which only exist on the sheet that draws the break -- must survive).
-  const isoLinesRaw = allTags.filter((t) => t.documentId === isoDocumentId && t.tagType === "line");
-  const mergedByNorm = new Map<string, ExtractedTag>();
-  for (const line of [...isoLinesRaw].sort((a, b) => (a.sourcePage ?? 0) - (b.sourcePage ?? 0))) {
-    const existing = mergedByNorm.get(line.tagNumberNormalized);
-    if (!existing) {
-      mergedByNorm.set(line.tagNumberNormalized, line);
-      continue;
-    }
-    const merged: Record<string, unknown> = { ...(existing.attributes as Record<string, unknown>) };
-    for (const [key, value] of Object.entries(line.attributes as Record<string, unknown>)) {
-      const isEmptyArray = Array.isArray(value) && value.length === 0;
-      if (isBlank(value) && !Array.isArray(value)) continue;
-      if (isEmptyArray) continue;
-      if (isBlank(merged[key]) || (Array.isArray(merged[key]) && (merged[key] as unknown[]).length === 0)) merged[key] = value;
-    }
-    mergedByNorm.set(line.tagNumberNormalized, { ...existing, attributes: merged });
-  }
-  const isoLines = [...mergedByNorm.values()];
+  const isoLines = mergeIsoLineSheets(allTags.filter((t) => t.documentId === isoDocumentId && t.tagType === "line"));
   const isoBomItems = allTags.filter((t) => t.documentId === isoDocumentId && t.tagType === "bom_item");
   const pllLines = pllDocumentId ? allTags.filter((t) => t.documentId === pllDocumentId && t.tagType === "line") : [];
   const specClasses = specDocumentId ? allTags.filter((t) => t.documentId === specDocumentId && t.tagType === "spec_class") : [];
@@ -370,15 +348,25 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
       const pidLineAttrsForRoute = matches.map((m) => m.attributes as Record<string, unknown>);
       const endpoints = pidEndpointSet(pidLineAttrsForRoute);
       if (endpoints.size > 0) {
-        if (!isBlank(attrs.from_location) && !endpointInSet(attrs.from_location, endpoints)) {
-          out.push(
-            makeFinding(projectId, line, isoDocumentId, matches[0].documentId, "3.route_from", String(attrs.from_location), [...endpoints].join(" / "), "warning", `ISO "from" endpoint for line ${line.tagNumber} does not correspond to any P&ID endpoint for this line.`)
-          );
-        }
-        if (!isBlank(attrs.to_location) && !endpointInSet(attrs.to_location, endpoints)) {
-          out.push(
-            makeFinding(projectId, line, isoDocumentId, matches[0].documentId, "3.route_to", String(attrs.to_location), [...endpoints].join(" / "), "warning", `ISO "to" endpoint for line ${line.tagNumber} does not correspond to any P&ID endpoint for this line.`)
-          );
+        for (const [field, value, label] of [
+          ["3.route_from", attrs.from_location, "from"],
+          ["3.route_to", attrs.to_location, "to"],
+        ] as const) {
+          if (isBlank(value)) continue;
+          // A continuation reference names another drawing, not equipment --
+          // nothing on the P&ID to compare it against, so it's reported as
+          // information rather than a mismatch.
+          if (isContinuationRef(value)) {
+            out.push(
+              makeFinding(projectId, line, isoDocumentId, matches[0].documentId, field, String(value), null, "info", `ISO "${label}" endpoint for line ${line.tagNumber} is a continuation reference to another drawing, so it can't be compared with the P&ID's equipment -- follow it onto that drawing to close the trace.`)
+            );
+            continue;
+          }
+          if (!endpointInSet(value, endpoints)) {
+            out.push(
+              makeFinding(projectId, line, isoDocumentId, matches[0].documentId, field, String(value), [...endpoints].join(" / "), "warning", `ISO "${label}" endpoint for line ${line.tagNumber} does not correspond to any P&ID endpoint for this line.`)
+            );
+          }
         }
       }
 
@@ -770,6 +758,54 @@ export function buildDesignBasisComparison(isoAttrs: Record<string, unknown>, pl
   });
 }
 
+// A multi-sheet drawing yields one line tag per sheet, all carrying the same
+// line number. Collapsed into one line per number so each gate reports a
+// finding once rather than once per sheet.
+//
+// Endpoints are taken from the ends of the whole run, not from any one sheet:
+// the run STARTS on the first sheet and ENDS on the last, so from_location
+// comes from the lowest-numbered sheet that states one and to_location from
+// the highest. (Every other field is filled from whichever sheet has it --
+// notably spec_breaks, which exist only on the sheet that draws the break.)
+export function mergeIsoLineSheets(lines: ExtractedTag[]): ExtractedTag[] {
+  const byNorm = new Map<string, ExtractedTag[]>();
+  for (const line of lines) {
+    const list = byNorm.get(line.tagNumberNormalized) ?? [];
+    list.push(line);
+    byNorm.set(line.tagNumberNormalized, list);
+  }
+
+  return [...byNorm.values()].map((sheets) => {
+    if (sheets.length === 1) return sheets[0];
+    const ordered = [...sheets].sort((a, b) => (a.sourcePage ?? 0) - (b.sourcePage ?? 0));
+    const merged: Record<string, unknown> = { ...(ordered[0].attributes as Record<string, unknown>) };
+    for (const sheet of ordered.slice(1)) {
+      for (const [key, value] of Object.entries(sheet.attributes as Record<string, unknown>)) {
+        if (Array.isArray(value) ? value.length === 0 : isBlank(value)) continue;
+        const current = merged[key];
+        const currentEmpty = Array.isArray(current) ? current.length === 0 : isBlank(current);
+        if (currentEmpty) merged[key] = value;
+      }
+    }
+    // First sheet that states a start, last sheet that states an end.
+    const firstFrom = ordered.find((s) => !isBlank((s.attributes as Record<string, unknown>).from_location));
+    const lastTo = [...ordered].reverse().find((s) => !isBlank((s.attributes as Record<string, unknown>).to_location));
+    if (firstFrom) merged.from_location = (firstFrom.attributes as Record<string, unknown>).from_location;
+    if (lastTo) merged.to_location = (lastTo.attributes as Record<string, unknown>).to_location;
+    return { ...ordered[0], attributes: merged };
+  });
+}
+
+// An ISO endpoint can be a continuation reference to another drawing
+// ("CONT. ON 18\"-22-214-01-CRD-0001-BC70N-N", "CONT. FROM DRG 2") rather
+// than an equipment/nozzle tag. That names a drawing, not a piece of
+// equipment, so it is not comparable to the P&ID's from/to equipment --
+// reporting it as a routing mismatch would be a false positive.
+function isContinuationRef(value: unknown): boolean {
+  if (isBlank(value)) return false;
+  return /\bCONT\b|\bCONT'?D\b|\bCONTINUE/i.test(String(value)) || /\bDRG\b|\bDWG\b/i.test(String(value));
+}
+
 function isBlank(value: unknown): boolean {
   if (value == null) return true;
   const s = String(value).trim().toUpperCase();
@@ -969,7 +1005,9 @@ export function buildRoutingFittingComparison(
     const isoValue = isBlank(isoVal) ? null : String(isoVal);
     const pidValue = pidList.length ? pidList.join(" / ") : null;
     let status: RoutingFittingRow["status"];
-    if (isoValue == null || endpoints.size === 0) status = "not compared";
+    // A continuation reference points at another drawing, not equipment, so
+    // there is nothing on the P&ID to compare it with -- not a mismatch.
+    if (isoValue == null || endpoints.size === 0 || isContinuationRef(isoVal)) status = "not compared";
     else status = endpointInSet(isoVal, endpoints) ? "match" : "mismatch";
     return { field: label, isoValue, pidValue, status };
   };

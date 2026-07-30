@@ -3,7 +3,13 @@ import { desc, eq, inArray, and } from "drizzle-orm";
 import { documents, extractionJobs, extractionResults, extractedTags, findings } from "@easy/db";
 import { normalizeTagNumber, enrichIsoLineAttrs } from "@easy/shared";
 import { getDb } from "@/lib/db";
-import { buildDesignBasisComparison, buildRoutingFittingComparison, type DesignBasisRow, type RoutingFittingRow } from "@/lib/verifyIso";
+import {
+  buildDesignBasisComparison,
+  buildRoutingFittingComparison,
+  mergeIsoLineSheets,
+  type DesignBasisRow,
+  type RoutingFittingRow,
+} from "@/lib/verifyIso";
 import { verifyIsoAction } from "./actions";
 import { ExtractedTagsTable, type TagGroup } from "./ExtractedTagsTable";
 
@@ -131,10 +137,11 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
     // line number -- rendered for every ISO line whether or not Verify has
     // been run, so the side-by-side view is always current.
     const isoLineTagsAll = tags.filter((t) => t.tagType === "line");
-    // A multi-sheet drawing has one line tag per sheet, all with the same line
-    // number -- collapse to one per line so the comparison tables aren't
-    // repeated per sheet. The per-sheet tags stay available via sourcePage.
-    const isoLineTags = [...new Map(isoLineTagsAll.map((t) => [t.tagNumberNormalized, t] as const)).values()];
+    // One line tag per sheet on a multi-sheet drawing -- collapse to one per
+    // line so the comparison tables aren't repeated per sheet. The merge takes
+    // the run's start from the first sheet and its end from the last (see
+    // mergeIsoLineSheets); per-sheet tags stay available via sourcePage.
+    const isoLineTags = mergeIsoLineSheets(isoLineTagsAll);
     if (pllOptions.length > 0 && isoLineTags.length > 0) {
       const pllTags = await db
         .select()
