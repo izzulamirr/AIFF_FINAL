@@ -12,7 +12,7 @@ import {
 } from "@easy/extraction-schemas";
 import { normalizeSlope } from "@easy/shared";
 import { callTool, callWithRetry } from "./claudeClient";
-import { renderPdfPages } from "../pdfImages";
+import { renderPdfPages, renderPdfPageTiles } from "../pdfImages";
 import type { DocTypeExtractor, ExtractionContext, TagDraft } from "./types";
 
 interface LocatePidResult {
@@ -107,6 +107,7 @@ export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProg
   const allPageNumbers = pages.map((p) => p.pageNumber);
   const renderedPages = pdfBuffer ? await renderPdfPages(pdfBuffer, allPageNumbers) : [];
   const imageByPage = new Map(renderedPages.map((r) => [r.pageNumber, r.pngBase64]));
+  const tilesByPage = pdfBuffer ? await renderPdfPageTiles(pdfBuffer, allPageNumbers) : [];
 
   const locate = await callWithRetry(() =>
     callTool<LocatePidResult>(client, {
@@ -173,9 +174,14 @@ export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProg
   for (let i = 0; i < locate.sheets.length; i++) {
     const sheet = locate.sheets[i];
     const sheetText = sliceText(pageList, sheet.pages);
-    const sheetImages = pageRangeToNumbers(sheet.pages)
-      .map((n) => imageByPage.get(n))
-      .filter((img): img is string => Boolean(img));
+    const sheetPageNumbers = pageRangeToNumbers(sheet.pages);
+    const sheetImages = sheetPageNumbers.map((n) => imageByPage.get(n)).filter((img): img is string => Boolean(img));
+    // Process sheets go out as the whole sheet PLUS overlapping tiles: the
+    // full view carries the layout and how lines connect, the tiles carry
+    // enough resolution to read a valve's centre marking (see
+    // renderPdfPageTiles). Legend sheets stay whole-sheet -- their symbols are
+    // drawn large in a table and were already read correctly.
+    const sheetTiles = tilesByPage.filter((t) => sheetPageNumbers.includes(t.pageNumber));
 
     if (sheet.sheet_type === "legend") {
       const result = await callWithRetry(() =>
@@ -198,7 +204,9 @@ export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProg
           tool: PID_SHEET_TOOL,
           systemPrompt: SYSTEM_PROMPT,
           userText:
-            `${sheetText}\n\nThis is P&ID sheet "${sheet.sheet_number}". The attached page image is the actual drawing -- read valve and instrument symbol shapes from the image to determine their type, not just the text labels.${legendContext}\n\n` +
+            `${sheetText}\n\nThis is P&ID sheet "${sheet.sheet_number}". The FIRST attached image is the whole sheet -- use it for layout and for tracing where each line runs. ` +
+            `The REMAINING ${sheetTiles.length} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${sheetTiles[0]?.cols ?? 3}x${sheetTiles[0]?.rows ?? 2} slice of it at far higher resolution. ` +
+            `Symbol detail is only legible in the TILES: decide every valve type, fitting and spec-break marker from them, and use the whole-sheet image only to work out what connects to what. Adjacent tiles OVERLAP, so a symbol appearing in two tiles is ONE symbol -- do not count it twice.${legendContext}\n\n` +
             `For each line, trace it across the sheet from end to end. Record from/to as equipment TAGS (prefer "V-A100" over a display name like "CONTACTOR A"); where the line enters or leaves via an off-page connector (two-way "FROM / TO" arrow box), record the far-side equipment tag from the connector label, and put the connector's target drawing/sheet reference in continues_on. Record any printed slope annotation (e.g. "1:100").\n\n` +
             `Trace each line to its ACTUAL TERMINUS and record everything up to it -- do not stop at the first valve station or at the point the line stops being labelled. A run ends at an equipment nozzle, an off-page connector, or a tie-in arrow into another header; the last few symbols before that tie-in are the ones most often missed. CHECK VALVES in particular are easy to overlook: they are drawn as a small arrow/zigzag in the pipe rather than a bowtie, frequently carry no tag, often sit in pairs (a "dissimilar type" pair called out by a note) immediately before the tie-in, and they ARE valves -- record every one.\n\n` +
             `VALVE TYPE is decided by the CENTRE of the symbol, not by its outline. Gate, ball and globe valves are all the same bowtie/hourglass and differ ONLY by what sits in the middle: gate = nothing in the centre, ball = an OPEN (unfilled) circle in the centre, globe = a SOLID FILLED circle in the centre. Zoom in on each valve and decide from that centre marking; do not default to "gate valve" for every bowtie. A run of large-bore isolation valves that all show an open circle is a run of BALL valves. Check the legend's "drawn as" description for any symbol you are unsure of.\n\n` +
@@ -210,7 +218,7 @@ export const extractPidDocument: DocTypeExtractor = async (pages, apiKey, onProg
             `Extract its lines/valves/fittings/instruments via the record_pid_sheet tool call.`,
           maxTokens: 16000,
           useThinking: true,
-          images: sheetImages,
+          images: [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)],
         })
       );
       allSheets.push({ sheet_number: sheet.sheet_number, result });

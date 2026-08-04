@@ -51,6 +51,75 @@ class NodeCanvasFactory {
   }
 }
 
+// The API downsamples any image to ~1568 px on its long edge before the model
+// sees it. A large-format drawing is 2384x1684 pt, so the WHOLE sheet arrives
+// at 1568 px wide and a 3" valve symbol is about 10 px across -- too small to
+// tell an empty bowtie (gate) from one with an open circle (ball) or a filled
+// circle (globe). Rendering at a higher scale does not help: the extra pixels
+// are thrown away before the model reads them.
+//
+// Splitting the sheet into overlapping tiles is the only way to raise the
+// resolution the model actually receives: each tile covers ~1/6 of the sheet
+// and is downsampled to 1568 px on its own, so the same symbol arrives around
+// 3x larger in each direction. Tiles overlap so a symbol sitting on a cut line
+// is whole in at least one of them.
+export interface RenderedTile {
+  pageNumber: number;
+  row: number;
+  col: number;
+  cols: number;
+  rows: number;
+  pngBase64: string;
+}
+
+const TILE_COLS = 3;
+const TILE_ROWS = 2;
+const TILE_OVERLAP = 0.08; // fraction of a tile repeated on each side
+
+export async function renderPdfPageTiles(
+  filePathOrBuffer: string | Buffer,
+  pageNumbers: number[],
+  cols = TILE_COLS,
+  rows = TILE_ROWS
+): Promise<RenderedTile[]> {
+  const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
+  const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;
+
+  const tiles: RenderedTile[] = [];
+  for (const pageNumber of pageNumbers) {
+    if (pageNumber < 1 || pageNumber > pdf.numPages) continue;
+    const page = await pdf.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
+    const full = createCanvas(viewport.width, viewport.height);
+    await page.render({ canvasContext: full.getContext("2d"), viewport }).promise;
+
+    const tileW = viewport.width / cols;
+    const tileH = viewport.height / rows;
+    const padX = tileW * TILE_OVERLAP;
+    const padY = tileH * TILE_OVERLAP;
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const sx = Math.max(0, col * tileW - padX);
+        const sy = Math.max(0, row * tileH - padY);
+        const sw = Math.min(viewport.width - sx, tileW + padX * 2);
+        const sh = Math.min(viewport.height - sy, tileH + padY * 2);
+        const tile = createCanvas(Math.round(sw), Math.round(sh));
+        tile.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, Math.round(sw), Math.round(sh));
+        tiles.push({
+          pageNumber,
+          row: row + 1,
+          col: col + 1,
+          cols,
+          rows,
+          pngBase64: tile.toBuffer("image/png").toString("base64"),
+        });
+      }
+    }
+  }
+  return tiles;
+}
+
 export async function renderPdfPages(filePathOrBuffer: string | Buffer, pageNumbers: number[]): Promise<RenderedPage[]> {
   const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
   const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;

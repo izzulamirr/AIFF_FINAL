@@ -126,11 +126,19 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
       .from(extractionJobs)
       .innerJoin(documents, eq(documents.id, extractionJobs.documentId))
       .where(eq(documents.projectId, projectId));
-    const latestStatusByDoc = new Map<string, string>();
+    // Keep the NEWEST job per document, by timestamp. A document accumulates
+    // one job row per attempt, and the query has no ORDER BY, so "the first
+    // row seen" is whatever order Postgres happens to return -- which for a
+    // document that failed a few times before succeeding is usually a failed
+    // one. That made a successfully extracted P&ID vanish from this page's
+    // dropdowns while the project listing (which does compare timestamps)
+    // showed it as succeeded.
+    const latestJobByDoc = new Map<string, (typeof siblingJobs)[number]["job"]>();
     for (const { job } of siblingJobs) {
-      const existingStatus = latestStatusByDoc.get(job.documentId);
-      if (!existingStatus) latestStatusByDoc.set(job.documentId, job.status);
+      const existing = latestJobByDoc.get(job.documentId);
+      if (!existing || job.createdAt > existing.createdAt) latestJobByDoc.set(job.documentId, job);
     }
+    const latestStatusByDoc = new Map([...latestJobByDoc].map(([docId2, job]) => [docId2, job.status] as const));
 
     const succeeded = siblingDocs.filter((d) => d.id !== docId && latestStatusByDoc.get(d.id) === "succeeded");
     pllOptions = succeeded.filter((d) => d.docType === "pll");

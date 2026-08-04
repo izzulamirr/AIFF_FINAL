@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createHash } from "node:crypto";
-import { eq, and } from "drizzle-orm";
-import { documents, extractionJobs, projects, organizationMembers } from "@easy/db";
+import { eq, and, or } from "drizzle-orm";
+import { documents, extractionJobs, findings, projects, organizationMembers } from "@easy/db";
 import { DOC_TYPES, type DocType } from "@easy/shared";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -24,6 +24,42 @@ export async function requireProjectMembership(projectId: string, userId: string
     )
     .where(eq(projects.id, projectId));
   if (!row) throw new Error("Not a member of this project's organization.");
+}
+
+// Deletes a document and everything derived from it. document_pages,
+// extraction_jobs, extraction_results and extracted_tags cascade from
+// documents, but findings do NOT: findings.doc_a_id/doc_b_id are plain
+// references with no ON DELETE, so a document that has raised any finding
+// cannot be deleted until those rows go first. They are derived data --
+// re-running Verify regenerates them -- so removing them here is safe.
+// The Storage object also has to go by hand, or every deleted document
+// leaves its file orphaned in the bucket forever.
+export async function deleteDocument(projectId: string, documentId: string) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated.");
+  await requireProjectMembership(projectId, user.id);
+
+  const db = getDb();
+  const [document] = await db.select().from(documents).where(eq(documents.id, documentId));
+  if (!document) throw new Error("Document not found.");
+  // Membership is checked against the URL's project, so a document belonging
+  // to a different project must not be deletable through it.
+  if (document.projectId !== projectId) throw new Error("Document does not belong to this project.");
+
+  const adminStorage = createAdminClient();
+  const { error: removeError } = await adminStorage.storage.from(STORAGE_BUCKET).remove([document.storagePath]);
+  // A missing object is fine -- some documents were seeded without a file --
+  // but a real storage failure should not leave the row behind, so surface it.
+  if (removeError && !/not found/i.test(removeError.message)) {
+    throw new Error(`Storage delete failed: ${removeError.message}`);
+  }
+
+  await db.delete(findings).where(or(eq(findings.docAId, documentId), eq(findings.docBId, documentId)));
+  await db.delete(documents).where(eq(documents.id, documentId));
+  revalidatePath(`/projects/${projectId}`);
 }
 
 export async function uploadDocument(projectId: string, formData: FormData) {

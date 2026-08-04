@@ -3,7 +3,8 @@ import { eq } from "drizzle-orm";
 import { documents, extractionJobs, projects } from "@easy/db";
 import { getDb } from "@/lib/db";
 import { MAX_UPLOAD_MB } from "@/lib/uploadLimits";
-import { uploadDocument } from "./actions";
+import { deleteDocument, uploadDocument } from "./actions";
+import { DeleteDocumentButton } from "./DeleteDocumentButton";
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   pid: "P&ID",
@@ -93,6 +94,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
             <th>Type</th>
             <th>Pages</th>
             <th>Extraction status</th>
+            <th className="w-px"></th>
           </tr>
         </thead>
         <tbody>
@@ -122,12 +124,21 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
                     "no job"
                   )}
                 </td>
+                <td className="py-2 text-right">
+                  <DeleteDocumentButton
+                    fileName={doc.fileName}
+                    onDelete={async () => {
+                      "use server";
+                      await deleteDocument(id, doc.id);
+                    }}
+                  />
+                </td>
               </tr>
             );
           })}
           {projectDocuments.length === 0 && (
             <tr>
-              <td colSpan={4} className="py-4 text-gray-500">
+              <td colSpan={5} className="py-4 text-gray-500">
                 No documents uploaded yet.
               </td>
             </tr>
