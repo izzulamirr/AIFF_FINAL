@@ -6,6 +6,11 @@ import { getDb } from "@/lib/db";
 import {
   buildDesignBasisComparison,
   buildRoutingFittingComparison,
+  buildValveMatch,
+  type ValveMatchGroup,
+  countPidValves,
+  isoSpecClasses,
+  matchesLineAcrossSpecBreak,
   mergeIsoLineSheets,
   type DesignBasisRow,
   type RoutingFittingRow,
@@ -89,7 +94,12 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
   let designBasis: Array<{ lineNumber: string; pllDocName: string | null; rows: DesignBasisRow[] | null }> = [];
   // One entry per ISO line: routing + fitting count vs the project's P&IDs
   // (rows null when the line isn't found on any P&ID / none uploaded yet).
-  let routingFittings: Array<{ lineNumber: string; pidDocNames: string[]; rows: RoutingFittingRow[] | null }> = [];
+  let routingFittings: Array<{
+    lineNumber: string;
+    pidDocNames: string[];
+    rows: RoutingFittingRow[] | null;
+    valveMatch?: ValveMatchGroup[];
+  }> = [];
   // BOM grouped by the class that governs each item, one block per SHEET --
   // a multi-sheet drawing carries a separate BOM per sheet and a spec break
   // ("MATL <class>" callouts either side of a joint) applies to the sheet
@@ -233,11 +243,15 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         if (pidLineMatches.length === 0) return { lineNumber: line.tagNumber, pidDocNames: [], rows: null };
 
         const pidLineAttrs = pidLineMatches.map((t) => t.attributes as Record<string, unknown>);
-        const pidValveCount = pidTags.filter((t) => {
-          if (t.tagType !== "valve") return false;
-          const ref = (t.attributes as Record<string, unknown>).line_number;
-          return typeof ref === "string" && normalizeTagNumber(ref) === norm;
-        }).length;
+        const isoAttrsForSpec = enrichIsoLineAttrs(line.tagNumber, line.attributes as Record<string, unknown>);
+        const specClasses = isoSpecClasses(isoAttrsForSpec);
+        // Valves are matched across the spec break: past the break the run
+        // carries a different line number, and those valves are still part of
+        // this ISO drawing.
+        const pidLineValveAttrs = pidTags
+          .filter((t) => t.tagType === "valve" && matchesLineAcrossSpecBreak((t.attributes as Record<string, unknown>).line_number, line.tagNumber, specClasses))
+          .map((t) => t.attributes as Record<string, unknown>);
+        const pidValveCount = countPidValves(pidLineValveAttrs);
         const bomForLine = isoBomTags
           .filter((b) => {
             const ln = (b.attributes as Record<string, unknown>).line_number;
@@ -245,15 +259,16 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
           })
           .map((b) => b.attributes as Record<string, unknown>);
         const pidLineFittings = pidTags
-          .filter((t) => {
-            if (t.tagType !== "fitting") return false;
-            const ref = (t.attributes as Record<string, unknown>).line_number;
-            return typeof ref === "string" && normalizeTagNumber(ref) === norm;
-          })
+          .filter((t) => t.tagType === "fitting" && matchesLineAcrossSpecBreak((t.attributes as Record<string, unknown>).line_number, line.tagNumber, specClasses))
           .map((t) => t.attributes as Record<string, unknown>);
-        const isoAttrs = enrichIsoLineAttrs(line.tagNumber, line.attributes as Record<string, unknown>);
+        const isoAttrs = isoAttrsForSpec;
         const pidDocNames = Array.from(new Set(pidLineMatches.map((t) => docNameById.get(t.documentId) ?? t.documentId)));
-        return { lineNumber: line.tagNumber, pidDocNames, rows: buildRoutingFittingComparison(isoAttrs, bomForLine, pidLineAttrs, pidValveCount, pidLineFittings) };
+        return {
+          lineNumber: line.tagNumber,
+          pidDocNames,
+          rows: buildRoutingFittingComparison(isoAttrs, bomForLine, pidLineAttrs, pidValveCount, pidLineFittings),
+          valveMatch: buildValveMatch(bomForLine, pidLineValveAttrs),
+        };
       });
     }
   }
@@ -407,6 +422,77 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
               )}
             </div>
           ))}
+
+          {routingFittings.some((r) => r.valveMatch && r.valveMatch.length > 0) && (
+            <>
+              <h3 className="mb-2 mt-4 font-medium">Valve match: ISO vs P&amp;ID</h3>
+              <p className="mb-2 text-xs text-gray-500">
+                Paired on valve type and nominal size (the ISO BOM aggregates by quantity and most P&amp;ID valves are untagged, so
+                neither side can be matched by tag). Disagreements are listed first.
+              </p>
+              {routingFittings
+                .filter((r): r is typeof r & { valveMatch: ValveMatchGroup[] } => Boolean(r.valveMatch?.length))
+                .map(({ lineNumber, valveMatch: groups }) => (
+                  <div key={lineNumber} className="mb-4">
+                    <p className="mb-2 text-sm">
+                      Line <span className="font-mono">{lineNumber}</span>
+                      <span className="ml-2 text-gray-500">
+                        {groups.length > 1 ? `${groups.length} material classes along the run` : "single material class"}
+                      </span>
+                    </p>
+                    {groups.map((group) => (
+                      <div
+                        key={group.specClass}
+                        className={`mb-4 rounded border p-3 ${group.specClass === "unassigned" ? "border-amber-500" : ""}`}
+                      >
+                        <p className="mb-2 text-sm font-medium">
+                          <span className="font-mono">{group.specClass}</span>
+                          <span className="ml-3 font-normal text-gray-500">
+                            ISO {group.isoTotal} / P&amp;ID {group.pidTotal}
+                          </span>
+                        </p>
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="border-b">
+                              <th className="py-1">Valve type</th>
+                              <th>Size</th>
+                              <th>ISO</th>
+                              <th>P&amp;ID</th>
+                              <th>ISO description</th>
+                              <th>P&amp;ID tag</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {group.rows.map((row) => (
+                              <tr key={`${row.category}-${row.size}`} className="border-b">
+                                <td className="py-1">{row.category}</td>
+                                <td className="font-mono text-xs">{row.size}</td>
+                                <td>{row.isoCount || "-"}</td>
+                                <td>{row.pidCount || "-"}</td>
+                                <td className="text-xs text-gray-500">{row.isoDetail ?? "-"}</td>
+                                <td className="text-xs text-gray-500">{row.pidDetail ?? "-"}</td>
+                                <td
+                                  className={
+                                    row.status === "match"
+                                      ? "text-green-600"
+                                      : row.status === "count mismatch"
+                                        ? "text-amber-600"
+                                        : "text-red-600"
+                                  }
+                                >
+                                  {row.status}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </>
+          )}
 
           {bomBySpec.length > 0 && (
             <>

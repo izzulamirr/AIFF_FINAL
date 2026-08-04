@@ -1,6 +1,7 @@
 import "dotenv/config";
+import { and, eq, lt } from "drizzle-orm";
 import { createClient } from "@supabase/supabase-js";
-import { createDb } from "@easy/db";
+import { createDb, extractionJobs } from "@easy/db";
 import { getQueue, EXTRACT_DOCUMENT_QUEUE, type ExtractDocumentJobData } from "./queue";
 import { runExtractionJob } from "./pipeline";
 
@@ -15,10 +16,38 @@ function requireEnv(name: string): string {
   return value;
 }
 
+// A job is only ever moved out of 'running' by the process that owns it, so
+// if this worker is killed mid-extraction (crash, redeploy, Ctrl-C) the row
+// stays 'running' forever and apps/web shows that document as permanently
+// processing, with no way to retry it. Any job still 'running' when a worker
+// starts up was started by a process that no longer exists. The age threshold
+// only matters if a second worker is running concurrently -- it keeps this
+// from reaping a job that another worker legitimately has in flight.
+const STALE_RUNNING_JOB_MINUTES = 15;
+
+async function failOrphanedJobs(db: ReturnType<typeof createDb>) {
+  const cutoff = new Date(Date.now() - STALE_RUNNING_JOB_MINUTES * 60_000);
+  const orphaned = await db
+    .update(extractionJobs)
+    .set({
+      status: "failed",
+      finishedAt: new Date(),
+      errorMessage: "Extraction was interrupted -- the worker stopped while this document was being processed. Re-run the extraction.",
+    })
+    .where(and(eq(extractionJobs.status, "running"), lt(extractionJobs.startedAt, cutoff)))
+    .returning({ id: extractionJobs.id, documentId: extractionJobs.documentId });
+
+  for (const job of orphaned) {
+    console.log(`[worker] recovered orphaned job ${job.id} (document ${job.documentId}) -- marked failed`);
+  }
+}
+
 async function main() {
   const db = createDb(DATABASE_URL);
   const storage = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const boss = await getQueue(DATABASE_URL);
+
+  await failOrphanedJobs(db);
 
   console.log(`[worker] listening on queue "${EXTRACT_DOCUMENT_QUEUE}"`);
 

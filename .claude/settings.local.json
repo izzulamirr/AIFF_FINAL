@@ -17,7 +17,11 @@
       "Bash(DATABASE_URL='postgresql://postgres.cdepfdbgjzbspmcwniil:akmal%40kl$8kl$8@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres' node showfindings2.mjs)",
       "Bash(rm -f showfindings2.mjs)",
       "Bash(rm -f \"c:/Users/User/Desktop/AIFF/apps/web/src/testVerify.ts\" \"c:/Users/User/Desktop/AIFF/apps/worker/src/reExtractPid.ts\")",
-      "Bash(pnpm remove *)"
+      "Bash(pnpm remove *)",
+      "Bash(./node_modules/.bin/tsx src/_reextract.ts c5fce91f pid)",
+      "Bash(python -c ' *)",
+      "Bash(./node_modules/.bin/tsx src/_p2.ts)",
+      "Bash(./node_modules/.bin/tsx src/_fixValves.ts --apply)"
     ]
   }
 }

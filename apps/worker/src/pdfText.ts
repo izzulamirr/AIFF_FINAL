@@ -3,6 +3,8 @@
 // legacy Node build, tolerant of a page whose text layer fails (a scanned
 // image page, or a corrupt page) rather than aborting the whole document.
 import { readFile } from "node:fs/promises";
+// Must come before the pdf.js require -- see pdfPolyfills.ts.
+import "./pdfPolyfills";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 

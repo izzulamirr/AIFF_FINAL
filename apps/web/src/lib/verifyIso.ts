@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { extractedTags, findings, documents } from "@easy/db";
 import {
   normalizeTagNumber,
@@ -91,14 +91,26 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
   // simplified instrument bubble, but the legend's details column says what
   // the assembly really contains (orifice plate + isolation valves, TW
   // thermowell + spec break, ...) -- parts that appear on the ISO even
-  // though the P&ID never draws them. Fetched project-wide (the legend is
-  // its own document, not one of the selected docs).
-  const legendTypicals = (
-    await db
-      .select()
-      .from(extractedTags)
-      .where(and(eq(extractedTags.projectId, projectId), eq(extractedTags.tagType, "legend_item")))
-  ).filter((t) => {
+  // though the P&ID never draws them. Fetched project-wide because the legend
+  // is its own document rather than one of the selected docs -- but strictly
+  // within THIS project, and from only its newest legend document, so a
+  // duplicate legend upload cannot double-count typicals.
+  const allLegendItems = await db
+    .select()
+    .from(extractedTags)
+    .where(and(eq(extractedTags.projectId, projectId), eq(extractedTags.tagType, "legend_item")));
+  const legendDocumentIds = [...new Set(allLegendItems.map((t) => t.documentId))];
+  let scopedLegendItems = allLegendItems;
+  if (legendDocumentIds.length > 1) {
+    const [newestLegend] = await db
+      .select({ id: documents.id })
+      .from(documents)
+      .where(inArray(documents.id, legendDocumentIds))
+      .orderBy(desc(documents.uploadedAt))
+      .limit(1);
+    if (newestLegend) scopedLegendItems = allLegendItems.filter((t) => t.documentId === newestLegend.id);
+  }
+  const legendTypicals = scopedLegendItems.filter((t) => {
     const a = t.attributes as Record<string, unknown>;
     return typeof a.implied_components === "string" && a.implied_components.trim().length > 0;
   });
@@ -381,7 +393,12 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
         const ref = (t.attributes as Record<string, unknown>)[key];
         return typeof ref === "string" && normalizeTagNumber(ref) === lineNorm;
       };
-      const pidLineValves = pidValves.filter((v) => refersToLine(v, "line_number"));
+      // Valves are matched across the spec break -- past it the run carries a
+      // different line number, but those valves are still on this drawing.
+      const specClasses = isoSpecClasses(isoAttrsByTagId.get(line.id)!);
+      const pidLineValves = pidValves.filter((v) =>
+        matchesLineAcrossSpecBreak((v.attributes as Record<string, unknown>).line_number, line.tagNumber, specClasses)
+      );
       const pidLineInstruments = pidInstruments.filter((i) => refersToLine(i, "line_or_equipment_ref"));
 
       const bomForLine = isoBomItems.filter((b) => {
@@ -392,9 +409,12 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
         .filter((b) => String((b.attributes as Record<string, unknown>).component_type ?? "").toLowerCase().includes("valve"))
         .reduce((sum, b) => sum + (parseNumber((b.attributes as Record<string, unknown>).quantity) ?? 1), 0);
 
-      if (pidLineValves.length > 0 && bomValveCount < pidLineValves.length) {
+      // By quantity, not by row: one valve row can stand for several
+      // identical valves, and untagged hand valves count like tagged ones.
+      const pidValveCount = countPidValves(pidLineValves.map((v) => v.attributes as Record<string, unknown>));
+      if (pidValveCount > 0 && bomValveCount < pidValveCount) {
         out.push(
-          makeFinding(projectId, line, isoDocumentId, matches[0].documentId, "3.valves", String(bomValveCount), String(pidLineValves.length), "warning", `Across all selected P&IDs, ${pidLineValves.length} valve(s) are shown on line ${line.tagNumber}, but the ISO BOM only lists ${bomValveCount}.`)
+          makeFinding(projectId, line, isoDocumentId, matches[0].documentId, "3.valves", String(bomValveCount), String(pidValveCount), "warning", `Across all selected P&IDs, ${pidValveCount} valve(s) are shown on line ${line.tagNumber}, but the ISO BOM only lists ${bomValveCount}.`)
         );
       }
 
@@ -906,7 +926,18 @@ function mapComponentCategory(componentType: string | undefined): "pipes" | "fit
 // ---- Routing & fitting count (gate 3, ISO vs P&ID) --------------------
 // A BOM row's component_type + description are read together (the type is
 // often just "FITTINGS" while the description says "90 DEG LR ELBOW").
-type FittingCategory = "valves" | "elbows" | "tees" | "reducers" | "flanges" | "olets" | "caps" | "couplings" | "expansion joints" | "other fittings";
+type FittingCategory =
+  | "valves"
+  | "elbows"
+  | "tees"
+  | "reducers"
+  | "flanges"
+  | "spectacle blinds"
+  | "olets"
+  | "caps"
+  | "couplings"
+  | "expansion joints"
+  | "other fittings";
 
 function classifyFitting(componentType: unknown, description: unknown): FittingCategory | null {
   const ct = String(componentType ?? "").toLowerCase();
@@ -914,23 +945,260 @@ function classifyFitting(componentType: unknown, description: unknown): FittingC
   // Non-fittings first: fasteners, pipe stock, supports, instruments.
   if (/gasket|\bbolt\b|\bstud\b|\bnut\b|washer/.test(t)) return null;
   if (ct.includes("support") || /\bsupport\b/.test(t)) return null;
-  if (ct.includes("instrument")) return null;
-  if (/\bpipe\b/.test(t) && !/elbow|tee|reducer|flange|olet|coupling|\bcap\b|bend|nipple/.test(t)) return null;
   // Per the legend's categories an expansion joint/bellows is an in-line
   // symbol, NOT a valve -- even when it carries a tag (EJ-A101). Checked
   // before the valve keyword so "expansion joint" descriptions that mention
   // valves elsewhere can't misclassify.
   if (/expansion\s*joint|bellows|\bej\b/.test(t)) return "expansion joints";
-  if (t.includes("valve")) return "valves";
-  if (/elbow|\bbend\b/.test(t)) return "elbows";
-  if (/\btee\b/.test(t)) return "tees";
-  if (/reducer|swage/.test(t)) return "reducers";
-  if (t.includes("flange")) return "flanges";
+  // A control valve is a valve even when the BOM files it under INSTRUMENT
+  // (real ISOs do -- FV-0003 is component_type "INSTRUMENT"), so this comes
+  // before the instrument exclusion. Valve ACCESSORIES stay excluded: a
+  // positioner or limit switch is part of its valve, not another valve.
+  if (/valve/.test(t) && !/positioner|actuator|limit\s*switch|solenoid|handswitch|\bhs-|manifold/.test(t)) return "valves";
+  if (ct.includes("instrument")) return null;
+  if (/\bpipe\b/.test(t) && !/elbow|tee|reducer|flange|olet|coupling|\bcap\b|bend|nipple/.test(t)) return null;
+  // BOM descriptions are abbreviated to fit the column, so match on the
+  // stem rather than the full word: a real BOM row reads "REDU CONC ASME
+  // B16.9", not "REDUCER". Matching only full words silently dropped those
+  // rows into "other fittings" and reported the ISO as having 0 reducers
+  // while the P&ID drew 2.
+  if (/\belbo|\bbend\b|\bell\b/.test(t)) return "elbows";
+  if (/\btee\b|\btees\b/.test(t)) return "tees";
+  if (/\bredu|swage|\bred\s*conc|\bred\s*ecc/.test(t)) return "reducers";
+  // Before flanges: a spectacle blind / spade is its own isolation component
+  // and is one of the few things a P&ID actually draws, so it is worth
+  // comparing on its own rather than being absorbed into the flange count.
+  // "BLIND FLANGE" is deliberately NOT caught here -- that is a blanking
+  // flange and belongs with the flanges.
+  if (/spectacle|figure.?8|\bfig\.?\s*8\b|\bspade\b/.test(t)) return "spectacle blinds";
+  if (/flange|\bflg\b|\bflan\b/.test(t)) return "flanges";
   if (/olet|stub.?in|stub.?on/.test(t)) return "olets";
   if (/\bcap\b|\bplug\b/.test(t)) return "caps";
-  if (/coupling|union|nipple/.test(t)) return "couplings";
+  if (/coupling|\bcplg\b|union|\bnipp/.test(t)) return "couplings";
   if (ct.includes("fitting")) return "other fittings";
   return null;
+}
+
+// "Valves" as one number hides the thing a reviewer actually checks: that the
+// ISO has the same KINDS of valve the P&ID calls for. A missing check valve
+// and a spare gate valve cancel out in a total. Both sides are classified
+// into the same vocabulary so they can be compared type by type -- the ISO
+// from its BOM description text, the P&ID from the symbol type read off the
+// drawing.
+export type ValveCategory =
+  | "gate"
+  | "ball"
+  | "globe"
+  | "check"
+  | "butterfly"
+  | "plug"
+  | "needle"
+  | "diaphragm"
+  | "control"
+  | "relief/safety"
+  | "other valves";
+
+export const VALVE_DISPLAY_ORDER: ValveCategory[] = [
+  "gate",
+  "ball",
+  "globe",
+  "check",
+  "butterfly",
+  "plug",
+  "needle",
+  "diaphragm",
+  "control",
+  "relief/safety",
+  "other valves",
+];
+
+export function classifyValve(text: unknown): ValveCategory | null {
+  const t = String(text ?? "").toLowerCase();
+  if (!t.trim()) return null;
+  // Ordered so a compound description lands on its defining word: a
+  // "gate valve, ball type handle" is a gate valve, and "swing check" and
+  // "non-return" are the same category whatever else the row says.
+  if (/check|non.?return|\bnrv\b/.test(t)) return "check";
+  if (/relief|safety|\bpsv\b|\bprv\b|\btsv\b|rupture/.test(t)) return "relief/safety";
+  if (/control valve|\bcv\b-|\bfv-|\bpcv|\btcv|\blcv|\bfcv\b|\bxv-|actuated|emergency isolation|\beiv\b/.test(t)) return "control";
+  if (/\bgate\b/.test(t)) return "gate";
+  if (/\bball\b/.test(t)) return "ball";
+  if (/\bglobe\b/.test(t)) return "globe";
+  if (/butterfly/.test(t)) return "butterfly";
+  if (/\bplug\b/.test(t)) return "plug";
+  if (/needle/.test(t)) return "needle";
+  if (/diaphragm/.test(t)) return "diaphragm";
+  if (/valve/.test(t)) return "other valves";
+  return null;
+}
+
+// NPS to DN. Deliberately a lookup, not a 25.4 multiply: nominal sizes are
+// names, not measurements -- NPS 8 is DN200, not DN203.2 -- so converting
+// arithmetically makes an 8" P&ID valve fail to match a "200" ISO BOM row.
+const NPS_TO_DN: Record<string, number> = {
+  "0.5": 15, "0.75": 20, "1": 25, "1.25": 32, "1.5": 40, "2": 50, "2.5": 65, "3": 80,
+  "4": 100, "5": 125, "6": 150, "8": 200, "10": 250, "12": 300, "14": 350, "16": 400,
+  "18": 450, "20": 500, "24": 600, "28": 700, "30": 750, "36": 900, "42": 1050, "48": 1200,
+};
+const DN_TO_NPS = new Map(Object.entries(NPS_TO_DN).map(([nps, dn]) => [dn, nps]));
+
+// Canonical DN for a size written any way these documents write it: '8"',
+// "8 in", "3/4\"", "200", "200 mm", or a reducer's '8" x 6"' (first size).
+export function normalizeNominalSize(value: unknown): number | null {
+  if (value == null) return null;
+  const first = String(value).split(/x|×/i)[0].trim();
+  if (!first) return null;
+  const fraction = first.match(/^(\d+)?\s*(\d+)\s*\/\s*(\d+)/);
+  const inches = /"|inch|\bin\b|''/.test(first);
+  let num: number | null;
+  if (fraction) {
+    num = (fraction[1] ? Number(fraction[1]) : 0) + Number(fraction[2]) / Number(fraction[3]);
+  } else {
+    num = parseNumber(first);
+  }
+  if (num == null) return null;
+  // A bare number on these BOMs is mm; anything marked in inches, and any
+  // value small enough to only make sense as inches, goes through NPS->DN.
+  if (inches || num <= 48) {
+    const key = String(Number(num.toFixed(2)));
+    return NPS_TO_DN[key] ?? Math.round(num * 25.4);
+  }
+  return Math.round(num);
+}
+
+export function formatNominalSize(dn: number | null): string {
+  if (dn == null) return "unsized";
+  const nps = DN_TO_NPS.get(dn);
+  return nps ? `${nps}" (DN${dn})` : `DN${dn}`;
+}
+
+// Line classes are written with the insulation/service suffix attached in
+// some places ("AC03N-N") and without it in others ("AC03N"), which would
+// otherwise split one class into two rows.
+export function normalizeSpecClass(value: unknown): string | null {
+  if (isBlank(value)) return null;
+  const s = String(value).trim().toUpperCase();
+  const m = s.match(/^([A-Z]{2}\d{2}[A-Z]?)(?:[-\s].*)?$/);
+  return m ? m[1] : s;
+}
+
+// Same quantity-summing rule as the fittings tally, applied per valve type.
+function tallyValves(rows: Array<{ text: unknown; quantity: unknown }>): Map<ValveCategory, number> {
+  const tally = new Map<ValveCategory, number>();
+  for (const row of rows) {
+    const cat = classifyValve(row.text);
+    if (!cat) continue;
+    tally.set(cat, (tally.get(cat) ?? 0) + (parseNumber(row.quantity) ?? 1));
+  }
+  return tally;
+}
+
+export interface ValveMatchRow {
+  category: ValveCategory;
+  size: string;
+  isoCount: number;
+  pidCount: number;
+  isoDetail: string | null;
+  pidDetail: string | null;
+  status: "match" | "iso only" | "pid only" | "count mismatch";
+}
+
+// One block per material class the line passes through. A line with two spec
+// breaks runs three classes, and a valve only means anything against the
+// class governing the segment it sits in -- comparing the whole line at once
+// lets a surplus in one class cancel a shortfall in another.
+export interface ValveMatchGroup {
+  specClass: string;
+  rows: ValveMatchRow[];
+  isoTotal: number;
+  pidTotal: number;
+}
+
+// Pairs the two documents' valves one for one, on type and nominal size, so
+// a reviewer sees WHICH valve disagrees rather than that some total differs.
+// Neither side can be matched by tag: the ISO BOM aggregates by quantity and
+// carries no per-valve tags, and most P&ID valves are untagged. Type + size
+// is the strongest key both sides actually have.
+export function buildValveMatch(
+  isoBom: Array<Record<string, unknown>>,
+  pidValves: Array<Record<string, unknown>>
+): ValveMatchGroup[] {
+  interface Side {
+    count: number;
+    details: string[];
+  }
+  const isoSide = new Map<string, Side>();
+  const pidSide = new Map<string, Side>();
+  const meta = new Map<string, { spec: string; category: ValveCategory; dn: number | null }>();
+
+  const add = (map: Map<string, Side>, spec: string, category: ValveCategory, dn: number | null, qty: number, detail: string) => {
+    const key = `${spec}|${category}|${dn ?? "?"}`;
+    meta.set(key, { spec, category, dn });
+    const side = map.get(key) ?? { count: 0, details: [] };
+    side.count += qty;
+    if (detail && !side.details.includes(detail)) side.details.push(detail);
+    map.set(key, side);
+  };
+
+  for (const item of isoBom) {
+    const text = `${item.component_type ?? ""} ${item.description ?? ""}`;
+    const category = classifyValve(text);
+    if (!category) continue;
+    const spec = normalizeSpecClass(item.item_spec_class) ?? "unassigned";
+    const desc = String(item.description ?? "").split(",")[0].trim();
+    add(isoSide, spec, category, normalizeNominalSize(item.size), parseNumber(item.quantity) ?? 1, desc);
+  }
+  for (const valve of pidValves) {
+    const category = classifyValve(valve.valve_type);
+    if (!category) continue;
+    const spec = normalizeSpecClass(valve.spec_class) ?? "unassigned";
+    const tag = valve.untagged ? "untagged" : String(valve.tag_number ?? "").trim();
+    add(pidSide, spec, category, normalizeNominalSize(valve.size), parseNumber(valve.quantity) ?? 1, tag || "untagged");
+  }
+
+  const rank = { "pid only": 0, "iso only": 1, "count mismatch": 2, match: 3 } as const;
+  const bySpec = new Map<string, ValveMatchRow[]>();
+  for (const key of new Set([...isoSide.keys(), ...pidSide.keys()])) {
+    const { spec, category, dn } = meta.get(key)!;
+    const iso = isoSide.get(key);
+    const pid = pidSide.get(key);
+    const isoCount = iso?.count ?? 0;
+    const pidCount = pid?.count ?? 0;
+    let status: ValveMatchRow["status"];
+    if (isoCount > 0 && pidCount === 0) status = "iso only";
+    else if (pidCount > 0 && isoCount === 0) status = "pid only";
+    else status = isoCount === pidCount ? "match" : "count mismatch";
+    const rows = bySpec.get(spec) ?? [];
+    rows.push({
+      category,
+      size: formatNominalSize(dn),
+      isoCount,
+      pidCount,
+      isoDetail: iso ? iso.details.join(" / ") : null,
+      pidDetail: pid ? pid.details.filter((d) => d !== "untagged").join(" / ") || "untagged" : null,
+      status,
+    });
+    bySpec.set(spec, rows);
+  }
+
+  const groups: ValveMatchGroup[] = [...bySpec.entries()].map(([specClass, rows]) => {
+    // Disagreements first within each class -- the reason the table exists.
+    rows.sort((a, b) => rank[a.status] - rank[b.status] || a.category.localeCompare(b.category));
+    return {
+      specClass,
+      rows,
+      isoTotal: rows.reduce((n, r) => n + r.isoCount, 0),
+      pidTotal: rows.reduce((n, r) => n + r.pidCount, 0),
+    };
+  });
+  // Class order follows the run: the line's own class first, then the classes
+  // it breaks into, with anything unassigned last so it stands out.
+  groups.sort((a, b) => {
+    if (a.specClass === "unassigned") return 1;
+    if (b.specClass === "unassigned") return -1;
+    return a.specClass.localeCompare(b.specClass);
+  });
+  return groups;
 }
 
 // Sums quantity (not row count -- one row can be "ELBOW ... QTY 4") per
@@ -944,6 +1212,60 @@ function tallyFittings(bom: Array<Record<string, unknown>>): Map<FittingCategory
     tally.set(cat, (tally.get(cat) ?? 0) + qty);
   }
   return tally;
+}
+
+// Every material class this ISO drawing covers: its title-block class plus
+// every class named in its spec breaks.
+export function isoSpecClasses(isoAttrs: Record<string, unknown>): string[] {
+  const classes = new Set<string>();
+  if (!isBlank(isoAttrs.spec_class)) classes.add(String(isoAttrs.spec_class).trim().toUpperCase());
+  const breaks = Array.isArray(isoAttrs.spec_breaks) ? (isoAttrs.spec_breaks as SpecBreakEntry[]) : [];
+  for (const b of breaks) {
+    if (b && !isBlank(b.spec_class)) classes.add(String(b.spec_class).trim().toUpperCase());
+  }
+  return [...classes];
+}
+
+// A line number embeds its material class (8"-22-214-01-CRD-0002-AC03N-N),
+// so a run that changes class at a spec break appears on the P&ID under two
+// different numbers -- ...-AC03N-N upstream and ...-BC70N-N downstream. A
+// plain equality match therefore drops every valve and fitting past the
+// break, which is exactly the part a spec-break review cares about. Matching
+// with the drawing's own known classes removed reunites the segments without
+// loosening the match to unrelated lines.
+function lineKeyIgnoringSpec(lineNumber: string, specClasses: string[]): string {
+  let key = normalizeTagNumber(lineNumber);
+  for (const cls of specClasses) {
+    key = key.split(cls.toUpperCase()).join("");
+  }
+  return key.replace(/--+/g, "-");
+}
+
+export function matchesLineAcrossSpecBreak(candidate: unknown, isoLineNumber: string, specClasses: string[]): boolean {
+  if (typeof candidate !== "string" || !candidate.trim()) return false;
+  const norm = normalizeTagNumber(candidate);
+  if (norm === normalizeTagNumber(isoLineNumber)) return true;
+  if (specClasses.length < 2) return false;
+  return lineKeyIgnoringSpec(candidate, specClasses) === lineKeyIgnoringSpec(isoLineNumber, specClasses);
+}
+
+// A valve row can stand for several identical valves (a "2 x 2\" BALL VALVE"
+// typical), so the P&ID's valve count is the sum of quantities, not the
+// number of rows. Untagged rows count exactly like tagged ones.
+export function countPidValves(valveAttrs: Array<Record<string, unknown>>): number {
+  return valveAttrs.reduce((total, a) => total + (parseNumber(a.quantity) ?? 1), 0);
+}
+
+// The same valves grouped by the material class of the segment each one sits
+// in. On a line with a spec break the run changes class partway along, so a
+// single total hides which side the valves belong to.
+export function countPidValvesBySpec(valveAttrs: Array<Record<string, unknown>>): Map<string, number> {
+  const bySpec = new Map<string, number>();
+  for (const a of valveAttrs) {
+    const spec = normalizeSpecClass(a.spec_class) ?? "unassigned";
+    bySpec.set(spec, (bySpec.get(spec) ?? 0) + (parseNumber(a.quantity) ?? 1));
+  }
+  return bySpec;
 }
 
 function normEndpoint(value: unknown): string {
@@ -986,7 +1308,12 @@ export interface RoutingFittingRow {
   status: "match" | "mismatch" | "iso only" | "not compared";
 }
 
-const FITTING_DISPLAY_ORDER: FittingCategory[] = ["elbows", "tees", "reducers", "flanges", "olets", "caps", "couplings", "expansion joints", "other fittings"];
+// Only categories a P&ID actually DRAWS are compared here. Elbows, tees,
+// flanges and olets are ISO-only by nature -- a P&ID never shows them, so
+// they could only ever report "iso only" and were pure noise in this table.
+// They remain classified (and counted in the BOM-by-spec view); they just
+// aren't rows in the ISO-vs-P&ID comparison.
+const FITTING_DISPLAY_ORDER: FittingCategory[] = ["reducers", "spectacle blinds", "expansion joints", "caps", "couplings", "other fittings"];
 
 export function buildRoutingFittingComparison(
   isoAttrs: Record<string, unknown>,
@@ -1036,6 +1363,10 @@ export function buildRoutingFittingComparison(
     pidValue: pidLineAttrs.length ? String(pidValveCount) : null,
     status: pidValveCount === 0 ? "not compared" : isoValves >= pidValveCount ? "match" : "mismatch",
   });
+
+  // Totals only here. The per-type and per-spec breakdowns live in the
+  // dedicated "Valve match" table below, which is where a reviewer goes for
+  // detail -- duplicating them inline made this table unreadable.
 
   // P&ID-drawn fittings (flange joints, blinds, reducers...) compare
   // min-basis: the P&ID draws only some of them, so its count is a floor
