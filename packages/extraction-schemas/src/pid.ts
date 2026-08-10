@@ -163,6 +163,8 @@ export const PID_SHEET_TOOL: ClaudeTool = {
           },
           required: ["line_number"],
         },
+        description:
+          "One entry per distinct line number drawn on this sheet. A single physical run crossing a BATTERY LIMIT / unit boundary (\"B/L UNIT-210 | UNIT-214\") is renumbered across it and so becomes TWO entries -- record both, each with the equipment/connector at its own end. A spec break does not split a line this way: it stays one entry under one number.",
       },
       valves: {
         type: "array",
@@ -182,7 +184,10 @@ export const PID_SHEET_TOOL: ClaudeTool = {
             line_number: {
               type: "string",
               description:
-                "The full line number the valve sits on, as printed on the pipe run AT THE VALVE. Where a line changes spec partway along, the segments carry different line numbers -- use the one labelling the segment this particular valve is drawn in, not the line number at the start of the run.",
+                "The full line number the valve sits on, as printed on the pipe run AT THE VALVE -- not the number at the start of the run. Two different markers decide this and they behave OPPOSITELY. " +
+                '(1) A SPEC BREAK does NOT renumber the line: the same line number keeps running across it, so never invent a new number at a break -- only spec_class changes. ' +
+                "(2) A BATTERY LIMIT / unit boundary DOES renumber it. It is drawn as a dashed boundary line labelled with the unit either side (\"B/L UNIT-210 | UNIT-214\", \"LIMIT OF SUPPLY\") and the run is renumbered across it: the unit field changes and the service/sequence part often changes with it, so 8\"-22-210-01-CRD-0003-AC03N-N continues as 8\"-22-214-01-CRD-0002-AC03N-N. " +
+                "A valve drawn on the UNIT-214 side belongs to the UNIT-214 number even when the nearest printed label is the 210 one -- use the number labelling the segment on the valve's OWN side of the boundary.",
             },
             size: {
               type: "string",
@@ -221,7 +226,7 @@ export const PID_SHEET_TOOL: ClaudeTool = {
             line_number: {
               type: "string",
               description:
-                "The full line number this fitting sits on, as printed on the segment where it is drawn -- on a line with a spec break the segments carry different line numbers, so use the one at this fitting.",
+                "The full line number this fitting sits on, as printed on the segment where it is drawn. A spec break does NOT renumber the line (same number either side, only the class changes); a BATTERY LIMIT / unit boundary DOES (8\"-22-210-01-CRD-0003-... continues as 8\"-22-214-01-CRD-0002-...), so a fitting past the boundary takes the number on its own side of it.",
             },
             size: { type: "string", description: 'Nominal size with unit as printed, e.g. "8\\"" or "DN50". For a reducer give both sizes, e.g. "8\\" x 6\\"".' },
             spec_class: {
