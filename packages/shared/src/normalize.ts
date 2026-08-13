@@ -2,8 +2,14 @@
 // during extraction) and apps/web (on-demand ISO verification) -- see
 // apps/worker/src/correlate.ts and apps/web/src/lib/verifyIso.ts.
 
+// Tolerates a missing/non-string tag number rather than throwing. Extraction
+// output is model-authored, so a field the schema marks required can still
+// come back null -- an ISO BOM row added by a revision carries no PT NO, and
+// a raw null here used to crash the whole extraction with "Cannot read
+// properties of null (reading 'trim')" AFTER every sheet had been paid for.
 export function normalizeTagNumber(raw: string, stripPattern?: RegExp): string {
-  const stripped = stripPattern ? raw.replace(stripPattern, "") : raw;
+  const text = typeof raw === "string" ? raw : raw == null ? "" : String(raw);
+  const stripped = stripPattern ? text.replace(stripPattern, "") : text;
   return stripped.trim().toUpperCase();
 }
 

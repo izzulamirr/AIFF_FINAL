@@ -19,6 +19,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             EASY
           </Link>
           <Link href="/projects">Projects</Link>
+          <Link href="/hookup">Instrument Hookup</Link>
         </div>
         <div className="flex items-center gap-3 text-sm">
           <span className="text-gray-500">{user.email}</span>

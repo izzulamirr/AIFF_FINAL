@@ -81,9 +81,14 @@ export async function runExtractionJob(db: Db, storage: SupabaseClient, jobId: s
       rawJson: result.rawJson as object,
     });
 
-    if (result.tags.length > 0) {
+    // A row the model returned with no usable key would insert as an empty
+    // tag that can never be matched or read -- drop it here rather than let
+    // it pollute the project's join surface. The extraction_results row above
+    // still holds the raw output, so nothing is lost for debugging.
+    const insertableTags = result.tags.filter((tag) => String(tag.tagNumber ?? "").trim().length > 0);
+    if (insertableTags.length > 0) {
       await db.insert(extractedTags).values(
-        result.tags.map((tag) => ({
+        insertableTags.map((tag) => ({
           projectId: document.projectId,
           documentId,
           docType: document.docType,

@@ -43,7 +43,7 @@ export const LOCATE_ISO_SECTIONS_TOOL: ClaudeTool = {
 export const ISO_SHEET_TOOL: ClaudeTool = {
   name: "record_iso_sheet",
   description:
-    "Records the title block info, line/spec info, and Bill of Material rows for one isometric drawing. Append the unit from the title block's column header to every measured value (e.g. \"5 kPag\", \"90 °C\", \"25 mm\"). Leave non-numeric placeholders such as NA / NIL. / AMB. exactly as printed.",
+    "Records the title block info, line/spec info, pipe spools, welds, and Bill of Material rows for one isometric drawing. Append the unit from the title block's column header to every measured value (e.g. \"5 kPag\", \"90 °C\", \"25 mm\"). Leave non-numeric placeholders such as NA / NIL. / AMB. exactly as printed.",
   input_schema: {
     type: "object",
     properties: {
@@ -103,15 +103,67 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
           required: ["spec_class"],
         },
       },
+      spools: {
+        type: "array",
+        description:
+          'The pipe spools this sheet is broken into. A spooled (fabrication-issued) ISO divides the run into shop-prefabricated sections, each numbered with the line number plus a "-NN" suffix (e.g. "8"-22-214-01-CRD-0002-AC03N-N-01"). They appear in TWO places and both must agree: boxed callouts on the drawing with a leader to the spool they name, and a "PIPE SPOOLS" list in the materials block. Record every distinct spool number on the sheet, once each. Leave empty for an unspooled drawing.',
+        items: {
+          type: "object",
+          properties: {
+            spool_no: { type: "string", description: 'The full spool number as printed, e.g. "8\\"-22-214-01-CRD-0002-AC03N-N-01".' },
+            listed_in_pipe_spools: {
+              type: "string",
+              description: '"yes" if this spool number appears in the sheet\'s PIPE SPOOLS list, "no" if it is only a callout on the drawing. A callout with no matching list entry (or the reverse) is a real drafting error worth surfacing, so do not silently reconcile them.',
+            },
+            note: { type: "string", description: "Anything printed about this spool, e.g. what it spans. Blank if nothing." },
+          },
+          required: ["spool_no"],
+        },
+      },
+      welds: {
+        type: "array",
+        description:
+          'Every weld marked on this sheet. A weld is drawn as a small DIAMOND on the pipe containing a weld type over a number -- "SW" over "01" is shop weld 01, "FW" over "12" is field weld 12. They are numbered sequentially across the drawing and there are usually dozens per sheet. Record one entry per diamond; do not merge, skip, or renumber them, and do not count a diamond twice where overlapping tiles show it more than once. The weld COUNT is derived from this list, so a missed diamond understates it. Leave empty only if the sheet marks no welds at all.',
+        items: {
+          type: "object",
+          properties: {
+            weld_no: { type: "string", description: 'The number inside the diamond, as printed, e.g. "01", "34".' },
+            weld_type: {
+              type: "string",
+              description: 'The letters inside the diamond: "SW" (shop weld), "FW" (field weld), or whatever else is printed. Never guess -- read the diamond.',
+            },
+            size: { type: "string", description: "Nominal size of the pipe at this weld, if the adjacent run is dimensioned. Blank otherwise." },
+            spool_no: { type: "string", description: "The spool this weld sits within, when the spool callouts make it clear. Blank if not determinable." },
+            nde_codes: {
+              type: "string",
+              description: 'Any inspection/NDE code boxes attached to this weld, joined with " " as printed, e.g. "F5 G9 B11", "FX GX BX", "X". These sit in rectangular boxes with a leader to the weld. Blank if none.',
+            },
+          },
+          required: ["weld_no"],
+        },
+      },
       bom_items: {
         type: "array",
         items: {
           type: "object",
           properties: {
-            item_no: { type: "string" }, // the BOM row's own ID/item number (e.g. "1", "2")
+            item_no: {
+              type: "string",
+              description:
+                'The BOM row\'s own PT NO / item number, e.g. "1", "2". LEAVE BLANK for rows printed without one -- added/revision rows commonly carry no PT NO and no ITEM CODE. Never invent a number for them, and never skip the row because it lacks one.',
+            },
+            material_section: {
+              type: "string",
+              description:
+                'Which materials block this row is printed under: "fabrication" for rows under FABRICATION MATERIALS (shop-installed: pipe, fittings, flanges, valves) or "erection" for rows under ERECTION MATERIALS (site-installed: gaskets, bolts, spectacle blinds, instruments). A sheet may print both blocks, each with its own PT NO sequence -- so the same PT NO can appear twice on one sheet and the two rows are different items. Blank if the sheet has only one unlabelled materials table.',
+            },
             description: { type: "string" },
             component_type: { type: "string" }, // pipe | fittings | fasteners | valves | pipe supports | instruments | ...
-            size: { type: "string" },
+            size: {
+              type: "string",
+              description:
+                'The row\'s nominal size WITH the unit from its column header, exactly as the pressures and temperatures are done. A BOM size column headed "N.S. (MM)" holds millimetres, so a printed 25 is "25 mm" and a printed 8 is "8 mm" -- never append an inch mark to it. A column headed in inches gives "8\\"". Without the unit a bare 25 is ambiguous between DN25 and 25 inches, and the comparison against a P&ID (which writes the same valve as 1") cannot be made. For a reducer give both sizes, e.g. "200 x 150 mm".',
+            },
             quantity: { type: "string" },
             material: { type: "string" },
             item_code: { type: "string" }, // the BOM's "ITEM CODE" column (e.g. "P9610-C", "HK9511") -- references a specific row in the piping spec, NOT a class code like "150JY11"
@@ -131,8 +183,12 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
                 'Leave blank ONLY when the drawing genuinely does not show which side an item is on. Blank on single-class drawings and on sheets with no break.',
             },
           },
-          required: ["item_no", "description"],
+          required: ["description"],
         },
+        description:
+          "EVERY row printed in the sheet's materials block(s), in order. A sheet issued for fabrication prints TWO blocks -- FABRICATION MATERIALS and ERECTION MATERIALS -- each with its own PT NO sequence; record the rows of both, tagging each with material_section. " +
+          "Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, often in a different colour, appended under the category they belong to (an extra PIPE row, an extra 150# flange, a small-bore gate valve). They are real material and must be recorded exactly like numbered rows -- leave item_no and item_code blank and take the description, size and quantity as printed. " +
+          "Do NOT record the PIPE SPOOLS list as BOM rows: those are spool numbers, and belong in spools.",
       },
     },
     required: ["line_number", "bom_items"],

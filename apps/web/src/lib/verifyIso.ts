@@ -243,11 +243,13 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
       compareNumeric(out, projectId, line, isoDocumentId, pllDocumentId, "2.test_pressure", attrs.hydrotest_pressure, pllAttrs.test_pressure, "error");
       compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.service", attrs.service, pllAttrs.service, "warning");
       compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.paint_system", attrs.painting_system, pllAttrs.paint_system, "warning");
-      compareNumeric(out, projectId, line, isoDocumentId, pllDocumentId, "2.insulation_thickness", attrs.insul_thickness_mm, pllAttrs.insulation_thickness, "warning");
-      compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.insulation_code", attrs.insul_spec, pllAttrs.insulation_code, "warning");
+      // insulation/heat trace carry "N" for "none" on both documents -- see
+      // noneAsBlank. PWHT deliberately does not: there N is a real answer.
+      compareNumeric(out, projectId, line, isoDocumentId, pllDocumentId, "2.insulation_thickness", noneAsBlank(attrs.insul_thickness_mm), noneAsBlank(pllAttrs.insulation_thickness), "warning");
+      compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.insulation_code", noneAsBlank(attrs.insul_spec), noneAsBlank(pllAttrs.insulation_code), "warning");
       compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.pwht", attrs.pwht, pllAttrs.pwht, "warning");
       compareNumeric(out, projectId, line, isoDocumentId, pllDocumentId, "2.ndt_percent", attrs.radiograph, pllAttrs.ndt_percent, "warning");
-      compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.heat_trace", attrs.heat_trace, pllAttrs.heat_trace, "warning");
+      compareText(out, projectId, line, isoDocumentId, pllDocumentId, "2.heat_trace", noneAsBlank(attrs.heat_trace), noneAsBlank(pllAttrs.heat_trace), "warning");
       // Slope: both sides are canonicalized to "1:100" at extraction
       // (normalizeSlope), so a plain text compare is correct here. The ISO
       // side is a printed annotation, never measured from geometry.
@@ -733,7 +735,9 @@ export interface DesignBasisRow {
   status: "match" | "mismatch" | "not compared";
 }
 
-const DESIGN_BASIS_FIELDS: Array<{ label: string; isoKey: string; pllKey: string; numeric: boolean }> = [
+// `nMeansNone` marks the value-bearing fields where a printed "N" is an
+// absence rather than data -- see noneAsBlank. PWHT is excluded on purpose.
+const DESIGN_BASIS_FIELDS: Array<{ label: string; isoKey: string; pllKey: string; numeric: boolean; nMeansNone?: boolean }> = [
   { label: "Piping class", isoKey: "spec_class", pllKey: "spec_class", numeric: false },
   { label: "Size", isoKey: "size", pllKey: "size", numeric: true },
   { label: "Design pressure", isoKey: "design_pressure", pllKey: "design_pressure", numeric: true },
@@ -742,20 +746,24 @@ const DESIGN_BASIS_FIELDS: Array<{ label: string; isoKey: string; pllKey: string
   { label: "Operating temperature", isoKey: "operating_temperature", pllKey: "operating_temperature", numeric: true },
   { label: "Test pressure", isoKey: "hydrotest_pressure", pllKey: "test_pressure", numeric: true },
   { label: "Service", isoKey: "service", pllKey: "service", numeric: false },
-  { label: "Insulation code", isoKey: "insul_spec", pllKey: "insulation_code", numeric: false },
-  { label: "Insulation thickness", isoKey: "insul_thickness_mm", pllKey: "insulation_thickness", numeric: true },
-  { label: "Heat trace", isoKey: "heat_trace", pllKey: "heat_trace", numeric: false },
+  { label: "Insulation code", isoKey: "insul_spec", pllKey: "insulation_code", numeric: false, nMeansNone: true },
+  { label: "Insulation thickness", isoKey: "insul_thickness_mm", pllKey: "insulation_thickness", numeric: true, nMeansNone: true },
+  { label: "Heat trace", isoKey: "heat_trace", pllKey: "heat_trace", numeric: false, nMeansNone: true },
   { label: "Paint system", isoKey: "painting_system", pllKey: "paint_system", numeric: false },
   { label: "NDT / radiograph", isoKey: "radiograph", pllKey: "ndt_percent", numeric: true },
-  { label: "Slope", isoKey: "slope", pllKey: "slope", numeric: false },
+  { label: "Slope", isoKey: "slope", pllKey: "slope", numeric: false, nMeansNone: true },
 ];
 
 export function buildDesignBasisComparison(isoAttrs: Record<string, unknown>, pllAttrs: Record<string, unknown>): DesignBasisRow[] {
-  return DESIGN_BASIS_FIELDS.map(({ label, isoKey, pllKey, numeric }) => {
-    const isoRaw = isoAttrs[isoKey];
-    const pllRaw = pllAttrs[pllKey];
-    const isoValue = isoRaw == null ? null : String(isoRaw);
-    const pllValue = pllRaw == null ? null : String(pllRaw);
+  return DESIGN_BASIS_FIELDS.map(({ label, isoKey, pllKey, numeric, nMeansNone }) => {
+    const isoRaw = nMeansNone ? noneAsBlank(isoAttrs[isoKey]) : isoAttrs[isoKey];
+    const pllRaw = nMeansNone ? noneAsBlank(pllAttrs[pllKey]) : pllAttrs[pllKey];
+    // Show what the absence means rather than a bare "N" the reader has to
+    // decode, but only where the document actually printed one.
+    const shown = (raw: unknown, original: unknown) =>
+      raw == null ? (nMeansNone && /^(n|none)$/i.test(String(original ?? "").trim()) ? "none (N)" : null) : String(raw);
+    const isoValue = shown(isoRaw, isoAttrs[isoKey]);
+    const pllValue = shown(pllRaw, pllAttrs[pllKey]);
 
     // Mirrors compareNumeric/compareText in the gate chain, units included,
     // so this table and the findings can never disagree.
@@ -824,6 +832,19 @@ export function mergeIsoLineSheets(lines: ExtractedTag[]): ExtractedTag[] {
 function isContinuationRef(value: unknown): boolean {
   if (isBlank(value)) return false;
   return /\bCONT\b|\bCONT'?D\b|\bCONTINUE/i.test(String(value)) || /\bDRG\b|\bDWG\b/i.test(String(value));
+}
+
+// A value column on these drawings prints "N" to mean the field does not
+// apply -- no insulation, no test type, no heat tracing. That is an absence,
+// not a value named "N", so it must not be compared as one: an ISO reading
+// "N" against a PLL leaving the cell empty are two documents that AGREE.
+//
+// Deliberately applied per field rather than everywhere. On a Y/N answer
+// field -- PWHT is the one here -- "N" means "not required", which is a real
+// answer, and blanking it would hide a genuine ISO-says-Y / PLL-says-N
+// disagreement.
+export function noneAsBlank(value: unknown): unknown {
+  return /^(n|none)$/i.test(String(value ?? "").trim()) ? null : value;
 }
 
 function isBlank(value: unknown): boolean {
@@ -1012,6 +1033,200 @@ export const VALVE_DISPLAY_ORDER: ValveCategory[] = [
   "other valves",
 ];
 
+// The match table compares more than valves: reducers, spectacle blinds,
+// flanges and in-line instruments are all drawn on the P&ID and listed in the
+// ISO BOM, so all of them can be paired. Flanges are split BY TYPE -- a weld
+// neck, a blind and an orifice flange are not interchangeable, and rolling
+// them into one "flanges" number lets a missing blind cancel a spare WN.
+export type ComponentCategory =
+  | ValveCategory
+  | "flange (weld neck)"
+  | "flange (blind)"
+  | "flange (orifice)"
+  | "flange (slip-on)"
+  | "flange (socket weld)"
+  | "flange (lap joint)"
+  | "flange (threaded)"
+  | "flange (reducing)"
+  | "flange (other)"
+  | "spectacle blind"
+  | "reducer (concentric)"
+  | "reducer (eccentric)"
+  | "reducer"
+  | "orifice plate"
+  | InstrumentCategory;
+
+// Instrument tags are ISA S5.1 codes, and the letters ARE the description:
+// the first letter is the measured variable, the letters after it are the
+// function. So FT-0003 is a flow transmitter, PI-0004 a pressure indicator,
+// TW-A111 a temperature well (thermowell). Deriving the label from the tag
+// beats a hand-kept list of device names -- it covers combinations nobody
+// enumerated, and it reads the same on both documents.
+const ISA_VARIABLES = {
+  A: "analysis",
+  D: "density",
+  F: "flow",
+  H: "hand",
+  I: "current",
+  J: "power",
+  L: "level",
+  M: "moisture",
+  P: "pressure",
+  Q: "quantity",
+  S: "speed",
+  T: "temperature",
+  V: "vibration",
+  W: "weight",
+  X: "unclassified",
+  Z: "position",
+} as const;
+
+// Only the LAST letter of the function group is used for the label: FIC is
+// a flow indicating controller, and the controller is what it is.
+const ISA_FUNCTIONS = {
+  A: "alarm",
+  C: "controller",
+  E: "element",
+  G: "gauge",
+  I: "indicator",
+  R: "recorder",
+  S: "switch",
+  T: "transmitter",
+  V: "valve",
+  W: "well",
+  Y: "relay",
+} as const;
+
+type IsaVariable = (typeof ISA_VARIABLES)[keyof typeof ISA_VARIABLES];
+type IsaFunction = (typeof ISA_FUNCTIONS)[keyof typeof ISA_FUNCTIONS];
+export type InstrumentCategory = `${IsaVariable} ${IsaFunction}` | "instrument (other)";
+
+// Rank rather than a flat list: the instrument categories are generated from
+// the ISA letters, so they cannot be enumerated here. Known components keep
+// their engineering order; instruments follow, alphabetically among
+// themselves so the same tag always sorts to the same place.
+const FIXED_ORDER: string[] = [
+  ...VALVE_DISPLAY_ORDER,
+  "flange (weld neck)",
+  "flange (blind)",
+  "flange (orifice)",
+  "flange (slip-on)",
+  "flange (socket weld)",
+  "flange (lap joint)",
+  "flange (threaded)",
+  "flange (reducing)",
+  "flange (other)",
+  "spectacle blind",
+  "reducer (concentric)",
+  "reducer (eccentric)",
+  "reducer",
+  "orifice plate",
+];
+
+export function componentRank(category: ComponentCategory): number {
+  const index = FIXED_ORDER.indexOf(category);
+  return index >= 0 ? index : FIXED_ORDER.length;
+}
+
+// Codes that look like an ISA tag but name a standard or a material.
+const NON_INSTRUMENT_PREFIXES = new Set(["ASME", "ASTM", "API", "ISO", "MSS", "NACE", "BS", "EN", "DIN", "SA", "SS", "CS", "SCH", "MR"]);
+
+// "FT-0003", "TW-A111", "FIC-0003" -> its ISA meaning. Also reads
+// the words where a document spells the device out instead of tagging it
+// ("PRESSURE TRANSMITTER"), which is how ISO BOM rows are often written.
+export function classifyInstrument(text: unknown): InstrumentCategory | null {
+  const raw = String(text ?? "");
+  const t = raw.toLowerCase();
+
+  // Spelled out in words -- checked first, since a description carrying both
+  // ("INSTRUMENT PRESSURE TRANSMITTER PT-0004") should agree either way.
+  const variable = Object.values(ISA_VARIABLES).find((v) => new RegExp(`\\b${v}\\b`).test(t));
+  const fn = Object.entries(ISA_FUNCTIONS).find(([, f]) => new RegExp(`\\b${f}\\b`).test(t))?.[1];
+  if (variable && fn) return `${variable} ${fn}`;
+
+  // Otherwise decode the tag: 2-4 letters, a HYPHEN, then a loop number
+  // (optionally prefixed by an area letter). The hyphen and the two-digit
+  // minimum are what keep material text out: without them "SS316L" decodes
+  // as a speed switch and "ASME B16.5" as an analysis element, and both
+  // appear in almost every BOM description on the sheet.
+  const tag = raw.toUpperCase().match(/\b([A-Z]{2,4})-(?=[A-Z]?\d{2})/);
+  if (tag && !NON_INSTRUMENT_PREFIXES.has(tag[1])) {
+    const letters = tag[1];
+    const v = ISA_VARIABLES[letters[0] as keyof typeof ISA_VARIABLES];
+    // Walk back from the end for the first letter that names a function --
+    // the tail of the group is the device (FIC -> C, TIT -> T).
+    for (let i = letters.length - 1; i >= 1; i--) {
+      const f = ISA_FUNCTIONS[letters[i] as keyof typeof ISA_FUNCTIONS];
+      if (v && f) return `${v} ${f}`;
+    }
+  }
+  return /\binstrument\b/.test(t) ? "instrument (other)" : null;
+}
+
+// ASME B16.5 names the flange types; B16.36 adds the orifice flange and
+// B16.48 the spectacle blind (which is its own component, not a flange).
+// Order matters: "FLANGE ORIFICE WN 300# RF" says both ORIFICE and WN, and
+// it is an orifice flange -- so the more specific test has to win.
+function classifyFlange(t: string): ComponentCategory {
+  if (/orifice/.test(t)) return "flange (orifice)";
+  if (/\bblind\b|\bblnd\b|\bbl\b|blanking/.test(t)) return "flange (blind)";
+  if (/reducing|\bredu/.test(t)) return "flange (reducing)";
+  if (/slip.?on|\bso\b|\bslo\b/.test(t)) return "flange (slip-on)";
+  if (/socket|\bsw\b|\bsocket.?weld\b/.test(t)) return "flange (socket weld)";
+  if (/lap.?joint|\blj\b|stub.?end/.test(t)) return "flange (lap joint)";
+  if (/thread|\bthd\b|\bnpt\b|screwed/.test(t)) return "flange (threaded)";
+  if (/weld.?neck|\bwn\b|\bwnrf\b/.test(t)) return "flange (weld neck)";
+  return "flange (other)";
+}
+
+// One vocabulary both documents are classified into, so ISO BOM rows and
+// P&ID symbols can be paired. Returns null for anything not comparable
+// between the two: pipe stock, fasteners, supports, welds, spools, and the
+// butt-weld fittings (elbows, tees, olets) a P&ID does not draw individually.
+export function classifyComponent(text: unknown): ComponentCategory | null {
+  const t = String(text ?? "").toLowerCase();
+  if (!t.trim()) return null;
+  // Not comparable: consumables and stock.
+  if (/gasket|\bbolt\b|\bstud\b|\bnut\b|washer|\bspool\b|\bweld\b(?!.?neck)/.test(t)) return null;
+  if (/\bsupport\b|\bshoe\b|\bclamp\b|\bguide\b/.test(t)) return null;
+
+  const valve = classifyValve(t);
+  if (valve) return valve;
+
+  // A butt-weld tee is not itemised on a P&ID, and "REDUCING TEE" would
+  // otherwise be caught by the reducer stem below -- it is a tee, not a
+  // reducer, so it has to be settled before either test runs.
+  if (/\btee\b|\btees\b/.test(t)) return null;
+  // Before flanges: a spectacle blind is its own isolation component, one of
+  // the few things a P&ID actually draws, and worth comparing on its own
+  // rather than being absorbed into a flange count. "BLIND FLANGE" is NOT
+  // caught here -- that is a blanking flange and belongs with the flanges.
+  if (/spectacle|figure.?8|\bfig\.?\s*8\b|\bspade\b|paddle blind/.test(t)) return "spectacle blind";
+  // Also before flanges: an orifice PLATE is the measuring element, not the
+  // pair of flanges holding it, and the P&ID draws the assembly as one
+  // symbol labelled "orifice plate with flange taps". The ISO lists the two
+  // separately ("ORIFICE PLATE" and "FLANGE ORIFICE WN ... B16.36"), so the
+  // plate wording must win over the bare word "flange" appearing alongside.
+  if (/orifice\s*plate|restriction\s*orifice/.test(t)) return "orifice plate";
+  if (/flange|\bflg\b|\bflan\b/.test(t)) return classifyFlange(t);
+  if (/\bredu|swage|reducer/.test(t)) {
+    if (/\becc/.test(t)) return "reducer (eccentric)";
+    if (/\bconc/.test(t)) return "reducer (concentric)";
+    return "reducer";
+  }
+  // In-line instruments, named by what their ISA tag says they measure and
+  // do -- a flow transmitter and a pressure indicator are different devices
+  // and comparing them as one "instrument" count hides a swap.
+  if (/\binstrument\b|transmitter|\bindicator\b|controller|thermowell|\bgauge\b|\bswitch\b|\belement\b|\brecorder\b|\b[a-z]{2,4}-\d/.test(t)) {
+    const instrument = classifyInstrument(t);
+    if (instrument) return instrument;
+  }
+  // Everything else (pipe, elbows, tees, olets, caps, couplings) is either
+  // stock or a butt-weld fitting the P&ID does not itemise -- pairing it
+  // would produce a table of unavoidable "iso only" rows.
+  return null;
+}
+
 export function classifyValve(text: unknown): ValveCategory | null {
   const t = String(text ?? "").toLowerCase();
   if (!t.trim()) return null;
@@ -1044,12 +1259,22 @@ const DN_TO_NPS = new Map(Object.entries(NPS_TO_DN).map(([nps, dn]) => [dn, nps]
 
 // Canonical DN for a size written any way these documents write it: '8"',
 // "8 in", "3/4\"", "200", "200 mm", or a reducer's '8" x 6"' (first size).
-export function normalizeNominalSize(value: unknown): number | null {
+//
+// `defaultUnit` is what a BARE number means in the column this value came
+// from, and the caller must supply it -- magnitude alone cannot decide. An
+// ISO BOM's size column is headed "N.S. (MM)", so its bare 25 is DN25 and
+// its bare 8 is an 8 mm tubing connection; a P&ID writes the same valves as
+// 1" and 1/4". Guessing "small number => inches" turned that ISO 25 into
+// 25 x 25.4 = DN635 and that 8 into NPS 8 = DN200, so a 1" gate valve and an
+// 8 mm needle valve both failed to match their P&ID counterparts.
+// An explicit unit written into the value itself always wins over the hint.
+export function normalizeNominalSize(value: unknown, defaultUnit: "mm" | "in" = "in"): number | null {
   if (value == null) return null;
   const first = String(value).split(/x|×/i)[0].trim();
   if (!first) return null;
   const fraction = first.match(/^(\d+)?\s*(\d+)\s*\/\s*(\d+)/);
   const inches = /"|inch|\bin\b|''/.test(first);
+  const millimetres = /\bmm\b/i.test(first);
   let num: number | null;
   if (fraction) {
     num = (fraction[1] ? Number(fraction[1]) : 0) + Number(fraction[2]) / Number(fraction[3]);
@@ -1057,13 +1282,16 @@ export function normalizeNominalSize(value: unknown): number | null {
     num = parseNumber(first);
   }
   if (num == null) return null;
-  // A bare number on these BOMs is mm; anything marked in inches, and any
-  // value small enough to only make sense as inches, goes through NPS->DN.
-  if (inches || num <= 48) {
-    const key = String(Number(num.toFixed(2)));
-    return NPS_TO_DN[key] ?? Math.round(num * 25.4);
-  }
-  return Math.round(num);
+  const asDn = () => {
+    const key = String(Number(num!.toFixed(2)));
+    return NPS_TO_DN[key] ?? Math.round(num! * 25.4);
+  };
+  if (millimetres) return Math.round(num);
+  if (inches) return asDn();
+  if (defaultUnit === "mm") return Math.round(num);
+  // Inch-defaulted column: a value too large to be a pipe size in inches is
+  // a millimetre value that lost its unit.
+  return num <= 48 ? asDn() : Math.round(num);
 }
 
 export function formatNominalSize(dn: number | null): string {
@@ -1082,19 +1310,8 @@ export function normalizeSpecClass(value: unknown): string | null {
   return m ? m[1] : s;
 }
 
-// Same quantity-summing rule as the fittings tally, applied per valve type.
-function tallyValves(rows: Array<{ text: unknown; quantity: unknown }>): Map<ValveCategory, number> {
-  const tally = new Map<ValveCategory, number>();
-  for (const row of rows) {
-    const cat = classifyValve(row.text);
-    if (!cat) continue;
-    tally.set(cat, (tally.get(cat) ?? 0) + (parseNumber(row.quantity) ?? 1));
-  }
-  return tally;
-}
-
 export interface ValveMatchRow {
-  category: ValveCategory;
+  category: ComponentCategory;
   size: string;
   isoCount: number;
   pidCount: number;
@@ -1121,7 +1338,9 @@ export interface ValveMatchGroup {
 // is the strongest key both sides actually have.
 export function buildValveMatch(
   isoBom: Array<Record<string, unknown>>,
-  pidValves: Array<Record<string, unknown>>
+  pidValves: Array<Record<string, unknown>>,
+  pidFittings: Array<Record<string, unknown>> = [],
+  pidInstruments: Array<Record<string, unknown>> = []
 ): ValveMatchGroup[] {
   interface Side {
     count: number;
@@ -1129,9 +1348,9 @@ export function buildValveMatch(
   }
   const isoSide = new Map<string, Side>();
   const pidSide = new Map<string, Side>();
-  const meta = new Map<string, { spec: string; category: ValveCategory; dn: number | null }>();
+  const meta = new Map<string, { spec: string; category: ComponentCategory; dn: number | null }>();
 
-  const add = (map: Map<string, Side>, spec: string, category: ValveCategory, dn: number | null, qty: number, detail: string) => {
+  const add = (map: Map<string, Side>, spec: string, category: ComponentCategory, dn: number | null, qty: number, detail: string) => {
     const key = `${spec}|${category}|${dn ?? "?"}`;
     meta.set(key, { spec, category, dn });
     const side = map.get(key) ?? { count: 0, details: [] };
@@ -1142,18 +1361,45 @@ export function buildValveMatch(
 
   for (const item of isoBom) {
     const text = `${item.component_type ?? ""} ${item.description ?? ""}`;
-    const category = classifyValve(text);
+    const category = classifyComponent(text);
     if (!category) continue;
     const spec = normalizeSpecClass(item.item_spec_class) ?? "unassigned";
     const desc = String(item.description ?? "").split(",")[0].trim();
-    add(isoSide, spec, category, normalizeNominalSize(item.size), parseNumber(item.quantity) ?? 1, desc);
+    // ISO BOM sizes come from a column headed "N.S. (MM)".
+    add(isoSide, spec, category, normalizeNominalSize(item.size, "mm"), parseNumber(item.quantity) ?? 1, desc);
   }
   for (const valve of pidValves) {
-    const category = classifyValve(valve.valve_type);
+    const category = classifyComponent(valve.valve_type);
     if (!category) continue;
     const spec = normalizeSpecClass(valve.spec_class) ?? "unassigned";
     const tag = valve.untagged ? "untagged" : String(valve.tag_number ?? "").trim();
     add(pidSide, spec, category, normalizeNominalSize(valve.size), parseNumber(valve.quantity) ?? 1, tag || "untagged");
+  }
+  // P&ID fittings are the other half of the comparison: the reducers,
+  // spectacle blinds, flange pairs and in-line instruments drawn on the run.
+  // A spec-break marker is an annotation, not a component -- it has no ISO
+  // counterpart to pair with, so it is excluded rather than reported missing.
+  for (const fitting of pidFittings) {
+    const text = String(fitting.fitting_type ?? "");
+    if (/spec\s*break|change of rating/i.test(text)) continue;
+    const category = classifyComponent(text);
+    if (!category) continue;
+    const spec = normalizeSpecClass(fitting.spec_class) ?? "unassigned";
+    const tag = String(fitting.tag_number ?? "").trim();
+    add(pidSide, spec, category, normalizeNominalSize(fitting.size), parseNumber(fitting.quantity) ?? 1, tag || "untagged");
+  }
+  // Only PRIMARY instruments are physical in-line items. A loop accessory --
+  // an indicator or controller reading from a transmitter, a positioner on a
+  // valve -- carries parent_instrument/parent_valve and is not a separate
+  // thing installed in the pipe, so the ISO BOM does not list it and pairing
+  // it would report a shortfall that does not exist.
+  for (const instrument of pidInstruments) {
+    if (!isBlank(instrument.parent_instrument) || !isBlank(instrument.parent_valve)) continue;
+    const tag = String(instrument.tag_number ?? "").trim();
+    const category = classifyComponent(`${instrument.instrument_type ?? ""} ${tag}`);
+    if (!category) continue;
+    const spec = normalizeSpecClass(instrument.spec_class) ?? "unassigned";
+    add(pidSide, spec, category, normalizeNominalSize(instrument.size), parseNumber(instrument.quantity) ?? 1, tag || "untagged");
   }
 
   const rank = { "pid only": 0, "iso only": 1, "count mismatch": 2, match: 3 } as const;
@@ -1182,8 +1428,16 @@ export function buildValveMatch(
   }
 
   const groups: ValveMatchGroup[] = [...bySpec.entries()].map(([specClass, rows]) => {
-    // Disagreements first within each class -- the reason the table exists.
-    rows.sort((a, b) => rank[a.status] - rank[b.status] || a.category.localeCompare(b.category));
+    // Disagreements first within each class -- the reason the table exists --
+    // then in component order (valves, flanges, blinds, reducers,
+    // instruments) rather than alphabetically, so related rows sit together.
+    rows.sort(
+      (a, b) =>
+        rank[a.status] - rank[b.status] ||
+        componentRank(a.category) - componentRank(b.category) ||
+        a.category.localeCompare(b.category) ||
+        a.size.localeCompare(b.size)
+    );
     return {
       specClass,
       rows,

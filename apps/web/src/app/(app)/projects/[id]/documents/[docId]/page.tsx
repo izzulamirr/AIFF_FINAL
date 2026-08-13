@@ -218,7 +218,11 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
           const list = byClass.get(own) ?? [];
           list.push({
             id: item.id,
-            itemNo: item.tagNumber,
+            // The PT NO as printed, and nothing else. Rows added by a
+            // revision carry no PT NO, so this stays blank for them -- the
+            // tag number is an internal key and must not leak into the
+            // column.
+            itemNo: typeof a.item_no === "string" ? a.item_no.trim() : "",
             description: String(a.description ?? ""),
             itemCode: String(a.item_code ?? "-"),
             qty: String(a.quantity ?? "-"),
@@ -229,7 +233,13 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         const order = [...(breaks.length > 1 ? breaks.map((b) => b.spec_class) : [lineClass]), "Unassigned"];
         const groups = [...byClass.entries()]
           .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
-          .map(([specClass, groupItems]) => ({ specClass, items: groupItems.sort((x, y) => Number(x.itemNo) - Number(y.itemNo)) }));
+          // Printed order, not numeric order: the sheet's two materials
+          // blocks each restart their PT NO at 1, and the un-numbered added
+          // rows sit under the category they belong to. Extraction records
+          // rows top to bottom, so id order IS the order on the drawing --
+          // sorting by number would interleave the blocks and float every
+          // blank row to the top.
+          .map(([specClass, groupItems]) => ({ specClass, items: groupItems.sort((x, y) => x.id - y.id) }));
         const sheetLabel = typeof lineAttrs.sheet === "string" && lineAttrs.sheet ? lineAttrs.sheet : line.sourcePage != null ? `page ${line.sourcePage}` : "";
         return { lineNumber: line.tagNumber, sheetLabel, page: line.sourcePage, breaks, groups };
       })
@@ -242,7 +252,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
       const pidTags = await db
         .select()
         .from(extractedTags)
-        .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), inArray(extractedTags.tagType, ["line", "valve", "fitting"])));
+        .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), inArray(extractedTags.tagType, ["line", "valve", "fitting", "instrument"])));
       const isoBomTags = tags.filter((t) => t.tagType === "bom_item");
 
       routingFittings = isoLineTags.map((line) => {
@@ -269,13 +279,22 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         const pidLineFittings = pidTags
           .filter((t) => t.tagType === "fitting" && matchesLineAcrossSpecBreak((t.attributes as Record<string, unknown>).line_number, line.tagNumber, specClasses))
           .map((t) => t.attributes as Record<string, unknown>);
+        // Instruments reference their line through line_or_equipment_ref
+        // rather than line_number -- they sit on a tapping point, not in the
+        // run itself.
+        const pidLineInstruments = pidTags
+          .filter((t) => {
+            const attrs = t.attributes as Record<string, unknown>;
+            return t.tagType === "instrument" && matchesLineAcrossSpecBreak(attrs.line_or_equipment_ref ?? attrs.line_number, line.tagNumber, specClasses);
+          })
+          .map((t) => t.attributes as Record<string, unknown>);
         const isoAttrs = isoAttrsForSpec;
         const pidDocNames = Array.from(new Set(pidLineMatches.map((t) => docNameById.get(t.documentId) ?? t.documentId)));
         return {
           lineNumber: line.tagNumber,
           pidDocNames,
           rows: buildRoutingFittingComparison(isoAttrs, bomForLine, pidLineAttrs, pidValveCount, pidLineFittings),
-          valveMatch: buildValveMatch(bomForLine, pidLineValveAttrs),
+          valveMatch: buildValveMatch(bomForLine, pidLineValveAttrs, pidLineFittings, pidLineInstruments),
         };
       });
     }
@@ -433,10 +452,15 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
           {routingFittings.some((r) => r.valveMatch && r.valveMatch.length > 0) && (
             <>
-              <h3 className="mb-2 mt-4 font-medium">Valve match: ISO vs P&amp;ID</h3>
+              <h3 className="mb-2 mt-4 font-medium">Fittings match: ISO vs P&amp;ID</h3>
               <p className="mb-2 text-xs text-gray-500">
-                Paired on valve type and nominal size (the ISO BOM aggregates by quantity and most P&amp;ID valves are untagged, so
-                neither side can be matched by tag). Disagreements are listed first.
+                Every in-line component both documents show: valves, flanges (by type &mdash; a weld neck, a blind and an orifice
+                flange are not interchangeable), spectacle blinds, reducers and instruments (named from their ISA tag, so FT-0003
+                is a flow transmitter and PI-0004 a pressure indicator). Paired on component type and nominal size, since the ISO
+                BOM aggregates by quantity and most P&amp;ID components are untagged, so neither side can be matched by tag. Left
+                out as not comparable: butt-weld fittings a P&amp;ID does not itemise (elbows, tees, olets), consumables (gaskets,
+                bolts), and instrument-loop accessories &mdash; only the primary device of a loop is a physical in-line item, so an
+                indicator reading from a transmitter is not counted again. Disagreements are listed first.
               </p>
               {routingFittings
                 .filter((r): r is typeof r & { valveMatch: ValveMatchGroup[] } => Boolean(r.valveMatch?.length))
@@ -462,7 +486,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                         <table className="w-full text-left text-sm">
                           <thead>
                             <tr className="border-b">
-                              <th className="py-1">Valve type</th>
+                              <th className="py-1">Component</th>
                               <th>Size</th>
                               <th>ISO</th>
                               <th>P&amp;ID</th>

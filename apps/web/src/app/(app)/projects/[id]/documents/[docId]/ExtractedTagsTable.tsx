@@ -29,7 +29,8 @@ export function ExtractedTagsTable({ groups }: { groups: TagGroup[] }) {
   const toggle = (id: number) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   const allCollapsed = parentIdsWithSubs.length > 0 && parentIdsWithSubs.every((id) => collapsed.has(id));
