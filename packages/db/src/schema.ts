@@ -17,6 +17,7 @@ import {
   jsonb,
   boolean,
   integer,
+  doublePrecision,
   bigserial,
   primaryKey,
   uniqueIndex,
@@ -85,7 +86,7 @@ export const documents = pgTable(
   },
   (table) => [
     uniqueIndex("documents_project_hash_unique").on(table.projectId, table.fileHash),
-    check("documents_doc_type_check", sql`${table.docType} in ('pid','hmb','pfd','spec_sheet','iso','ga','pll','pid_legend')`),
+    check("documents_doc_type_check", sql`${table.docType} in ('pid','hmb','pfd','spec_sheet','iso','ga','pll','pid_legend','hookup','cutting')`),
   ]
 );
 
@@ -160,6 +161,64 @@ export const extractedTags = pgTable(
   (table) => [
     index("extracted_tags_project_norm_idx").on(table.projectId, table.tagNumberNormalized),
     index("extracted_tags_project_type_idx").on(table.projectId, table.tagType),
+  ]
+);
+
+// The plate a project holds to cut from.
+//
+// Stock is a property of the JOB, not of whoever happens to have the page
+// open: two engineers planning the same cut have to be nesting onto the same
+// plate, or they produce two different shop drawings from one part list. So
+// it lives here rather than in browser storage, and the cutting allowances
+// are then derived from the thickness on this row (see @easy/shared's
+// nesting.ts) rather than typed in alongside it.
+export const cuttingStockPlates = pgTable(
+  "cutting_stock_plates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    lengthMm: doublePrecision("length_mm").notNull(),
+    widthMm: doublePrecision("width_mm").notNull(),
+    thicknessMm: doublePrecision("thickness_mm").notNull(),
+    material: text("material"),
+    // How many plates of this size the job may draw on. Plate is bought, not
+    // conjured: a nest that quietly opens a fifth plate when the yard holds
+    // four is a plan the shop cannot execute, so the count is part of the
+    // stock rather than an assumption the nester makes.
+    quantity: integer("quantity").notNull().default(1),
+    // The order the rows were entered in, kept so the plan's stock list reads
+    // back the way it was written -- the first row is also the one an
+    // unstated part thickness is assumed against, so it is not cosmetic.
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("cutting_stock_plates_project_idx").on(table.projectId)]
+);
+
+// How many of each part the job actually needs.
+//
+// The drawing says how many times a shape was DRAWN, which is not the same
+// question: one gusset drawn once is routinely wanted four times, and a
+// cutting sheet that lays out a representative piece says so in its parts
+// table rather than by drawing it again. So the count read off the geometry is
+// a starting point, and this is the answer -- keyed on the part mark rather
+// than on the extracted row, so it survives re-extracting the same drawing.
+export const cuttingPartQuantities = pgTable(
+  "cutting_part_quantities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    partMark: text("part_mark").notNull(),
+    quantity: integer("quantity").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("cutting_part_quantities_project_idx").on(table.projectId),
+    uniqueIndex("cutting_part_quantities_project_mark_key").on(table.projectId, table.partMark),
   ]
 );
 

@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { desc, eq, inArray, and } from "drizzle-orm";
-import { documents, extractionJobs, extractionResults, extractedTags, findings } from "@easy/db";
+import { documents, extractionJobs, extractionResults, extractedTags } from "@easy/db";
 import { normalizeTagNumber, enrichIsoLineAttrs } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import {
   buildDesignBasisComparison,
   buildRoutingFittingComparison,
   buildValveMatch,
+  countImpliedIsolationValves,
   type ValveMatchGroup,
   countPidValves,
   isoSpecClasses,
@@ -15,7 +16,6 @@ import {
   type DesignBasisRow,
   type RoutingFittingRow,
 } from "@/lib/verifyIso";
-import { verifyIsoAction } from "./actions";
 import { ExtractedTagsTable, type TagGroup } from "./ExtractedTagsTable";
 
 const DOC_TYPE_LABELS: Record<string, string> = {
@@ -29,17 +29,6 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   pid_legend: "P&ID Legend",
 };
 
-const GATE_LABELS: Record<string, string> = {
-  "0": "0 Document",
-  "1": "1 Line list",
-  "2": "2 Design basis",
-  "3": "3 P&ID",
-  "4": "4 Specs",
-  "5": "5 Geometry",
-  "6": "6 Supports",
-  "7": "7 BOM",
-  "8": "8 GA",
-};
 
 export default async function DocumentDetailPage({ params }: { params: Promise<{ id: string; docId: string }> }) {
   const { id: projectId, docId } = await params;
@@ -84,10 +73,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
   const isIso = document.docType === "iso";
   let pllOptions: (typeof documents.$inferSelect)[] = [];
-  let specOptions: (typeof documents.$inferSelect)[] = [];
   let pidOptions: (typeof documents.$inferSelect)[] = [];
-  let gaOptions: (typeof documents.$inferSelect)[] = [];
-  let isoFindings: (typeof findings.$inferSelect)[] = [];
   let docNameById = new Map<string, string>();
   // One entry per ISO line: its design-basis comparison against the PLL
   // (or null when the line isn't in the PLL / no PLL is uploaded yet).
@@ -142,17 +128,14 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
     const succeeded = siblingDocs.filter((d) => d.id !== docId && latestStatusByDoc.get(d.id) === "succeeded");
     pllOptions = succeeded.filter((d) => d.docType === "pll");
-    specOptions = succeeded.filter((d) => d.docType === "spec_sheet");
     pidOptions = succeeded.filter((d) => d.docType === "pid");
-    gaOptions = succeeded.filter((d) => d.docType === "ga");
 
     docNameById = new Map(siblingDocs.map((d) => [d.id, d.fileName]));
     docNameById.set(document.id, document.fileName);
 
-    isoFindings = await db.select().from(findings).where(eq(findings.docAId, docId)).orderBy(desc(findings.createdAt));
 
     // Design-basis comparison, ISO title block vs the PLL row for the same
-    // line number -- rendered for every ISO line whether or not Verify has
+    // line number -- rendered for every ISO line whether or not a check has
     // been run, so the side-by-side view is always current.
     const isoLineTagsAll = tags.filter((t) => t.tagType === "line");
     // One line tag per sheet on a multi-sheet drawing -- collapse to one per
@@ -255,6 +238,39 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), inArray(extractedTags.tagType, ["line", "valve", "fitting", "instrument"])));
       const isoBomTags = tags.filter((t) => t.tagType === "bom_item");
 
+      // The legend's "P&ID REPRESENTATION vs DETAILS" typicals, scoped to
+      // this project's newest legend so a duplicate upload cannot
+      // double-count. They are what turns an instrument bubble back into the
+      // root valves, thermowell and orifice assembly the P&ID does not draw.
+      const legendItems = await db
+        .select()
+        .from(extractedTags)
+        .where(and(eq(extractedTags.projectId, projectId), eq(extractedTags.tagType, "legend_item")));
+      const legendDocIds = [...new Set(legendItems.map((t) => t.documentId))];
+      let scopedLegend = legendItems;
+      if (legendDocIds.length > 1) {
+        const [newest] = await db
+          .select({ id: documents.id })
+          .from(documents)
+          .where(inArray(documents.id, legendDocIds))
+          .orderBy(desc(documents.uploadedAt))
+          .limit(1);
+        if (newest) scopedLegend = legendItems.filter((t) => t.documentId === newest.id);
+      }
+      const legendTypicalsFor = (instrumentTag: string) => {
+        const prefix = (instrumentTag.trim().toUpperCase().match(/^[A-Z]+/) ?? [])[0];
+        if (!prefix) return [];
+        return scopedLegend.filter((t) => {
+          const a = t.attributes as Record<string, unknown>;
+          if (typeof a.implied_components !== "string" || !a.implied_components.trim()) return false;
+          return String(a.applies_to ?? "")
+            .toUpperCase()
+            .split(/[/,]/)
+            .map((s) => s.trim())
+            .includes(prefix);
+        });
+      };
+
       routingFittings = isoLineTags.map((line) => {
         const norm = line.tagNumberNormalized;
         const pidLineMatches = pidTags.filter((t) => t.tagType === "line" && t.tagNumberNormalized === norm);
@@ -287,14 +303,43 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
             const attrs = t.attributes as Record<string, unknown>;
             return t.tagType === "instrument" && matchesLineAcrossSpecBreak(attrs.line_or_equipment_ref ?? attrs.line_number, line.tagNumber, specClasses);
           })
-          .map((t) => t.attributes as Record<string, unknown>);
+          // An instrument's ISA tag lives in the tag_number COLUMN, not in
+          // its attributes, so mapping to attributes alone dropped the one
+          // identifier the ISO and the P&ID both print for the same device
+          // -- every instrument reached the match as "untagged". Valves and
+          // fittings are deliberately NOT given the same treatment: their
+          // column holds a descriptive fallback ("gate valve") for the
+          // untagged symbols a P&ID is mostly made of, which is not a tag.
+          .map((t): Record<string, unknown> => ({ ...(t.attributes as Record<string, unknown>), tag_number: t.tagNumber }));
+        // Expand each PRIMARY instrument through its legend typical. Loop
+        // accessories (an indicator reading from a transmitter) hang off the
+        // same tapping and imply no further root valves of their own.
+        const impliedValves = pidLineInstruments
+          .filter((i) => !i.parent_instrument && !i.parent_valve)
+          .flatMap((i) => {
+            const tag = String(i.tag_number ?? "").trim();
+            const candidates = tag ? legendTypicalsFor(tag) : [];
+            if (candidates.length === 0) return [];
+            const counts = candidates.map((t) => countImpliedIsolationValves((t.attributes as Record<string, unknown>).implied_components));
+            // Several typicals claim one instrument letter because each
+            // describes a DIFFERENT PART of the same hidden assembly, not a
+            // competing answer: a TT has thermowell typicals covering how
+            // the element is mounted and a separate one covering the
+            // isolation valve at its tapping. A typical that never mentions
+            // a valve is silent about valves -- it does not assert there are
+            // none -- so the count is the largest any typical declares, not
+            // one they must all agree on. Requiring agreement dropped the
+            // root valve on every thermowell-mounted transmitter.
+            const count = Math.max(...counts);
+            return count > 0 ? [{ instrumentTag: tag, typicalName: candidates.map((t) => t.tagNumber).join(" / "), count }] : [];
+          });
         const isoAttrs = isoAttrsForSpec;
         const pidDocNames = Array.from(new Set(pidLineMatches.map((t) => docNameById.get(t.documentId) ?? t.documentId)));
         return {
           lineNumber: line.tagNumber,
           pidDocNames,
           rows: buildRoutingFittingComparison(isoAttrs, bomForLine, pidLineAttrs, pidValveCount, pidLineFittings),
-          valveMatch: buildValveMatch(bomForLine, pidLineValveAttrs, pidLineFittings, pidLineInstruments),
+          valveMatch: buildValveMatch(bomForLine, pidLineValveAttrs, pidLineFittings, pidLineInstruments, impliedValves),
         };
       });
     }
@@ -314,63 +359,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
       {isIso && (
         <section className="rounded border p-4">
-          <h2 className="mb-2 font-medium">Verify ISO</h2>
-          <p className="mb-3 text-sm text-gray-500">
-            Gate-ordered check chain: 0 title block &rarr; 1 line exists in PLL (fail = stop) &rarr; 2 design basis vs PLL (class
-            mismatch = stop) &rarr; 3 P&amp;ID &rarr; 4 specs &rarr; 6 supports &rarr; 7 BOM item codes &rarr; 8 GA routing. Gate 5
-            (geometry/drafting) needs drawing geometry the extraction doesn&apos;t capture and is not checked.
-          </p>
-          <form action={verifyIsoAction.bind(null, docId)} className="flex flex-wrap items-end gap-3">
-            <label className="text-sm">
-              Line list (PLL)
-              <select name="pllDocumentId" className="mt-1 block rounded border px-3 py-2">
-                <option value="">None</option>
-                {pllOptions.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.fileName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm">
-              Spec sheet
-              <select name="specDocumentId" className="mt-1 block rounded border px-3 py-2">
-                <option value="">None</option>
-                {specOptions.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.fileName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm">
-              P&amp;ID (ctrl/cmd-click to select more than one -- a line can span several sheets)
-              <select name="pidDocumentIds" multiple size={Math.min(4, Math.max(2, pidOptions.length))} className="mt-1 block w-56 rounded border px-3 py-2">
-                {pidOptions.length === 0 && (
-                  <option value="" disabled>
-                    None uploaded
-                  </option>
-                )}
-                {pidOptions.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.fileName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm">
-              GA
-              <select name="gaDocumentId" className="mt-1 block rounded border px-3 py-2">
-                <option value="">None</option>
-                {gaOptions.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.fileName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button className="rounded bg-black px-4 py-2 text-white">Verify</button>
-          </form>
+          <h2 className="mb-2 font-medium">ISO checks</h2>
 
           <h3 className="mb-2 mt-4 font-medium">Design basis: ISO vs PLL</h3>
           {designBasis.length === 0 && <p className="mb-4 text-sm text-gray-500">No PLL uploaded/extracted in this project yet.</p>}
@@ -501,16 +490,22 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                                 <td className="py-1">{row.category}</td>
                                 <td className="font-mono text-xs">{row.size}</td>
                                 <td>{row.isoCount || "-"}</td>
-                                <td>{row.pidCount || "-"}</td>
+                                <td>
+                                  {/* A root valve the legend declares is accounted for as
+                                      firmly as one the P&ID draws, so it is added into the
+                                      P&ID figure rather than shown as a separate tally. */}
+                                  {row.pidCount + row.impliedCount || "-"}
+                                </td>
                                 <td className="text-xs text-gray-500">{row.isoDetail ?? "-"}</td>
-                                <td className="text-xs text-gray-500">{row.pidDetail ?? "-"}</td>
+                                <td className="text-xs text-gray-500">
+                                  {/* For a valve hidden inside a simplified symbol the useful
+                                      answer is which device carries it, so the instrument tag
+                                      replaces the "untagged" a P&ID valve would show. */}
+                                  {row.impliedDetail ?? row.pidDetail ?? "-"}
+                                </td>
                                 <td
                                   className={
-                                    row.status === "match"
-                                      ? "text-green-600"
-                                      : row.status === "count mismatch"
-                                        ? "text-amber-600"
-                                        : "text-red-600"
+                                    row.status === "match" ? "text-green-600" : row.status === "count mismatch" ? "text-amber-600" : "text-red-600"
                                   }
                                 >
                                   {row.status}
@@ -592,48 +587,6 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
             </>
           )}
 
-          <h3 className="mb-2 mt-4 font-medium">Findings ({isoFindings.length})</h3>
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b">
-                <th className="py-2">Gate</th>
-                <th>Severity</th>
-                <th>Tag</th>
-                <th>Field</th>
-                <th>ISO value</th>
-                <th>Compared to</th>
-                <th>Other value</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...isoFindings]
-                .sort((a, b) => a.fieldChecked.localeCompare(b.fieldChecked))
-                .map((finding) => {
-                  const [gate, ...fieldParts] = finding.fieldChecked.split(".");
-                  const field = fieldParts.join(".") || finding.fieldChecked;
-                  return (
-                    <tr key={finding.id} className="border-b align-top">
-                      <td className="py-2">{GATE_LABELS[gate] ?? gate}</td>
-                      <td>{finding.severity}</td>
-                      <td>{finding.tagNumber}</td>
-                      <td>{field}</td>
-                      <td>{finding.valueA ?? "-"}</td>
-                      <td>{finding.docBId ? docNameById.get(finding.docBId) ?? finding.docBId : "-"}</td>
-                      <td>{finding.valueB ?? "-"}</td>
-                      <td>{finding.notes ?? "-"}</td>
-                    </tr>
-                  );
-                })}
-              {isoFindings.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="py-4 text-gray-500">
-                    No findings yet -- run Verify above.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
         </section>
       )}
 

@@ -1019,6 +1019,12 @@ export type ValveCategory =
   | "relief/safety"
   | "other valves";
 
+// Valve types that can serve as an instrument ROOT valve -- a manual
+// on/off valve at the tapping. A check, relief or control valve is a
+// process device and is never what a legend typical means by "isolation
+// valve", so those are excluded rather than allowed to absorb the count.
+const ISOLATION_VALVE_CATEGORIES = new Set<ComponentCategory>(["gate", "ball", "globe", "plug", "needle", "butterfly", "diaphragm"]);
+
 export const VALVE_DISPLAY_ORDER: ValveCategory[] = [
   "gate",
   "ball",
@@ -1131,6 +1137,26 @@ export function componentRank(category: ComponentCategory): number {
 // Codes that look like an ISA tag but name a standard or a material.
 const NON_INSTRUMENT_PREFIXES = new Set(["ASME", "ASTM", "API", "ISO", "MSS", "NACE", "BS", "EN", "DIN", "SA", "SS", "CS", "SCH", "MR"]);
 
+// The ISA tag inside a description, normalised so the two documents' ways of
+// writing the same device agree: an ISO BOM row says "INSTRUMENT FT-0003"
+// and a P&ID bubble says "FT-0003", and they are one instrument.
+// Same hyphen-and-two-digits shape classifyInstrument decodes with, for the
+// same reason -- it is what keeps "MSS-SP97" and "ASME B16.5" out.
+export function isaTagOf(text: unknown): string | null {
+  const match = String(text ?? "")
+    .toUpperCase()
+    .match(/\b([A-Z]{2,4})-([A-Z]?\d{2,})\b/);
+  if (!match || NON_INSTRUMENT_PREFIXES.has(match[1])) return null;
+  return `${match[1]}-${match[2]}`;
+}
+
+// A category is an instrument category exactly when the instrument
+// classifier recognises it -- they are generated from the ISA letters, so
+// there is no list to test against.
+function isInstrumentCategory(category: ComponentCategory): boolean {
+  return classifyInstrument(category) !== null;
+}
+
 // "FT-0003", "TW-A111", "FIC-0003" -> its ISA meaning. Also reads
 // the words where a document spells the device out instead of tagging it
 // ("PRESSURE TRANSMITTER"), which is how ISO BOM rows are often written.
@@ -1187,7 +1213,17 @@ export function classifyComponent(text: unknown): ComponentCategory | null {
   const t = String(text ?? "").toLowerCase();
   if (!t.trim()) return null;
   // Not comparable: consumables and stock.
-  if (/gasket|\bbolt\b|\bstud\b|\bnut\b|washer|\bspool\b|\bweld\b(?!.?neck)/.test(t)) return null;
+  if (/gasket|\bbolt\b|\bstud\b|\bnut\b|washer|\bspool\b/.test(t)) return null;
+  // "WELD" in a BOM description almost always qualifies how a component is
+  // MADE or JOINED rather than naming the item: "A216 WCB BODY + ALLOY 625
+  // WELD OVERLAY BODY" on a check valve, "WELD NECK" on a flange, "SOCKET
+  // WELD" on an end connection. Excluding every row that contains the word
+  // deleted the swing check valve on this sheet -- the ISO lists two check
+  // valves in BC70N and the match table compared one against the P&ID's
+  // two, reporting a shortfall that did not exist. Welds are extracted as
+  // their own tag type, so a BOM row is dropped here only when it names a
+  // weld AS the item.
+  if (/\b(field|shop|site)\s+weld\b|^\s*welds?\s*$/.test(t)) return null;
   if (/\bsupport\b|\bshoe\b|\bclamp\b|\bguide\b/.test(t)) return null;
 
   const valve = classifyValve(t);
@@ -1317,7 +1353,36 @@ export interface ValveMatchRow {
   pidCount: number;
   isoDetail: string | null;
   pidDetail: string | null;
+  // How many of the ISO's valves on this row the P&ID does not draw but its
+  // LEGEND accounts for -- the root valves hidden inside a simplified
+  // instrument symbol. Zero for every row the legend says nothing about.
+  impliedCount: number;
+  // The instrument(s) whose root valves these are -- just the tags, since
+  // that is the whole question a reviewer has about a valve the P&ID does
+  // not draw: which device is it on.
+  impliedDetail: string | null;
   status: "match" | "iso only" | "pid only" | "count mismatch";
+}
+
+// One instrument's simplified P&ID symbol, expanded by the legend typical
+// that governs it.
+export interface ImpliedInstrumentValves {
+  instrumentTag: string;
+  typicalName: string;
+  count: number;
+}
+
+// The legend's details column is prose ("FE orifice plate with orifice flange
+// pair / 2x isolation valve / FT instrument connection"), so the count is
+// read off the phrase. An orifice-plate flow transmitter taps the line twice
+// and says "2x"; a pressure transmitter taps it once and just says
+// "isolation valve". No mention at all means the typical requires none -- a
+// temperature transmitter reads through a thermowell, not a valve.
+export function countImpliedIsolationValves(impliedComponents: unknown): number {
+  const text = String(impliedComponents ?? "").toLowerCase();
+  const match = text.match(/(?:(\d+)\s*x\s*)?\b(?:isolation|root|block)\s+valve/);
+  if (!match) return 0;
+  return match[1] ? Number(match[1]) : 1;
 }
 
 // One block per material class the line passes through. A line with two spec
@@ -1340,7 +1405,8 @@ export function buildValveMatch(
   isoBom: Array<Record<string, unknown>>,
   pidValves: Array<Record<string, unknown>>,
   pidFittings: Array<Record<string, unknown>> = [],
-  pidInstruments: Array<Record<string, unknown>> = []
+  pidInstruments: Array<Record<string, unknown>> = [],
+  impliedValves: ImpliedInstrumentValves[] = []
 ): ValveMatchGroup[] {
   interface Side {
     count: number;
@@ -1359,6 +1425,25 @@ export function buildValveMatch(
     map.set(key, side);
   };
 
+  // Instruments are the one component both drawings TAG and only one of them
+  // DIMENSIONS. An ISO BOM row states the tapping size and inherits the
+  // sheet's spec class ("INSTRUMENT FT-0003", AC03N, 25 mm); a P&ID draws a
+  // bubble carrying a tag and nothing else, because neither the spec class
+  // nor the size is the P&ID's to state. Keying an instrument the way a
+  // valve is keyed -- spec + type + size -- therefore cannot ever pair one:
+  // the same transmitter lands in AC03N at DN25 from the ISO and in
+  // "unassigned" unsized from the P&ID, and is reported twice, once as
+  // missing from each drawing. So the ISA tag carries the spec class and
+  // size across, and the P&ID's instrument joins its ISO row.
+  const isoInstrumentByTag = new Map<string, { spec: string; dn: number | null }>();
+  // Fallback for a bubble drawn without a tag: the instrument CATEGORY,
+  // which is specific enough to key on now that instruments are classified
+  // by what they measure and do -- a flow transmitter and a pressure
+  // transmitter are separate rows. Used only where the ISO lists exactly one
+  // such device: two at different sizes is a genuine ambiguity, and picking
+  // one would invent a match rather than report the disagreement.
+  const isoInstrumentByCategory = new Map<ComponentCategory, { spec: string; dn: number | null } | "ambiguous">();
+
   for (const item of isoBom) {
     const text = `${item.component_type ?? ""} ${item.description ?? ""}`;
     const category = classifyComponent(text);
@@ -1366,7 +1451,18 @@ export function buildValveMatch(
     const spec = normalizeSpecClass(item.item_spec_class) ?? "unassigned";
     const desc = String(item.description ?? "").split(",")[0].trim();
     // ISO BOM sizes come from a column headed "N.S. (MM)".
-    add(isoSide, spec, category, normalizeNominalSize(item.size, "mm"), parseNumber(item.quantity) ?? 1, desc);
+    const dn = normalizeNominalSize(item.size, "mm");
+    if (isInstrumentCategory(category)) {
+      const here = { spec, dn };
+      const isa = isaTagOf(text);
+      if (isa) isoInstrumentByTag.set(isa, here);
+      const seen = isoInstrumentByCategory.get(category);
+      // Several rows agreeing on spec class and size are not an ambiguity --
+      // they are the same answer stated twice.
+      const consistent = seen !== "ambiguous" && seen?.spec === spec && seen?.dn === dn;
+      isoInstrumentByCategory.set(category, seen === undefined || consistent ? here : "ambiguous");
+    }
+    add(isoSide, spec, category, dn, parseNumber(item.quantity) ?? 1, desc);
   }
   for (const valve of pidValves) {
     const category = classifyComponent(valve.valve_type);
@@ -1395,11 +1491,73 @@ export function buildValveMatch(
   // it would report a shortfall that does not exist.
   for (const instrument of pidInstruments) {
     if (!isBlank(instrument.parent_instrument) || !isBlank(instrument.parent_valve)) continue;
-    const tag = String(instrument.tag_number ?? "").trim();
-    const category = classifyComponent(`${instrument.instrument_type ?? ""} ${tag}`);
+    const text = `${instrument.instrument_type ?? ""} ${instrument.tag_number ?? ""}`;
+    const category = classifyComponent(text);
     if (!category) continue;
-    const spec = normalizeSpecClass(instrument.spec_class) ?? "unassigned";
-    add(pidSide, spec, category, normalizeNominalSize(instrument.size), parseNumber(instrument.quantity) ?? 1, tag || "untagged");
+    // Taken only where it really is an ISA tag: the extractor falls back to
+    // the device name for a bubble that carries none, and "flow transmitter"
+    // is a description, not something to pair on.
+    const isa = isaTagOf(instrument.tag_number) ?? isaTagOf(text);
+    const tag = isa ?? "";
+    let spec = normalizeSpecClass(instrument.spec_class) ?? "unassigned";
+    let dn = normalizeNominalSize(instrument.size);
+    // Only fills what the P&ID leaves unstated: a P&ID that DOES carry a
+    // spec class or a size keeps its own, so a genuine disagreement between
+    // the drawings still surfaces instead of being overwritten by the ISO.
+    // An instrument the ISO has no row for finds nothing here and stays
+    // unassigned and unsized -- correctly reported as missing from the ISO.
+    const byCategory = isoInstrumentByCategory.get(category);
+    const isoRow = (isa ? isoInstrumentByTag.get(isa) : undefined) ?? (byCategory && byCategory !== "ambiguous" ? byCategory : undefined);
+    if (isoRow) {
+      if (spec === "unassigned") spec = isoRow.spec;
+      if (dn === null) dn = isoRow.dn;
+    }
+    add(pidSide, spec, category, dn, parseNumber(instrument.quantity) ?? 1, tag || "untagged");
+  }
+
+  // A P&ID does NOT draw an instrument's root valves -- the bubble is a
+  // simplified symbol, and the legend's "P&ID REPRESENTATION vs DETAILS"
+  // table is where the hidden parts are declared. Without consulting it,
+  // every instrument isolation valve the ISO correctly lists reads as a
+  // valve the P&ID is missing, which is the opposite of the truth.
+  //
+  // The legend states a count but never a size ("2x isolation valve"), so
+  // the implied valves are allocated to the ISO-only isolation-valve rows
+  // SMALLEST BORE FIRST: a root valve sits on an instrument tapping, the
+  // smallest connection on the run. Rows the P&ID does draw are left alone
+  // -- those are already accounted for and must not be double-credited.
+  const impliedByKey = new Map<string, { count: number; tags: string[] }>();
+  if (impliedValves.length > 0) {
+    const candidates = [...isoSide.keys()]
+      .filter((key) => {
+        const info = meta.get(key)!;
+        return ISOLATION_VALVE_CATEGORIES.has(info.category) && (pidSide.get(key)?.count ?? 0) === 0;
+      })
+      .sort((a, b) => (meta.get(a)!.dn ?? Infinity) - (meta.get(b)!.dn ?? Infinity));
+    const room = new Map(candidates.map((key) => [key, isoSide.get(key)!.count] as const));
+    // An instrument's valves are kept TOGETHER on one row wherever a row has
+    // room for all of them, and the instruments needing the most valves are
+    // placed first. A device that taps the line several times is a
+    // differential one -- an orifice flow meter -- and its tap valves are
+    // the smallest connections on the run, so they settle onto the
+    // smallest-bore row while a single-tap transmitter takes the next size
+    // up. Splitting an instrument across two sizes is the last resort,
+    // because it would attribute one device's valves to two different rows.
+    for (const implied of [...impliedValves].sort((a, b) => b.count - a.count)) {
+      let left = implied.count;
+      const fits = candidates.find((key) => (room.get(key) ?? 0) >= left);
+      for (const key of fits ? [fits] : candidates) {
+        if (left <= 0) break;
+        const take = Math.min(left, room.get(key) ?? 0);
+        if (take <= 0) continue;
+        const entry = impliedByKey.get(key) ?? { count: 0, tags: [] };
+        entry.count += take;
+        if (!entry.tags.includes(implied.instrumentTag)) entry.tags.push(implied.instrumentTag);
+        impliedByKey.set(key, entry);
+        room.set(key, (room.get(key) ?? 0) - take);
+        left -= take;
+      }
+    }
   }
 
   const rank = { "pid only": 0, "iso only": 1, "count mismatch": 2, match: 3 } as const;
@@ -1410,10 +1568,18 @@ export function buildValveMatch(
     const pid = pidSide.get(key);
     const isoCount = iso?.count ?? 0;
     const pidCount = pid?.count ?? 0;
+    const implied = impliedByKey.get(key);
+    const impliedCount = implied?.count ?? 0;
+    // A root valve declared by the legend is accounted for just as firmly as
+    // one drawn on the P&ID, so it counts toward the same verdict rather
+    // than getting a status of its own. A row the legend only partly
+    // explains still reads as a count mismatch -- the balance is a valve
+    // neither document accounts for, which is exactly what to surface.
+    const accounted = pidCount + impliedCount;
     let status: ValveMatchRow["status"];
-    if (isoCount > 0 && pidCount === 0) status = "iso only";
-    else if (pidCount > 0 && isoCount === 0) status = "pid only";
-    else status = isoCount === pidCount ? "match" : "count mismatch";
+    if (isoCount > 0 && accounted === 0) status = "iso only";
+    else if (accounted > 0 && isoCount === 0) status = "pid only";
+    else status = isoCount === accounted ? "match" : "count mismatch";
     const rows = bySpec.get(spec) ?? [];
     rows.push({
       category,
@@ -1422,6 +1588,8 @@ export function buildValveMatch(
       pidCount,
       isoDetail: iso ? iso.details.join(" / ") : null,
       pidDetail: pid ? pid.details.filter((d) => d !== "untagged").join(" / ") || "untagged" : null,
+      impliedCount,
+      impliedDetail: implied?.tags.join(" / ") ?? null,
       status,
     });
     bySpec.set(spec, rows);

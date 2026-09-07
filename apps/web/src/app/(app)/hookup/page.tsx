@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { documents, extractedTags, extractionJobs, organizationMembers, projects } from "@easy/db";
 import { createClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db";
@@ -7,10 +7,9 @@ import { MAX_UPLOAD_MB } from "@/lib/uploadLimits";
 import { uploadDocument } from "../projects/[id]/actions";
 import { deleteDocument } from "../projects/[id]/actions";
 import { DeleteDocumentButton } from "../projects/[id]/DeleteDocumentButton";
-import { groupHookupSheets, verifyHookup } from "@/lib/verifyHookup";
+import { fluidPhaseOf, groupHookupSheets, verifyHookup } from "@/lib/verifyHookup";
 import { classifyComponent, classifyInstrument, mergeIsoLineSheets } from "@/lib/verifyIso";
 import { enrichIsoLineAttrs } from "@easy/shared";
-import { HookupOverride } from "./HookupOverride";
 import { HookupSelectors } from "./HookupSelectors";
 
 // Instrument hook-up verification.
@@ -42,8 +41,12 @@ export default async function HookupPage({
     .from(organizationMembers)
     .where(eq(organizationMembers.userId, user.id));
   const orgIds = memberships.map((m) => m.organizationId);
+  // Ordered so a bare /hookup always lands on the same project. An unordered
+  // select lets Postgres return the rows however it likes, and the fallback
+  // below is "the first one" -- the same instability that made the cutting
+  // page's saved stock appear to come and go.
   const myProjects = orgIds.length
-    ? await db.select().from(projects).where(inArray(projects.organizationId, orgIds))
+    ? await db.select().from(projects).where(inArray(projects.organizationId, orgIds)).orderBy(asc(projects.createdAt), asc(projects.id))
     : [];
 
   const projectId = params.project && myProjects.some((p) => p.id === params.project) ? params.project : myProjects[0]?.id;
@@ -88,6 +91,8 @@ export default async function HookupPage({
   let results: ReturnType<typeof verifyHookup> = [];
   let isoLineNumber: string | null = null;
   let lineService: string | null = null;
+  // How a service CODE was turned into a phase, so the auto-match is auditable.
+  let serviceBasis: string | null = null;
 
   if (hookupDocs.length > 0) {
     const hookupTags = await db
@@ -117,6 +122,31 @@ export default async function HookupPage({
         const phase = match ? (match.attributes as Record<string, unknown>).fluid_phase : null;
         if (typeof phase === "string" && phase.trim()) lineService = phase;
       }
+
+      // Still a CODE rather than a phase? The P&ID legend defines what the
+      // code means ("CRD -- CRUDE OIL"), and crude oil is a liquid service.
+      // Expanding it here is what lets the right typical be chosen without
+      // asking: the hook-up set is indexed by phase, and no amount of
+      // matching on "crd" will ever reach a sheet headed "LIQUID SERVICE".
+      if (lineService && !fluidPhaseOf(lineService)) {
+        const legendDocs = projectDocs.filter((d) => d.docType === "pid_legend");
+        if (legendDocs.length > 0) {
+          const newest = [...legendDocs].sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime())[0];
+          const codes = await db
+            .select()
+            .from(extractedTags)
+            .where(and(eq(extractedTags.documentId, newest.id), eq(extractedTags.tagType, "legend_item")));
+          const wanted = lineService.trim().toUpperCase();
+          const hit = codes.find(
+            (t) => (t.attributes as Record<string, unknown>).category === "service_code" && t.tagNumber.trim().toUpperCase() === wanted
+          );
+          const phase = hit ? fluidPhaseOf((hit.attributes as Record<string, unknown>).meaning) : null;
+          if (phase) {
+            serviceBasis = `${wanted} = ${String((hit!.attributes as Record<string, unknown>).meaning)} (P&ID legend) -- ${phase} service`;
+            lineService = phase;
+          }
+        }
+      }
     }
 
     // The ISO's own instrument entries -- BOM rows that name a measuring
@@ -134,14 +164,10 @@ export default async function HookupPage({
       })
       .filter((v): v is { tag: string; text: string } => v !== null);
 
-    const overrides: Record<string, string> = {};
-    for (const [key, value] of Object.entries(params)) {
-      if (key.startsWith("hk_") && typeof value === "string") overrides[key.slice(3)] = value;
-    }
-    results = verifyHookup(sheets, isoInstruments, isoBom, lineService, overrides);
+    results = verifyHookup(sheets, isoInstruments, isoBom, lineService);
   }
 
-  const statusColor = { present: "text-green-600", missing: "text-red-600", "not checkable": "text-gray-500" } as const;
+  const statusColor = { match: "text-green-600", unmatched: "text-red-600", "not checkable": "text-gray-500" } as const;
 
   return (
     <div className="flex flex-col gap-6">
@@ -240,6 +266,7 @@ export default async function HookupPage({
               {results.length} instrument{results.length > 1 ? "s" : ""}
               {lineService ? ` -- service ${lineService}` : ""}
             </span>
+            {serviceBasis && <span className="ml-2 block text-xs font-normal text-gray-500">{serviceBasis}</span>}
           </h2>
 
           {results.map((result) => (
@@ -249,35 +276,26 @@ export default async function HookupPage({
                 <span className="ml-2 text-gray-500">{result.instrumentLabel}</span>
                 {result.missingCount > 0 ? (
                   <span className="ml-2 text-red-600">
-                    {result.missingCount} piping item{result.missingCount > 1 ? "s" : ""} not found on the ISO
+                    {result.missingCount} piping item{result.missingCount > 1 ? "s" : ""} unmatched on the ISO
                   </span>
                 ) : result.sheet ? (
-                  <span className="ml-2 text-green-600">all piping-scope items present</span>
+                  <span className="ml-2 text-green-600">all piping-scope items matched</span>
                 ) : null}
               </p>
               {result.sheet ? (
                 <p className="mb-2 text-xs text-gray-500">
                   Typical: {[result.sheet.instrumentType, result.sheet.service].filter(Boolean).join(" / ") || result.sheet.title}
                   {result.sheet.sheet ? ` (sheet ${result.sheet.sheet})` : ""}
-                  {result.overridden ? " -- chosen by you" : " -- matched automatically"}
+                  {" -- matched automatically"}
                   {result.sheet.mounting ? ` | ${result.sheet.mounting}` : ""}
                   {result.sheet.slope ? ` | slope ${result.sheet.slope}` : ""}
                 </p>
               ) : (
                 <p className="mb-2 text-xs text-red-600">
                   No typical in this set covers a {result.measuredVariable ?? "?"} instrument
-                  {result.service ? ` on ${result.service} service` : ""} -- pick one below if the set uses different wording.
+                  {result.service ? ` on ${result.service} service` : ""}.
                 </p>
               )}
-
-              <HookupOverride
-                instrumentTag={result.instrumentTag}
-                selectedKey={result.sheet?.key ?? ""}
-                sheets={sheets.map((s) => ({
-                  key: s.key,
-                  label: [s.instrumentType, s.service].filter(Boolean).join(" / ") || s.title || `sheet ${s.sheet}`,
-                }))}
-              />
 
               {result.checks.length > 0 && (
                 <table className="mt-2 w-full text-left text-sm">
@@ -308,8 +326,14 @@ export default async function HookupPage({
                               type not fixed by this sheet &mdash; per {check.item.typeDeferredTo}
                             </div>
                           ) : null}
+                          {/* A solid amber chip with near-black text, stated outright rather
+                              than left to the light/dark remap. The amber-100/amber-800
+                              pairing this used to be is a light patch with dark text, and it
+                              only reads while BOTH halves stay on the same side of the theme
+                              -- lighten one and it turns into yellow on yellow. These two
+                              contrast with each other, so no theme can break them. */}
                           {check.item.implied ? (
-                            <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                            <span className="ml-2 rounded bg-amber-400 px-1.5 py-0.5 text-xs font-medium text-amber-950">
                               not in the hook-up BOM
                               {check.item.deferredTo ? ` -- per ${check.item.deferredTo}` : ""}
                             </span>
@@ -319,8 +343,12 @@ export default async function HookupPage({
                           ) : null}
                         </td>
                         <td>
+                          {/* The size the sheet states IS the requirement --
+                              confirming the ISO used the same size is the
+                              reason this comparison exists -- so it is shown
+                              plainly, with sizeBasis saying where a figure
+                              the sheet draws rather than prints came from. */}
                           {check.item.size ?? "-"}
-                          {check.item.sizeIndicative ? <span className="ml-1 text-xs text-gray-400">(indicative)</span> : null}
                           {check.item.sizeBasis ? <div className="text-xs text-gray-400">{check.item.sizeBasis}</div> : null}
                         </td>
                         <td>{check.item.quantity ?? "-"}</td>

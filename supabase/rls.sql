@@ -23,6 +23,7 @@ alter table project_rule_sets enable row level security;
 alter table findings enable row level security;
 alter table finding_comments enable row level security;
 alter table report_exports enable row level security;
+alter table cutting_stock_plates enable row level security;
 
 -- organizations: visible to members only
 create policy "org members can read their org" on organizations
@@ -181,3 +182,22 @@ create policy "org members can read report_exports" on report_exports
 -- extraction results for any document regardless of which user triggered
 -- it) and is why the service role key must never be exposed to the browser
 -- (see apps/worker/.env.example).
+
+-- cutting_stock_plates: the plate a project holds to cut from. Member of the
+-- owning org, same as every other project-scoped table.
+create policy "org members can read cutting stock" on cutting_stock_plates
+  for select using (
+    exists (
+      select 1 from projects p
+      join organization_members m on m.organization_id = p.organization_id
+      where p.id = cutting_stock_plates.project_id and m.user_id = auth.uid()
+    )
+  );
+create policy "org members can write cutting stock" on cutting_stock_plates
+  for all using (
+    exists (
+      select 1 from projects p
+      join organization_members m on m.organization_id = p.organization_id
+      where p.id = cutting_stock_plates.project_id and m.user_id = auth.uid()
+    )
+  );

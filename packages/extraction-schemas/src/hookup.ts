@@ -111,13 +111,21 @@ export const HOOKUP_SHEET_TOOL: ClaudeTool = {
           'VALVE (SBB OR DBB) SHALL BE AS PER PIPING STANDARD DETAILS ... DWG NO. ...". That isolation valve is still required, and it ' +
           "is the piping engineer's to supply, so record it here rather than leaving the sheet looking as though piping supplies " +
           "nothing. Also record components drawn on the detail with a callout but no BOM row (orifice flanges, the tap itself). " +
+          "THE PRIMARY ELEMENT COUNTS TOO: an orifice hook-up draws the orifice PLATE between its orifice flanges -- on the detail it is the " +
+          "tab protruding from the flange joint -- and that plate is the thing being measured, not an accessory. Record it as its own item " +
+          "alongside the flange pair; recording only the flanges leaves the assembly with nothing in it. " +
           "Leave empty when the BOM covers everything the sheet requires.",
         items: {
           type: "object",
           properties: {
             description: { type: "string", description: 'What the component is, as the sheet names it, e.g. "isolation valve (SBB or DBB) at process connection", "orifice flanges".' },
             size: { type: "string", description: "Size if the sheet states one. Blank where it defers that too." },
-            quantity: { type: "string" },
+            quantity: {
+              type: "string",
+              description:
+                "How many the typical needs FOR ONE TAG -- COUNT THEM ON THE DETAIL, do not assume one. A differential measurement taps the line TWICE: an orifice-plate flow transmitter draws a valve on each of the two taps and runs two impulse lines to the manifold, so its isolation valve quantity is 2, not 1. " +
+                "A single-tap device (pressure transmitter, pressure gauge) is 1. The BOM corroborates the count -- two impulse lines need twice the tube connectors, so a row like \"MALE CONNECTOR 1/2\\\" NPT(M) x 1/2\\\" OD, 4 Nos\" means two lines of two, hence two tappings.",
+            },
             discipline: {
               type: "string",
               description: 'Which discipline supplies it -- "piping", "instrument" or "undetermined" -- decided the same way as for BOM rows.',

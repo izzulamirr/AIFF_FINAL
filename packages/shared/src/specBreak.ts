@@ -62,6 +62,15 @@ export function assignItemSpec(
   specs: SpecBreakEntry[]
 ): { spec_class: string; basis: "rating" } | null {
   if (specs.length < 2) return null; // single-class drawing: the line's class already governs
+  // A class whose rating the drawing does not print is an unresolved
+  // COMPETITOR, not an absent one: it may well carry the same rating as the
+  // apparent match. On a sheet running AC03N (150#), AC03U (rating not
+  // printed) and BC70N (300#), a "150# RF" ball valve looks like a unique
+  // match for AC03N -- and both of the ball valves so placed are physically
+  // in the AC03U segment, which is also 150#. A rating can only place an
+  // item when EVERY class on the sheet has a known rating to be told apart
+  // by; otherwise position is the only sound basis.
+  if (specs.some((s) => s.rating == null)) return null;
   if (!ratingIndicatesClass(itemText)) return null; // e.g. B16.36 orifice flange
   const rating = parsePressureRating(itemText);
   if (rating == null) return null;

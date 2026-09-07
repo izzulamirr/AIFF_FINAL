@@ -36,11 +36,17 @@ export async function runExtractionJob(db: Db, storage: SupabaseClient, jobId: s
     const lowerName = document.fileName.toLowerCase();
     const isCsv = lowerName.endsWith(".csv");
     const isXlsx = lowerName.endsWith(".xlsx");
+    // A DWG is binary and a DXF is CAD group codes, so neither has page text
+    // and both would crash pdfjs. They carry drawn geometry instead, which the
+    // extractor reads from the buffer directly.
+    const isCad = lowerName.endsWith(".dwg") || lowerName.endsWith(".dxf");
     const pages = isCsv
       ? [{ pageNumber: 1, pageText: buffer.toString("utf8") }]
-      : isXlsx
-        ? await extractXlsxPages(buffer)
-        : await extractPdfPages(buffer);
+      : isCad
+        ? [{ pageNumber: 1, pageText: "" }]
+        : isXlsx
+          ? await extractXlsxPages(buffer)
+          : await extractPdfPages(buffer);
 
     // Re-runs (job retries, re-uploads after a failure) must replace any
     // rows left behind by an earlier attempt, or the unique constraints
@@ -49,7 +55,7 @@ export async function runExtractionJob(db: Db, storage: SupabaseClient, jobId: s
     await db.delete(extractedTags).where(eq(extractedTags.documentId, documentId));
 
     // Persist page text (mirrors AIFF's spec_training_document_pages capture)
-    if (pages.length > 0) {
+    if (pages.length > 0 && !isCad) {
       await db.insert(documentPages).values(
         pages.map((p) => ({ documentId, pageNumber: p.pageNumber, pageText: p.pageText }))
       );
@@ -69,9 +75,10 @@ export async function runExtractionJob(db: Db, storage: SupabaseClient, jobId: s
           .where(eq(extractionJobs.id, jobId));
       },
       // Page-image rendering (used by the ISO and P&ID extractors) only
-      // makes sense for PDFs -- a CSV/XLSX buffer would crash pdfjs.
+      // makes sense for PDFs -- a CSV/XLSX buffer would crash pdfjs. A CAD
+      // buffer is passed through because its extractor parses it itself.
       isCsv || isXlsx ? undefined : buffer,
-      { db, projectId: document.projectId }
+      { db, projectId: document.projectId, fileName: document.fileName }
     );
 
     await db.insert(extractionResults).values({

@@ -14,6 +14,7 @@
     "@easy/db": "workspace:*",
     "@easy/extraction-schemas": "workspace:*",
     "@easy/shared": "workspace:*",
+    "@mlightcad/libredwg-web": "^0.7.10",
     "@napi-rs/canvas": "^1.0.2",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.4.5",

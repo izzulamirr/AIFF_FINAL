@@ -11,6 +11,10 @@ type Db = ReturnType<typeof createDb>;
 export interface ExtractionContext {
   db: Db;
   projectId: string;
+  // The uploaded file's name. An extractor that handles more than one kind of
+  // input needs it to tell them apart -- the cutting extractor reads a DWG or
+  // DXF as geometry and a PDF as a picture, and those are different jobs.
+  fileName: string;
 }
 
 export interface ExtractionProgress {

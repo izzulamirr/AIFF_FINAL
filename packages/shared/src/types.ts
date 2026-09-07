@@ -3,7 +3,12 @@
 // manifold), issued as a set of sheets keyed by measured variable and
 // service. A P&ID simplifies all of that to a bubble, so the hookup sheet is
 // what says which components a shop drawing must actually show.
-export const DOC_TYPES = ["pid", "hmb", "pfd", "spec_sheet", "iso", "ga", "pll", "pid_legend", "hookup"] as const;
+//
+// 'cutting' is a cutting-plate drawing: the plate parts of a job drawn to
+// scale in model space, each dimensioned inside its own box, to be cut from
+// sheet. It carries no line number and joins to nothing -- it is an input to
+// the nesting plan, not to cross-document correlation.
+export const DOC_TYPES = ["pid", "hmb", "pfd", "spec_sheet", "iso", "ga", "pll", "pid_legend", "hookup", "cutting"] as const;
 export type DocType = (typeof DOC_TYPES)[number];
 
 // 'spec_class' is a special case: spec sheets define rules keyed by class
@@ -27,11 +32,13 @@ export type DocType = (typeof DOC_TYPES)[number];
 // the drawing by an SW/FW diamond, keyed by its weld number. Both are
 // per-drawing fabrication data, not cross-document tags -- they are what the
 // weld count and spool list are derived from.
+// 'cut_item' rows come from a cutting-plate drawing -- one plate part, keyed
+// by its part mark, carrying the bounding box the nest has to reserve for it.
 // 'hookup_item' rows come from a hook-up typical's bill of materials, keyed
 // by the sheet's item number. Each carries the discipline that supplies it,
 // which is the whole point: only the piping-scope items are checkable
 // against an ISO.
-export const TAG_TYPES = ["line", "equipment", "instrument", "valve", "stream", "spec_class", "bom_item", "support", "legend_item", "fitting", "spool", "weld", "hookup_item"] as const;
+export const TAG_TYPES = ["line", "equipment", "instrument", "valve", "stream", "spec_class", "bom_item", "support", "legend_item", "fitting", "spool", "weld", "hookup_item", "cut_item"] as const;
 
 // Which discipline supplies a hook-up component. Read from the drawn
 // "BY PIPING | BY INSTR." break where the sheet marks one; otherwise decided

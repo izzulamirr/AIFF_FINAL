@@ -8,6 +8,7 @@ import { extractGaDocument } from "./ga";
 import { extractPllDocument } from "./pll";
 import { extractPidLegendDocument } from "./pidLegend";
 import { extractHookupDocument } from "./hookup";
+import { extractCuttingDocument } from "./cutting";
 
 export const EXTRACTORS: ExtractorRegistry = {
   pid: extractPidDocument,
@@ -19,6 +20,7 @@ export const EXTRACTORS: ExtractorRegistry = {
   pll: extractPllDocument,
   pid_legend: extractPidLegendDocument,
   hookup: extractHookupDocument,
+  cutting: extractCuttingDocument,
 };
 
 export * from "./types";

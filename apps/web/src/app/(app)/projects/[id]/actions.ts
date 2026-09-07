@@ -85,7 +85,19 @@ export async function uploadDocument(projectId: string, formData: FormData) {
   const isCsv = lowerName.endsWith(".csv");
   const isXlsx = lowerName.endsWith(".xlsx");
   const isPdf = lowerName.endsWith(".pdf");
-  if (!isCsv && !isPdf && !isXlsx) throw new Error("Only PDF, CSV, and XLSX files are supported.");
+  // CAD, for cutting drawings. A plotted PDF of a cutting sheet records the
+  // dimension figures but not the geometry -- the outlines arrive exploded
+  // into disconnected dash fragments that no tolerance can regroup. The DWG or
+  // DXF carries the profiles themselves, which is the only way the nest can
+  // work to the real shape rather than to a bounding box.
+  const isDwg = lowerName.endsWith(".dwg");
+  const isDxf = lowerName.endsWith(".dxf");
+  if (!isCsv && !isPdf && !isXlsx && !isDwg && !isDxf) {
+    throw new Error("Only PDF, DWG, DXF, CSV, and XLSX files are supported.");
+  }
+  if ((isDwg || isDxf) && docType !== "cutting") {
+    throw new Error("DWG and DXF are only read for cutting drawings. Upload a PDF for this document type.");
+  }
 
   const buffer = Buffer.from(await file.arrayBuffer());
   const fileHash = createHash("sha256").update(buffer).digest("hex");
@@ -96,7 +108,15 @@ export async function uploadDocument(projectId: string, formData: FormData) {
   // lib/supabase/admin.ts).
   const adminStorage = createAdminClient();
   const { error: uploadError } = await adminStorage.storage.from(STORAGE_BUCKET).upload(storagePath, buffer, {
-    contentType: isCsv ? "text/csv" : isXlsx ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/pdf",
+    contentType: isCsv
+      ? "text/csv"
+      : isXlsx
+        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : isDwg
+          ? "image/vnd.dwg"
+          : isDxf
+            ? "image/vnd.dxf"
+            : "application/pdf",
     upsert: false,
   });
   // Ignore "already exists" -- same dedup-by-hash idea as AIFF's

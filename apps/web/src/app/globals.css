@@ -24,3 +24,136 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Dark mode.
+   Every colour utility in this app was chosen against a white page -- muted
+   text as gray-500, warnings as amber-700, panels as gray-50. The body follows
+   the operating system, so on a dark desktop all of that inverts into dark
+   grey on near-black and stops being readable: "not stated" against a 50 mm
+   plate is a thing somebody has to notice, and it was invisible.
+   Rather than sprinkle dark: variants through several hundred class names --
+   which drifts the moment anyone adds a component -- the handful of utilities
+   the app actually uses are remapped here, once. The pairs are chosen for
+   contrast against #0a0a0a rather than by flipping the scale: amber and red
+   have to stay obviously amber and red, because they are the difference
+   between a note and a warning. */
+@media (prefers-color-scheme: dark) {
+  .text-gray-400 { color: #9ca3af; }
+  .text-gray-500 { color: #a8b0bb; }
+  .text-gray-600 { color: #c3cad4; }
+  .text-gray-700 { color: #d4dae2; }
+  .text-gray-900 { color: #f1f3f5; }
+
+  .text-amber-600 { color: #fbbf24; }
+  .text-amber-700 { color: #fcd34d; }
+  .text-amber-800,
+  .text-amber-900 { color: #fde68a; }
+
+  .text-red-600,
+  .text-red-700 { color: #f87171; }
+  .text-red-800,
+  .text-red-900 { color: #fca5a5; }
+
+  .text-green-600 { color: #4ade80; }
+  .text-green-900 { color: #86efac; }
+
+  .text-blue-600 { color: #60a5fa; }
+  .text-blue-800,
+  .text-blue-900 { color: #93c5fd; }
+
+  /* Panels. A near-white surface would glare; these sit just above the page
+     so a bordered block still reads as a block. */
+  .bg-gray-50 { background-color: #16181c; }
+  .bg-gray-100 { background-color: #1c1f24; }
+  .bg-amber-50 { background-color: #2a2008; }
+  .bg-red-50 { background-color: #2b1212; }
+  .bg-green-50 { background-color: #0f2417; }
+  .bg-blue-50 { background-color: #101c2e; }
+
+  /* The -100s are chips and highlights -- a light patch carrying dark text.
+     Lightening the text without darkening the patch is how a hook-up note
+     ended up as pale yellow on pale yellow: legible in neither theme. They are
+     darker than the -50 panels so a highlight still reads as a highlight
+     against the block it sits in. */
+  .bg-amber-100 { background-color: #422006; }
+  .bg-red-100 { background-color: #3b1717; }
+  .bg-blue-100 { background-color: #16263f; }
+  .bg-green-100 { background-color: #14301f; }
+  .bg-yellow-100 { background-color: #3a2f06; }
+
+  /* Borders default to a light-page grey and vanish here. */
+  .border { border-color: #2f333a; }
+  .border-b { border-bottom-color: #2f333a; }
+  .border-t { border-top-color: #2f333a; }
+  .border-amber-300 { border-color: #a16207; }
+  .border-red-300 { border-color: #b91c1c; }
+  .border-green-300 { border-color: #15803d; }
+  .border-blue-300 { border-color: #1d4ed8; }
+
+  /* A black primary button on a near-black page is a button nobody can see.
+     Inverted: light surface, dark label, which is what "primary" means here.
+     These rules sit outside Tailwind's @layer, so they win over the utilities
+     regardless of order -- including .text-white on the same element. */
+  .bg-black {
+    background-color: #f1f3f5;
+    color: #0a0a0a;
+  }
+  .bg-gray-300 { background-color: #3a3f47; }
+
+  /* Disabled has to read as disabled. Tailwind's disabled:bg-gray-300 is a
+     LIGHT grey, which against this page looks more enabled than the enabled
+     state -- so it is handled on the element rather than on the class. */
+  button:disabled {
+    background-color: #26292f;
+    color: #7c828c;
+    border-color: #2f333a;
+  }
+
+  /* Inputs: transparent on a dark page reads as empty space, not as a field. */
+  input,
+  select,
+  textarea {
+    background-color: #16181c;
+    color: #f1f3f5;
+    border-color: #3a3f47;
+  }
+  input::placeholder { color: #8b929c; }
+  input:disabled { background-color: #101216; color: #6b7280; }
+}
+
+/* Printing a cutting plan.
+   A nest is a shop document -- it gets taken to the machine on paper or as a
+   PDF -- so the page has to print as one, not as a screenshot of an app. The
+   editing chrome goes, each plate takes its own sheet, and the layouts print
+   at A3 landscape because a 6 m plate on A4 is unreadable. */
+@media print {
+  @page {
+    size: A3 landscape;
+    margin: 12mm;
+  }
+  nav,
+  .no-print {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+  }
+  body {
+    background: #fff;
+    color: #000;
+  }
+  .print-plate {
+    break-before: page;
+    page-break-before: always;
+  }
+  .print-plate:first-of-type {
+    break-before: auto;
+    page-break-before: auto;
+  }
+  /* Colour-coded parts are how a plate layout is read at all -- without the
+     fills every part is an empty rectangle. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
