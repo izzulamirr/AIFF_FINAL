@@ -85,7 +85,7 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
       spec_breaks: {
         type: "array",
         description:
-          'Spec (material class) breaks drawn on this isometric. A break is marked by "MATL <class>" callout boxes either side of a joint (usually a flanged joint), and/or by a continuation line number carrying a different class. Record one entry per class present on the drawing, INCLUDING the title-block class. Leave the array empty only when the whole drawing is one class.',
+          'Spec (material class) breaks drawn on this isometric. A break is marked ONLY by "MATL <class>" callout boxes drawn either side of a joint on THIS sheet (usually a flanged joint) -- both boxes must actually be printed on this sheet\'s drawing. A "CONT\'D ON/FROM ..." reference to a different line number is NOT a break by itself: that line continues onto a separate drawing (often a genuinely unrelated line, e.g. after a size change or a tie-in), and its class says nothing about this sheet\'s own BOM. If this sheet prints no "MATL" callout pair, it is single-class -- record only the title-block class, even when a continuation target carries a different class suffix. Record one entry per class present on the drawing, INCLUDING the title-block class. Leave the array empty only when the whole drawing is one class.',
         items: {
           type: "object",
           properties: {
