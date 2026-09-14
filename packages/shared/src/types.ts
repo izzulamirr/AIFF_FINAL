@@ -26,18 +26,28 @@ export type DocType = (typeof DOC_TYPES)[number];
 // (flange pairs, blinds, reducers, expansion joints, strainers...) -- keyed
 // by their fitting type, referenced to a line via attributes.line_number.
 //
-// 'spool' and 'weld' rows come from a spooled (fabrication-issued) ISO.
-// A spool is a shop-prefabricated section of the line, keyed by its spool
-// number (the line number plus a -NN suffix); a weld is one joint marked on
-// the drawing by an SW/FW diamond, keyed by its weld number. Both are
-// per-drawing fabrication data, not cross-document tags -- they are what the
-// weld count and spool list are derived from.
 // 'cut_item' rows come from a cutting-plate drawing -- one plate part, keyed
 // by its part mark, carrying the bounding box the nest has to reserve for it.
 // 'hookup_item' rows come from a hook-up typical's bill of materials, keyed
 // by the sheet's item number. Each carries the discipline that supplies it,
 // which is the whole point: only the piping-scope items are checkable
 // against an ISO.
+//
+// 'spool' rows are keyed by the tag printed in the sheet's own "PIPE SPOOLS"
+// schedule (e.g. "...-N-04") -- a spool is a shop-fabricated section of an
+// ISO's run, bounded by a valve flanged on both sides (the only real
+// disassembly point) or by a forced field-weld cut when the welded run would
+// exceed the max spool length; a branch takeoff rides along inside whichever
+// spool contains it rather than getting one of its own. The model is never
+// asked to group a whole sheet's welds into spools directly -- each weld
+// answers two small local questions instead (which weld comes before it, and
+// whether a spool ends at it), and buildSpoolsFromWeldTopology in
+// @easy/shared's spoolRules walks those per-weld answers into spools. See
+// welds.comes_after_weld/closes_spool in packages/extraction-schemas/src/iso.ts
+// for the full rule as given to the model.
+// 'weld' rows are one joint marked on the drawing, keyed by its WELD LIST ID
+// number. Its spool_no attribute is joined from that same walk, not computed
+// from geometry -- see extractIsoDocument in apps/worker/src/extraction/iso.ts.
 export const TAG_TYPES = ["line", "equipment", "instrument", "valve", "stream", "spec_class", "bom_item", "support", "legend_item", "fitting", "spool", "weld", "hookup_item", "cut_item"] as const;
 
 // Which discipline supplies a hook-up component. Read from the drawn

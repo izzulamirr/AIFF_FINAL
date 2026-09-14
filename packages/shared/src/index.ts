@@ -3,6 +3,7 @@ export * from "./rule-config";
 export * from "./normalize";
 export * from "./lineNumber";
 export * from "./specBreak";
+export * from "./spoolRules";
 export * from "./nesting";
 export * from "./trueShapeNesting";
 export * from "./cutPlanExport";

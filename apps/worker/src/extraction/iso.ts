@@ -7,7 +7,7 @@ import {
   sliceText,
   type PageRange,
 } from "@easy/extraction-schemas";
-import { enrichIsoLineAttrs, normalizeSlope, assignItemSpec, parsePressureRating } from "@easy/shared";
+import { enrichIsoLineAttrs, normalizeSlope, assignItemSpec, parsePressureRating, buildSpoolsFromWeldTopology, type WeldTopology } from "@easy/shared";
 import { callTool, callWithRetry } from "./claudeClient";
 import { renderPdfPages, renderPdfPageTiles } from "../pdfImages";
 import { normalizeCellValue } from "./pll";
@@ -46,8 +46,8 @@ interface IsoSheetResult {
   insul_spec?: string;
   insul_thickness_mm?: string;
   spec_breaks?: Array<{ spec_class: string; location_note?: string; rating?: string }>;
-  spools?: Array<{ spool_no: string; listed_in_pipe_spools?: string; note?: string }>;
-  welds?: Array<{ weld_no: string; weld_type?: string; size?: string; spool_no?: string; nde_codes?: string }>;
+  spool_tags?: string[];
+  welds?: Array<{ weld_no: string; weld_type?: string; size?: string; nde_codes?: string; comes_after_weld?: string; closes_spool?: boolean }>;
   bom_items: Array<{
     item_no?: string;
     material_section?: string;
@@ -69,8 +69,6 @@ function pageRangeToNumbers(range: PageRange): number[] {
   for (let n = range.start; n <= range.end; n++) numbers.push(n);
   return numbers;
 }
-
-const WELD_TYPE_LABELS: Record<string, string> = { SW: "shop", FW: "field" };
 
 // A tool schema says "array", but the returned value is model-authored and a
 // single-entry list comes back as a bare object often enough to matter: a
@@ -116,9 +114,10 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
   const imageByPage = new Map(renderedPages.map((r) => [r.pageNumber, r.pngBase64]));
   // Weld marks are ~10 px diamonds on a whole A1 sheet once the API has
   // downsampled it to 1568 px on the long edge, which is far too small to
-  // read "SW" over "01" out of. Same problem, and same fix, as the P&ID's
-  // valve symbols: send overlapping close-up tiles alongside the full sheet
-  // so the diamonds arrive at a legible size. See pdfImages.ts.
+  // read "SW" over "01" out of -- item-number balloons are just as small.
+  // Same problem, and same fix, as the P&ID's valve symbols: send
+  // overlapping close-up tiles alongside the full sheet so small annotation
+  // arrives at a legible size. See pdfImages.ts.
   const renderedTiles = pdfBuffer ? await renderPdfPageTiles(pdfBuffer, allPageNumbers) : [];
   const tilesByPage = new Map<number, typeof renderedTiles>();
   for (const tile of renderedTiles) {
@@ -166,44 +165,85 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       .map((n) => imageByPage.get(n))
       .filter((img): img is string => Boolean(img));
     const sheetTiles = pageRangeToNumbers(sheet.pages).flatMap((n) => tilesByPage.get(n) ?? []);
+    const buildUserText = (retryNote: string) =>
+      `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only, so extract only what is printed on it. ` +
+      `The FIRST image is the whole sheet -- use it for the title block, the materials table, and for tracing where the run goes. ` +
+      (sheetTiles.length
+        ? `The REMAINING ${sheetTiles.length} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${sheetTiles[0]?.cols ?? 3}x${sheetTiles[0]?.rows ?? 2} slice of it at far higher resolution. Small annotation detail -- weld diamonds, item balloons -- is only legible in the TILES, so read those from them and use the whole-sheet image only to work out what sits where. Adjacent tiles OVERLAP, so a mark appearing in two tiles is ONE mark; never count it twice. `
+        : "") +
+      `Read the title block and Bill of Material table directly from the image(s); the text above (if any) is often just a footer/watermark, not the real content. ` +
+      `Extract the full title block (document number, drawing number, line number, size, spec, service, scale, sheet, revision, owner P&ID no., P&ID no., ` +
+      `owner GA drawing no., GA drawing no., any slope annotation, design/operating/hydrotest pressure and temperature, painting system, radiograph, test type, insulation spec, insulation thickness) ` +
+      `and Bill of Material rows via the record_iso_sheet tool call. ` +
+      `For from_location/to_location: trace the drawn pipe run itself from one end to the other -- the start is the callout where the piping begins ` +
+      `(equipment/nozzle connection, tie-in flag, or a "CONT'D FROM ..." continuation box) and the end is the callout where it terminates ` +
+      `("CONT'D ON ...", equipment/nozzle, or tie-in). These callouts sit at the ends of the drawn pipeline, not in the title block. ` +
+      `Read each unit from its column header and append it to the value (e.g. under a "PRESS. kPag" header the value 5 becomes "5 kPag"; under "TEMP. °C" the value 90 becomes "90 °C"; ` +
+      `"INSUL/THK(MM)" of 25 becomes "25 mm"). Leave non-numeric placeholders such as NA, NIL. or AMB. exactly as printed. ` +
+      `Where one field holds more than one value, join them with " / " -- never a line break.\n\n` +
+      `SPEC BREAKS: check THIS sheet for "MATL <class>" callout boxes -- a pair of them printed either side of a joint ON THIS SHEET marks a material/spec break. A "CONT'D ON/FROM ..." reference to a different line number is NOT a break by itself, even when that line's number carries a different class suffix -- it is simply where this run continues onto a separate drawing (often for an unrelated line, e.g. after a size change or a tie-in), and tells you nothing about this sheet's own BOM. Only record spec_breaks when an actual "MATL" callout pair is drawn on this sheet; otherwise record only the title-block class. Record every class present under spec_breaks (including the title-block class) with its pressure class in rating. ` +
+      `Then set item_spec_class on EVERY BOM row: a spec break is a point on the run, so each item sits on one definite side. ` +
+      `Place un-rated rows (plain pipe, weldolets, butt-weld elbows/tees/reducers) by POSITION -- follow the row's item-number balloons to where they sit on the drawn run and decide whether that point is upstream or downstream of the "MATL" callouts. A repeated item code split across two rows is the giveaway that one row is each side (e.g. pipe 28.1M on the long upstream run vs pipe 1.5M on the short stub past the break; 7 elbows upstream vs 1 downstream) -- place each row by where its balloons actually are, and record item_spec_basis "position". ` +
+      `Place rated rows AWAY FROM THE BREAK JOINT by their own rating (item_spec_basis "rating"): a "150# RF" flange, gasket, "150RF" bolt or 150# valve is the 150# class, a "300# RF" one or an alloy-overlay valve is the 300# class. ` +
+      `RATING ONLY PLACES AN ITEM WHERE IT TELLS THE CLASSES APART. Two classes on one sheet often share a rating -- a sheet running AC03N, AC03U and BC70N has AC03N and AC03U BOTH at 150# and only BC70N at 300# -- so a "150# RF" ball valve is NOT evidence for AC03N over AC03U, and neither is a class whose rating the drawing never prints. Before using rating, check the ratings you recorded in spec_breaks: if the item's rating matches more than one class, or if any class on the sheet has no rating printed, rating decides NOTHING and you must place the item by POSITION instead. Getting this wrong is not a rounding error -- it files a valve under a class it is nowhere near. ` +
+      `CRITICAL: rating does NOT identify the side AT the break joint, because that joint is rate-matched to the HIGHER class -- the mating flange on the lower-rated side, the joint gasket and its bolts are all made to the higher rating so they bolt together, yet the flange still BELONGS to the lower class because the break is at the joint face, after it. On a 150#/300# break a 300# flange sitting upstream of the MATL callout is a 150#-class item rate-matched up, NOT a 300#-class item. Place break-joint hardware by POSITION, basis "position (rate-matched to the higher class)". ` +
+      `Never place by rating where the rating comes from the component's own standard either: ASME B16.36 orifice flanges and their gaskets start at 300#, so a 150# line's orifice assembly is 300# with no break involved -- place those by position. ` +
+      `A sheet with no "MATL" callouts has no break on it: set item_spec_class to the title-block class for every row on that sheet, basis "sheet has no spec break".\n\n` +
+      `WELDS: every weld is drawn as a small mark on the pipe, usually labelled with its WELD LIST ID number -- this sheet's own WELD LIST table (columns ID / ND / Type / Category) gives every weld's size and type by that ID. Record one entry per weld under welds, reading the number from the TILES and looking up its type/size in the table BY THAT ID -- never by assuming the table's row order matches physical position along the pipe (a branch takeoff can carry an ID numbered out of sequence with where it sits, and the table itself can be grouped by category rather than by the walk). Attach any NDE code boxes leadered to that weld (e.g. "F5 G9 B11", "FX GX BX", "X") as nde_codes. Sweep the run end to end rather than sampling -- a missed mark undercounts the sheet. ` +
+      `For weld_type, cross-check the table against the mark itself: a genuine FIELD WELD carries its own distinct hatched "FW" tick at that weld's point on the isometric (sometimes drawn beside the weld's number label, not replacing it) -- if that hatched mark sits at a different weld than the table's row order would suggest, trust the mark on the drawing over the table.\n\n` +
+      `SPOOLS: this sheet's own "PIPE SPOOLS" schedule (near the title block) lists this line's spool tags for the sheet -- read just that list of tags, in order, into spool_tags. If the sheet genuinely prints no such schedule, leave spool_tags empty; sequential tags get invented automatically from however many spools the welds below produce.\n\n` +
+      `DO NOT try to sort the sheet's welds into spool groups yourself -- that whole-sheet grouping is exactly the task that goes wrong: it collapses a dozen-plus welds into a handful of buckets in one shot and drifts, jumping welds out of sequence into the wrong spool. Instead, answer two small LOCAL questions for EACH weld, looking only at that one weld's own immediate neighbourhood on the drawing:\n` +
+      `(1) comes_after_weld -- which weld sits immediately before THIS one along the pipe. Look at this weld's own mark and trace back one step to whatever weld or fitting comes right before it. Leave it blank ONLY for the very first weld on the sheet's run. Two different welds legitimately sharing the same comes_after_weld value is normal: that is exactly what a branch takeoff looks like -- the branch's first weld and the mainline's next weld both point back to the same shared weld.\n` +
+      `(2) closes_spool -- true only if a spool ends AT this weld: either a valve flanged on both sides sits immediately after it (the only real bolted disassembly point), or this weld IS the field weld closing a forced cut past 6000mm of continuous welded pipe. False for everything else -- an elbow, reducer, or branch takeoff never closes a spool, and neither does a branch's own dead end (nothing continues past it anyway, so it does not need to). ` +
+      `Getting comes_after_weld and closes_spool right for each weld, one at a time, is what actually produces correct spools -- the grouping itself is computed afterward from your answers, so do not also try to pre-group welds or invent spool_no/spool_tag values on individual welds.\n\n` +
+      `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +
+      `Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, appended under the category they belong to and often in a different colour -- an extra PIPE row, an extra 150# blind flange, a small-bore gate valve, extra stud bolts. These are real material: record them with item_no and item_code left blank, taking description, size and quantity exactly as printed. Do not skip a row because it has no number, and do not renumber the table. ` +
+      `Do NOT record a sheet's "PIPE SPOOLS" list as BOM rows -- that list belongs in spool_tags instead.` +
+      retryNote;
+
     const result = await callWithRetry(() =>
       callTool<IsoSheetResult>(client, {
         tool: ISO_SHEET_TOOL,
         systemPrompt: SYSTEM_PROMPT,
-        userText:
-          `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only, so extract only what is printed on it. ` +
-          `The FIRST image is the whole sheet -- use it for the title block, the materials table, and for tracing where the run goes. ` +
-          (sheetTiles.length
-            ? `The REMAINING ${sheetTiles.length} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${sheetTiles[0]?.cols ?? 3}x${sheetTiles[0]?.rows ?? 2} slice of it at far higher resolution. Small annotation detail -- weld diamonds, spool callouts, NDE code boxes, item balloons -- is only legible in the TILES, so read every one of those from them and use the whole-sheet image only to work out what sits where. Adjacent tiles OVERLAP, so a mark appearing in two tiles is ONE mark; never count it twice. `
-            : "") +
-          `Read the title block and Bill of Material table directly from the image(s); the text above (if any) is often just a footer/watermark, not the real content. ` +
-          `Extract the full title block (document number, drawing number, line number, size, spec, service, scale, sheet, revision, owner P&ID no., P&ID no., ` +
-          `owner GA drawing no., GA drawing no., any slope annotation, design/operating/hydrotest pressure and temperature, painting system, radiograph, test type, insulation spec, insulation thickness) ` +
-          `and Bill of Material rows via the record_iso_sheet tool call. ` +
-          `For from_location/to_location: trace the drawn pipe run itself from one end to the other -- the start is the callout where the piping begins ` +
-          `(equipment/nozzle connection, tie-in flag, or a "CONT'D FROM ..." continuation box) and the end is the callout where it terminates ` +
-          `("CONT'D ON ...", equipment/nozzle, or tie-in). These callouts sit at the ends of the drawn pipeline, not in the title block. ` +
-          `Read each unit from its column header and append it to the value (e.g. under a "PRESS. kPag" header the value 5 becomes "5 kPag"; under "TEMP. °C" the value 90 becomes "90 °C"; ` +
-          `"INSUL/THK(MM)" of 25 becomes "25 mm"). Leave non-numeric placeholders such as NA, NIL. or AMB. exactly as printed. ` +
-          `Where one field holds more than one value, join them with " / " -- never a line break.\n\n` +
-          `SPEC BREAKS: check THIS sheet for "MATL <class>" callout boxes -- a pair of them printed either side of a joint ON THIS SHEET marks a material/spec break. A "CONT'D ON/FROM ..." reference to a different line number is NOT a break by itself, even when that line's number carries a different class suffix -- it is simply where this run continues onto a separate drawing (often for an unrelated line, e.g. after a size change or a tie-in), and tells you nothing about this sheet's own BOM. Only record spec_breaks when an actual "MATL" callout pair is drawn on this sheet; otherwise record only the title-block class. Record every class present under spec_breaks (including the title-block class) with its pressure class in rating. ` +
-          `Then set item_spec_class on EVERY BOM row: a spec break is a point on the run, so each item sits on one definite side. ` +
-          `Place un-rated rows (plain pipe, weldolets, butt-weld elbows/tees/reducers) by POSITION -- follow the row's item-number balloons to where they sit on the drawn run and decide whether that point is upstream or downstream of the "MATL" callouts. A repeated item code split across two rows is the giveaway that one row is each side (e.g. pipe 28.1M on the long upstream run vs pipe 1.5M on the short stub past the break; 7 elbows upstream vs 1 downstream) -- place each row by where its balloons actually are, and record item_spec_basis "position". ` +
-          `Place rated rows AWAY FROM THE BREAK JOINT by their own rating (item_spec_basis "rating"): a "150# RF" flange, gasket, "150RF" bolt or 150# valve is the 150# class, a "300# RF" one or an alloy-overlay valve is the 300# class. ` +
-          `RATING ONLY PLACES AN ITEM WHERE IT TELLS THE CLASSES APART. Two classes on one sheet often share a rating -- a sheet running AC03N, AC03U and BC70N has AC03N and AC03U BOTH at 150# and only BC70N at 300# -- so a "150# RF" ball valve is NOT evidence for AC03N over AC03U, and neither is a class whose rating the drawing never prints. Before using rating, check the ratings you recorded in spec_breaks: if the item's rating matches more than one class, or if any class on the sheet has no rating printed, rating decides NOTHING and you must place the item by POSITION instead. Getting this wrong is not a rounding error -- it files a valve under a class it is nowhere near. ` +
-          `CRITICAL: rating does NOT identify the side AT the break joint, because that joint is rate-matched to the HIGHER class -- the mating flange on the lower-rated side, the joint gasket and its bolts are all made to the higher rating so they bolt together, yet the flange still BELONGS to the lower class because the break is at the joint face, after it. On a 150#/300# break a 300# flange sitting upstream of the MATL callout is a 150#-class item rate-matched up, NOT a 300#-class item. Place break-joint hardware by POSITION, basis "position (rate-matched to the higher class)". ` +
-          `Never place by rating where the rating comes from the component's own standard either: ASME B16.36 orifice flanges and their gaskets start at 300#, so a 150# line's orifice assembly is 300# with no break involved -- place those by position. ` +
-          `A sheet with no "MATL" callouts has no break on it: set item_spec_class to the title-block class for every row on that sheet, basis "sheet has no spec break".\n\n` +
-          `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +
-          `Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, appended under the category they belong to and often in a different colour -- an extra PIPE row, an extra 150# blind flange, a small-bore gate valve, extra stud bolts. These are real material: record them with item_no and item_code left blank, taking description, size and quantity exactly as printed. Do not skip a row because it has no number, and do not renumber the table.\n\n` +
-          `PIPE SPOOLS: a spooled drawing divides the run into shop-prefabricated sections numbered with the line number plus a "-NN" suffix. They appear twice -- as boxed callouts on the drawing with a leader to the section they name, and as a "PIPE SPOOLS" list in the materials block. Record every distinct spool number once under spools, and set listed_in_pipe_spools to say whether it also appears in that list. Never record the PIPE SPOOLS list as BOM rows.\n\n` +
-          `WELDS: every weld is drawn as a small DIAMOND on the pipe holding a type over a number -- "SW" over "01" is shop weld 01, "FW" over "12" is field weld 12. They run in sequence across the sheet and there are typically dozens. Record one entry per diamond under welds, reading the type and number from the TILES; attach any NDE code boxes leadered to that weld (e.g. "F5 G9 B11", "FX GX BX", "X") as nde_codes, and the spool it falls inside as spool_no. The weld count is derived from this list, so every missed diamond undercounts the sheet -- sweep the run end to end rather than sampling.`,
+        userText: buildUserText(""),
         maxTokens: 32000,
         useThinking: true,
         images: [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)],
       })
     );
-    allSheets.push({ drawing_number: sheet.drawing_number, pageNumber: sheet.pages.start, result });
+
+    // Every weld except the sheet's true first one should carry a
+    // comes_after_weld pointer -- that is what buildSpoolsFromWeldTopology
+    // needs to place it in a spool at all. More than one weld missing it is
+    // a detectable miss (dangling welds that would fall out of every
+    // spool), not a legitimate answer. Retry this exact sheet once with a
+    // sharper, explicit call-out before accepting the gap. Welds are
+    // re-taken from the retry too (never mixed with the first attempt's),
+    // since comes_after_weld only makes sense against the SAME weld IDs it
+    // was read against.
+    const missingLinkCount = (welds: IsoSheetResult["welds"]) =>
+      asArray(welds).filter((w) => w.comes_after_weld == null || String(w.comes_after_weld).trim() === "").length;
+
+    let finalResult = result;
+    if (asArray(result.welds).length > 0 && missingLinkCount(result.welds) > 1) {
+      const retryResult = await callWithRetry(() =>
+        callTool<IsoSheetResult>(client, {
+          tool: ISO_SHEET_TOOL,
+          systemPrompt: SYSTEM_PROMPT,
+          userText: buildUserText(
+            `\n\nRETRY -- READ CAREFULLY: your previous attempt on this exact sheet recorded ${asArray(result.welds).length} welds but left comes_after_weld blank on ${missingLinkCount(result.welds)} of them. Only the sheet's very first weld should ever be blank there -- go weld by weld this time and trace back one step to whatever comes immediately before each one, even on branches.`
+          ),
+          maxTokens: 32000,
+          useThinking: true,
+          images: [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)],
+        })
+      );
+      if (missingLinkCount(retryResult.welds) < missingLinkCount(result.welds)) {
+        finalResult = { ...result, spool_tags: retryResult.spool_tags, welds: retryResult.welds };
+      }
+    }
+
+    allSheets.push({ drawing_number: sheet.drawing_number, pageNumber: sheet.pages.start, result: finalResult });
     onProgress?.({ phase: "sheet", current: i + 1, total: locatedSheets.length, detail: `${sheet.drawing_number}${sheet.sheet ? ` sheet ${sheet.sheet}` : ""}` });
   }
 
@@ -218,20 +258,38 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       rating: parsePressureRating(b.rating) ?? (b.rating ? Number(String(b.rating).replace(/\D/g, "")) || null : null),
     }));
 
-    // One spool callout is usually printed twice (drawing + PIPE SPOOLS
-    // list) and a weld diamond can fall in two overlapping tiles, so both
-    // lists are de-duplicated before anything is counted from them.
-    const spools = dedupeBy(asArray(result.spools), (s) => normalizeKey(s.spool_no));
     const welds = dedupeBy(asArray(result.welds), (w) => `${normalizeKey(w.weld_type)}|${normalizeKey(w.weld_no)}`);
-    // "shop_weld_count" / "field_weld_count" / ... -- one per type actually
-    // marked on the sheet, so a drawing using only SW does not report a
-    // fabricated zero for FW.
-    const weldCountsByType = new Map<string, number>();
-    for (const weld of welds) {
-      const type = normalizeKey(weld.weld_type);
-      if (!type) continue;
-      const key = `${WELD_TYPE_LABELS[type] ?? type.toLowerCase()}_weld_count`;
-      weldCountsByType.set(key, (weldCountsByType.get(key) ?? 0) + 1);
+
+    // Spool boundaries are computed purely from each weld's own local
+    // answers (comes_after_weld, closes_spool) -- see
+    // buildSpoolsFromWeldTopology in @easy/shared. The model is never asked
+    // to group a whole sheet's welds into spools directly (that consistently
+    // produced wrong, out-of-sequence groupings); it answers a small local
+    // question per weld while looking at just that weld's neighbourhood, and
+    // the walk here assembles those answers into spools, mapped onto the
+    // sheet's own printed "PIPE SPOOLS" tags (spool_tags) in order.
+    const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
+    const weldTopology: WeldTopology[] = [...weldByNo.entries()].map(([weldNo, w]) => ({
+      weldNo,
+      comesAfterWeld: w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
+      closesSpool: Boolean(w.closes_spool),
+    }));
+    const spoolTags = asArray(result.spool_tags)
+      .map((t) => n(t) ?? t)
+      .filter((t): t is string => Boolean(t));
+    const { spools: resolvedSpools, weldToSpoolTag } = buildSpoolsFromWeldTopology(weldTopology, spoolTags);
+
+    // Deterministic, not asked of the model: a spool's closing weld tells a
+    // reviewer why it ends there without needing separate free-text from a
+    // second pass -- a field weld is always the forced 6000mm cut, anything
+    // else closing a spool is a valve.
+    function closingNote(spool: (typeof resolvedSpools)[number], isLastSpool: boolean): string | undefined {
+      const lastWeldNo = spool.weldNumbers[spool.weldNumbers.length - 1];
+      const lastWeld = lastWeldNo != null ? weldByNo.get(lastWeldNo) : undefined;
+      if (!lastWeld) return undefined;
+      if (normalizeKey(lastWeld.weld_type) === "FW") return `forced 6000mm cut, closes at field weld FW-${lastWeld.weld_no}`;
+      if (lastWeld.closes_spool) return `ends at a valve after weld ${lastWeld.weld_no}`;
+      return isLastSpool ? "runs to the end of the sheet" : undefined;
     }
 
     if (result.line_number) {
@@ -277,45 +335,51 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
           // carries two) -- gate 4/7 validate each BOM item against its own
           // class rather than the title block's.
           spec_breaks: specsWithRatings,
-          // Counted here rather than asked for, so the totals can never
-          // disagree with the spool/weld rows they summarise.
-          spool_count: spools.length,
-          weld_count: welds.length,
-          ...Object.fromEntries(weldCountsByType.entries()),
         }),
       });
-    }
-    for (const spool of spools) {
-      tags.push({
-        tagType: "spool",
-        tagNumber: n(spool.spool_no) ?? spool.spool_no,
-        sourcePage: pageNumber,
-        attributes: {
-          drawing_number,
-          line_number: result.line_number,
-          listed_in_pipe_spools: n(spool.listed_in_pipe_spools),
-          note: n(spool.note),
-        },
-      });
-    }
-    for (const weld of welds) {
-      const weldType = n(weld.weld_type);
-      tags.push({
-        tagType: "weld",
-        // Weld numbers restart per sheet, so the type prefix and the sheet
-        // (sourcePage) are what make a weld identifiable across a drawing.
-        tagNumber: weldType ? `${weldType}-${weld.weld_no}` : weld.weld_no,
-        sourcePage: pageNumber,
-        attributes: {
-          drawing_number,
-          line_number: result.line_number,
-          weld_no: weld.weld_no,
-          weld_type: weldType,
-          size: n(weld.size),
-          spool_no: n(weld.spool_no),
-          nde_codes: n(weld.nde_codes),
-        },
-      });
+      for (const spool of resolvedSpools) {
+        tags.push({
+          tagType: "spool",
+          // The exact tag printed in the sheet's own "PIPE SPOOLS"
+          // schedule (or a sequential fallback on the rare sheet that
+          // prints none) -- see buildSpoolsFromWeldTopology in @easy/shared.
+          tagNumber: spool.spoolTag,
+          sourcePage: pageNumber,
+          attributes: {
+            drawing_number: n(result.drawing_number) ?? drawing_number,
+            line_number: lineNumber,
+            spool_index: spool.index,
+            weld_numbers: spool.weldNumbers,
+            note: closingNote(spool, spool.index === resolvedSpools.length),
+          },
+        });
+      }
+      for (const weld of welds) {
+        const weldType = n(weld.weld_type);
+        const weldNo = Number(weld.weld_no);
+        const spoolTag = Number.isFinite(weldNo) ? weldToSpoolTag.get(weldNo) : undefined;
+        tags.push({
+          tagType: "weld",
+          // Weld numbers restart per sheet, so the type prefix and the sheet
+          // (sourcePage) are what make a weld identifiable across a drawing.
+          tagNumber: weldType ? `${weldType}-${weld.weld_no}` : weld.weld_no,
+          sourcePage: pageNumber,
+          attributes: {
+            drawing_number: n(result.drawing_number) ?? drawing_number,
+            line_number: lineNumber,
+            weld_no: weld.weld_no,
+            weld_type: weldType,
+            size: n(weld.size),
+            nde_codes: n(weld.nde_codes),
+            // Computed by buildSpoolsFromWeldTopology from this weld's own
+            // comes_after_weld/closes_spool answers, then mapped onto the
+            // sheet's printed "PIPE SPOOLS" tags -- never asked of the model
+            // directly. Blank when this weld's ID never appeared in the
+            // topology walk (e.g. a broken comes_after_weld link).
+            spool_no: spoolTag,
+          },
+        });
+      }
     }
     for (const item of asArray(result.bom_items)) {
       const materialSection = n(item.material_section);

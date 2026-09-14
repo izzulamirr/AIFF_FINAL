@@ -103,40 +103,44 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
           required: ["spec_class"],
         },
       },
-      spools: {
+      spool_tags: {
         type: "array",
+        items: { type: "string" },
         description:
-          'The pipe spools this sheet is broken into. A spooled (fabrication-issued) ISO divides the run into shop-prefabricated sections, each numbered with the line number plus a "-NN" suffix (e.g. "8"-22-214-01-CRD-0002-AC03N-N-01"). They appear in TWO places and both must agree: boxed callouts on the drawing with a leader to the spool they name, and a "PIPE SPOOLS" list in the materials block. Record every distinct spool number on the sheet, once each. Leave empty for an unspooled drawing.',
-        items: {
-          type: "object",
-          properties: {
-            spool_no: { type: "string", description: 'The full spool number as printed, e.g. "8\\"-22-214-01-CRD-0002-AC03N-N-01".' },
-            listed_in_pipe_spools: {
-              type: "string",
-              description: '"yes" if this spool number appears in the sheet\'s PIPE SPOOLS list, "no" if it is only a callout on the drawing. A callout with no matching list entry (or the reverse) is a real drafting error worth surfacing, so do not silently reconcile them.',
-            },
-            note: { type: "string", description: "Anything printed about this spool, e.g. what it spans. Blank if nothing." },
-          },
-          required: ["spool_no"],
-        },
+          'Just the list of spool tags from this sheet\'s own "PIPE SPOOLS" schedule (a short list near the title block, e.g. "8\\"-22-214-01-CRD-0002-AC03N-N-04", "...-N-05" ...), in the order printed -- nothing else, no weld assignment here. If the sheet genuinely prints no such schedule (rare), invent sequential tags "<line_number>-01", "-02", ... -- the number of tags should match however many spools the boundary rule on each weld (see closes_spool below) actually produces once walked.',
       },
       welds: {
         type: "array",
         description:
-          'Every weld marked on this sheet. A weld is drawn as a small DIAMOND on the pipe containing a weld type over a number -- "SW" over "01" is shop weld 01, "FW" over "12" is field weld 12. They are numbered sequentially across the drawing and there are usually dozens per sheet. Record one entry per diamond; do not merge, skip, or renumber them, and do not count a diamond twice where overlapping tiles show it more than once. The weld COUNT is derived from this list, so a missed diamond understates it. Leave empty only if the sheet marks no welds at all.',
+          'Every weld marked on this sheet, cross-referenced against the sheet\'s own WELD LIST table (columns ID / ND / Type / Category). A weld is drawn as a small diamond/hexagon mark on the pipe. Record one entry per mark -- sweep the run end to end from the TILES, there are typically a dozen or more per sheet; do not merge, skip, or renumber them, and do not count a mark twice where overlapping tiles show it more than once. Leave empty only if the sheet marks no welds at all.\n\n' +
+          "Two of the fields below (comes_after_weld, closes_spool) place this weld into a pipe spool -- deliberately asked as a LOCAL question about this one weld's immediate neighbourhood, not as a whole-sheet grouping task: figure out spool membership weld by weld, not by trying to sort every weld on the sheet into buckets at once. " +
+          'SPOOL BOUNDARY RULE, for closes_spool: a spool is one shop-welded assembly, and it ends ONLY at (a) a VALVE flanged on both sides sitting right after this weld (the only real bolted disassembly point), or (b) THIS weld itself being a forced cut past 6000mm of continuous welded pipe, which is exactly what a FIELD WELD marks. Nothing else ends a spool -- an elbow, reducer, or a branch takeoff (weldolet/reducing tee) never does, so closes_spool is false for those. A branch dead-ends (typically its own small valve and blind flange) without spawning a new spool -- its last weld does not need closes_spool true, because nothing continues past it anyway.',
         items: {
           type: "object",
           properties: {
-            weld_no: { type: "string", description: 'The number inside the diamond, as printed, e.g. "01", "34".' },
+            weld_no: {
+              type: "string",
+              description:
+                'This weld\'s ID number in the WELD LIST table, as a bare number without any letter prefix (e.g. "6", "12") -- read the number printed at the mark, then use it to look up that same ID\'s row in the table for size/type. The table\'s row ORDER does not always match this weld\'s physical position along the pipe (a branch takeoff can carry an ID that is numbered out of sequence, and the table itself is sometimes grouped by category rather than by position) -- always join by the ID number itself, never by position in either the table or your walk of the drawing.',
+            },
             weld_type: {
               type: "string",
-              description: 'The letters inside the diamond: "SW" (shop weld), "FW" (field weld), or whatever else is printed. Never guess -- read the diamond.',
+              description:
+                'The short code as commonly marked: BW (buttweld), FW (field weld), TW (tapweld), TH (threaded), SW (socketweld). Cross-check two sources and prefer the drawing when they conflict: (1) the WELD LIST table\'s Type column for this weld\'s ID (BUTTWELD/FIELDWELD/TAPWELD/THREADED/SOCKETWELD -- abbreviate it), and (2) the mark itself on the isometric, where a genuine field weld carries a distinct hatched "FW" tick at its own point (sometimes drawn right next to the weld\'s own number label, not replacing it). If the hatched FW mark sits at a different weld than the table\'s category-sorted position would suggest, trust the mark on the drawing.',
             },
-            size: { type: "string", description: "Nominal size of the pipe at this weld, if the adjacent run is dimensioned. Blank otherwise." },
-            spool_no: { type: "string", description: "The spool this weld sits within, when the spool callouts make it clear. Blank if not determinable." },
+            size: { type: "string", description: "Nominal size of the pipe at this weld, from the WELD LIST table's ND column for this ID. Blank otherwise." },
             nde_codes: {
               type: "string",
               description: 'Any inspection/NDE code boxes attached to this weld, joined with " " as printed, e.g. "F5 G9 B11", "FX GX BX", "X". These sit in rectangular boxes with a leader to the weld. Blank if none.',
+            },
+            comes_after_weld: {
+              type: "string",
+              description:
+                "The weld ID number that sits immediately BEFORE this one along the pipe -- look at this weld's own mark and trace back to whatever weld/fitting comes right before it (on the mainline, or on a branch if this weld is on one). Leave BLANK only for the very first weld on the sheet's run (the one nearest its \"CONT'D FROM\" / equipment start). Two different welds legitimately sharing the same comes_after_weld value is normal and expected: it means a branch takes off right there -- both the branch's first weld and the mainline's next weld point back to that same shared weld.",
+            },
+            closes_spool: {
+              type: "boolean",
+              description: "true if a spool ends at THIS weld -- see the SPOOL BOUNDARY RULE above. false for every other weld, including this one being a branch's own dead-end.",
             },
           },
           required: ["weld_no"],
@@ -189,7 +193,7 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
         description:
           "EVERY row printed in the sheet's materials block(s), in order. A sheet issued for fabrication prints TWO blocks -- FABRICATION MATERIALS and ERECTION MATERIALS -- each with its own PT NO sequence; record the rows of both, tagging each with material_section. " +
           "Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, often in a different colour, appended under the category they belong to (an extra PIPE row, an extra 150# flange, a small-bore gate valve). They are real material and must be recorded exactly like numbered rows -- leave item_no and item_code blank and take the description, size and quantity as printed. " +
-          "Do NOT record the PIPE SPOOLS list as BOM rows: those are spool numbers, and belong in spools.",
+          "Do NOT record a sheet's PIPE SPOOLS list as BOM rows -- that list belongs in spool_tags instead.",
       },
     },
     required: ["line_number", "bom_items"],
