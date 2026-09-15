@@ -165,13 +165,42 @@ Pass 2 has since been measured on the same sheet, replaying that saved pass-1 an
   branch. The count-mismatch note in `buildBoundaryNote` is what does this.
 - **Welds and bores read correctly**: 26 welds, with 5/6 at 15mm, 10/11 and 21/22 at
   80mm, 14/15 at 150mm, and both 80mm branches hanging off the right takeoff welds.
-- **Placement was one weld early on three of five cuts** — it returned boundaries after
-  welds 3, 8, 13, 17, 23 where the drawing has 4, 9, 14, 17, 20. A flanged valve is
-  drawn `pipe — WELD — flange — VALVE — flange — WELD — pipe`, and the model was naming
-  the weld *before* the upstream flange weld rather than the flange weld itself. Both
-  the schema and `buildBoundaryNote` now spell that out; **unverified**, no credit left.
+- **Placement is the unsolved part.** It returned boundaries after welds 3, 8, 13, 17,
+  23 where the drawing has 4, 9, 14, 17, 20.
 
-So the ordering and branch handling hold up on the hardest sheet, and what remains is a
+### Placing a valve in the weld numbering — the open problem
+
+`scripts/probe-placement.ts` isolates just this step (supply the weld list and the
+valves, ask only which weld each valve sits after; ~$0.36 a run instead of ~$0.89).
+Two runs on the reference sheet 2, and the failure is stable:
+
+| Attempt | Answer | Correct |
+|---|---|---|
+| Inside the full sheet pass | 3, 8, 13, 17, 23 | 1/5 |
+| Placement asked alone, flange wording spelled out | 1, 7, 14, 17, 23 | 2/5 |
+| Same, plus the main-run weld sequence supplied | 3, 7, 14, 17, 23 | 2/5 |
+| **The drawing** | **4, 9, 14, 17, 20** | |
+
+Every answer picks welds that are **consecutive** — (3,4), (7,8), (14,15), (17,18),
+(23,24). The two it gets right, 14 and 17, are exactly the two valves whose flanking
+welds genuinely are consecutive. The correct pairs for the other three are (4,7),
+(9,12) and (20,23): they straddle a gap, because the branch welds (5/6, 10/11, 21/22)
+are numbered in between. Telling it that explicitly, and giving it the main-run
+sequence so the gaps were visible, did not change the answer.
+
+So: the model locates a valve to roughly the right stretch of pipe but cannot reliably
+say which weld mark is adjacent to it, and defaults to the weld numbered just before.
+What has been tried and did not work: the flange-weld wording, requiring the downstream
+weld as well to force the pair to be considered, and supplying the main-run sequence.
+
+Worth noting for whoever picks this up: a drain or vent branch is usually placed right
+beside an isolation valve, to drain the section the valve isolates — so a branch
+takeoff sitting immediately next to a main-run valve is a real piping pattern, not a
+quirk of this drawing. That makes "the main-run weld just before a branch-number gap"
+a tempting rule, and three of sheet 2's five cuts fit it. It is a heuristic, not a
+rule, and it has not been tested on another drawing — do not encode it without one.
+
+The ordering and branch handling hold up on the hardest sheet; what remains is this
 one-weld offset rather than a structural failure. Scored against the older stored
 payload the code gives **12/18**.
 
