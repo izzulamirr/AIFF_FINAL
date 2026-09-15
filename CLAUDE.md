@@ -200,6 +200,35 @@ quirk of this drawing. That makes "the main-run weld just before a branch-number
 a tempting rule, and three of sheet 2's five cuts fit it. It is a heuristic, not a
 rule, and it has not been tested on another drawing — do not encode it without one.
 
+#### Per-valve crops: the next lever, part-tested
+
+`renderPdfPageCrops` in `pdfImages.ts` cuts a close-up centred on one point, rendering
+the page at whatever scale makes that region land near 1568px, so detail *grows* as the
+frame narrows. `scripts/dump-crops.ts` writes them out to look at;
+`scripts/probe-valve-crop.ts` asks the flanking-weld question about a single valve with
+one crop and nothing else in frame (~$0.08 a call).
+
+Looking at the crops settles that legibility is not the obstacle: at 0.1×0.14 of the
+page, the weld flags, flange bars and item balloons around a valve are all crisp, far
+clearer than in any tile. One call was run against the first valve on sheet 2:
+
+- It **correctly refused to guess** the upstream weld — "leader goes to a flag
+  off-image/not legible" — instead of inventing a plausible number. That is the
+  behaviour the earlier attempts lacked, and it comes from telling it a blank is
+  better than a guess. Keep that instruction.
+- It returned `2` for the downstream weld, reading the **square item balloon `[2]`**
+  (the weldolet's BOM number) as a weld. Weld flags are HEXAGONAL and labelled `BW7` /
+  `FW6` / `TH6`; square boxes are BOM item balloons and never carry a weld number.
+  Nothing in the prompt had said so. It does now — **untested**, credit ran out.
+- The crop was too tight: a weld's number flag can sit well off the pipe, so a frame
+  that holds the valve and both weld dots can still cut off the flags that name them.
+  `MIN_CROP_FRACTION` now floors the region size. Size a crop by what must be
+  READABLE, not by what must be VISIBLE.
+
+Still to do: give pass 1 an approximate position per valve (fractions of the page) so
+crops can be cut without knowing the answer first, then run placement per valve on its
+own crop.
+
 The ordering and branch handling hold up on the hardest sheet; what remains is this
 one-weld offset rather than a structural failure. Scored against the older stored
 payload the code gives **12/18**.

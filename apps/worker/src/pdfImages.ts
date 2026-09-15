@@ -120,6 +120,71 @@ export async function renderPdfPageTiles(
   return tiles;
 }
 
+// A close-up of one spot on a sheet, cut from a render made specifically for
+// it rather than from the tile grid. The tiles answer "what is on this sheet";
+// this answers "what exactly is at this point", which is a different question:
+// reading which weld mark sits next to a particular valve needs that valve and
+// both its neighbouring marks large and together in one frame, and a fixed 3x2
+// grid puts them wherever the grid happens to fall.
+//
+// `region` is in fractions of the page (0-1), x/y being its centre. The render
+// scale is chosen so the crop lands near the 1568 px the API downsamples to --
+// a tighter region is rendered at a correspondingly higher scale, so detail
+// grows as the frame narrows instead of the crop simply getting smaller.
+//
+// Size the region by what has to be READABLE, not by what has to be VISIBLE. A
+// weld mark is a dot with a long leader line out to its number flag, and the
+// flag can sit a good way off the pipe: a crop tight enough to hold a valve and
+// both its weld dots can still cut off the flags that name them, which makes
+// the crop useless for the one question it was cut for. MIN_CROP_FRACTION is
+// the floor that stops a caller asking for a frame too small for any leader to
+// land in.
+export interface RenderedCrop {
+  pageNumber: number;
+  label: string;
+  pngBase64: string;
+}
+
+const CROP_TARGET_PX = 1400;
+const MIN_CROP_FRACTION = 0.14;
+
+export async function renderPdfPageCrops(
+  filePathOrBuffer: string | Buffer,
+  pageNumber: number,
+  regions: Array<{ label: string; x: number; y: number; w: number; h: number }>
+): Promise<RenderedCrop[]> {
+  const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
+  const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;
+  if (pageNumber < 1 || pageNumber > pdf.numPages) return [];
+  const page = await pdf.getPage(pageNumber);
+
+  const crops: RenderedCrop[] = [];
+  for (const region of regions) {
+    const w = Math.min(1, Math.max(MIN_CROP_FRACTION, region.w));
+    const h = Math.min(1, Math.max(MIN_CROP_FRACTION, region.h));
+
+    // Render the whole page at whatever scale makes THIS region come out near
+    // the target size, capped so a very tight crop cannot blow up the canvas.
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(12, Math.max(1, CROP_TARGET_PX / (base.width * w)));
+    const viewport = page.getViewport({ scale });
+    if (Math.max(viewport.width, viewport.height) > 16000) continue;
+
+    const full = createCanvas(viewport.width, viewport.height);
+    await page.render({ canvasContext: full.getContext("2d"), viewport }).promise;
+
+    const cw = viewport.width * w;
+    const ch = viewport.height * h;
+    const sx = Math.max(0, Math.min(viewport.width - cw, viewport.width * region.x - cw / 2));
+    const sy = Math.max(0, Math.min(viewport.height - ch, viewport.height * region.y - ch / 2));
+
+    const crop = createCanvas(Math.round(cw), Math.round(ch));
+    crop.getContext("2d").drawImage(full, sx, sy, cw, ch, 0, 0, Math.round(cw), Math.round(ch));
+    crops.push({ pageNumber, label: region.label, pngBase64: crop.toBuffer("image/png").toString("base64") });
+  }
+  return crops;
+}
+
 export async function renderPdfPages(filePathOrBuffer: string | Buffer, pageNumbers: number[]): Promise<RenderedPage[]> {
   const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
   const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;
