@@ -70,7 +70,7 @@ async function main() {
   const block = message.content.find((b) => b.type === "tool_use");
   if (!block || block.type !== "tool_use") return;
   const labels = new Map<number, string>();
-  for (const f of (block.input as { flags?: Array<{ cell: number; label: string }> }).flags ?? []) labels.set(f.cell, f.label);
+  for (const f of (block.input as { flags?: Array<{ cell: number | string; label: string }> }).flags ?? []) labels.set(Number(f.cell), f.label);
 
   const nameOf = (hitIndex: number) => labels.get(hitIndex + 1) ?? `?${hitIndex}`;
   const numberOf = (hitIndex: number) => Number(String(nameOf(hitIndex)).replace(/^[A-Za-z]+/, ""));

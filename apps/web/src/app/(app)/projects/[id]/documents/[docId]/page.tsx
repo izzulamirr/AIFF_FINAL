@@ -113,7 +113,20 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
     // whose spool couldn't be determined, always listed last.
     weldsBySpool: Array<{
       spoolNo: string;
-      welds: Array<{ id: number; weldNo: string; weldType: string; size: string; ndeCodes: string }>;
+      welds: Array<{
+        id: number;
+        weldNo: string;
+        weldType: string;
+        size: string;
+        ndeCodes: string;
+        /** The spool this weld is stored under, so a row can say whether the drawing agrees. */
+        spoolOf: string;
+        // Which spool this weld belongs to according to the DRAWING -- the
+        // boundaries read off it geometrically, rather than the grouping the
+        // vision extraction produced. Absent on sheets whose boundaries could
+        // not be established.
+        drawingSpool: string | null;
+      }>;
     }>;
   }> = [];
 
@@ -269,10 +282,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
           })
           // Read in the sheet's own printed schedule order.
           .sort((x, y) => x.spoolIndex - y.spoolIndex);
-        const weldsBySpoolMap = new Map<
-          string,
-          Array<{ id: number; weldNo: string; weldType: string; size: string; ndeCodes: string }>
-        >();
+        const weldsBySpoolMap = new Map<string, NonNullable<(typeof spoolsAndWelds)[number]["weldsBySpool"][number]["welds"]>>();
         for (const t of tags.filter((t) => t.tagType === "weld" && onThisSheet(t))) {
           const a = t.attributes as Record<string, unknown>;
           const spoolNo = String(a.spool_no ?? "-");
@@ -283,6 +293,8 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
             weldType: String(a.weld_type ?? "-"),
             size: String(a.size ?? "-"),
             ndeCodes: String(a.nde_codes ?? ""),
+            spoolOf: spoolNo,
+            drawingSpool: a.geometry_spool == null ? null : String(a.geometry_spool),
           });
           weldsBySpoolMap.set(spoolNo, list);
         }
@@ -724,6 +736,33 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                             <p className="mb-1 text-sm font-medium">
                               Weld list <span className="font-normal text-gray-500">({weldsBySpool.reduce((sum, g) => sum + g.welds.length, 0)})</span>
                             </p>
+                            {(() => {
+                              const all = weldsBySpool.flatMap((g) => g.welds);
+                              const fromDrawing = all.filter((w) => w.drawingSpool);
+                              if (fromDrawing.length === 0) {
+                                return (
+                                  <p className="mb-2 text-xs text-gray-500">
+                                    This sheet&rsquo;s spool boundaries could not be established from the drawing, so the grouping below is the one
+                                    the extraction produced and has not been checked against it.
+                                  </p>
+                                );
+                              }
+                              const moved = fromDrawing.filter((w) => w.drawingSpool !== w.spoolOf);
+                              return (
+                                <p className="mb-2 text-xs text-gray-500">
+                                  The spool boundaries on this sheet were read off the drawing itself -- from the valves flanged on the run and the
+                                  field welds in the weld list -- and they account for every spool its PIPE SPOOLS schedule prints.{" "}
+                                  {moved.length === 0 ? (
+                                    <span className="text-green-700">All {fromDrawing.length} welds land in the same spool the extraction gave them.</span>
+                                  ) : (
+                                    <span className="text-amber-700">
+                                      {moved.length} of {fromDrawing.length} welds belong to a different spool than the extraction recorded -- those
+                                      rows are marked below.
+                                    </span>
+                                  )}
+                                </p>
+                              );
+                            })()}
                             {weldsBySpool.map(({ spoolNo, welds }) => (
                               <div key={spoolNo} className="mb-3">
                                 <p className="text-sm font-medium">
@@ -740,7 +779,8 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                                       <th className="py-1 w-20">Weld no.</th>
                                       <th className="w-24">Type</th>
                                       <th className="w-24">Size</th>
-                                      <th>NDE codes</th>
+                                      <th className="w-28">NDE codes</th>
+                                      <th className="w-56">Spool, read off the drawing</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -750,6 +790,17 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                                         <td>{w.weldType}</td>
                                         <td>{w.size}</td>
                                         <td className="text-gray-500">{w.ndeCodes || "-"}</td>
+                                        <td className="text-xs">
+                                          {w.drawingSpool == null ? (
+                                            <span className="text-gray-400">-</span>
+                                          ) : w.drawingSpool === w.spoolOf ? (
+                                            <span className="text-green-700">same</span>
+                                          ) : (
+                                            <span className="font-medium text-amber-700">
+                                              belongs to <span className="font-mono">{w.drawingSpool.slice(-4)}</span>, not this one
+                                            </span>
+                                          )}
+                                        </td>
                                       </tr>
                                     ))}
                                   </tbody>

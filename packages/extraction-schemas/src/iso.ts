@@ -51,7 +51,11 @@ export const ISO_WELD_FLAGS_TOOL: ClaudeTool = {
         items: {
           type: "object",
           properties: {
-            cell: { type: "integer", description: 'The cell number printed under the box, without the "#".' },
+            cell: {
+              type: "string",
+              description:
+                'The cell label printed under the box, without the "#", exactly as shown. It may be a plain number ("7") or carry the drawing sheet as well ("2-7"); copy what is printed rather than renumbering, since it is what ties the reading back to a place on a drawing.',
+            },
             label: {
               type: "string",
               description: 'The label inside the hexagon, exactly as printed, e.g. "BW7", "FW12", "TH6", "TW9". Keep the letter prefix; it gives the weld type.',

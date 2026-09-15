@@ -83,7 +83,7 @@ async function main() {
     console.log("no tool call returned");
     return;
   }
-  const flags = ((block.input as { flags?: Array<{ cell: number; label: string }> }).flags ?? []).slice().sort((a, b) => a.cell - b.cell);
+  const flags = ((block.input as { flags?: Array<{ cell: number | string; label: string }> }).flags ?? []).slice().map((f) => ({ ...f, cell: Number(f.cell) })).sort((a, b) => a.cell - b.cell);
 
   console.log(`\ncell -> label -> weld mark position:`);
   const numbers: number[] = [];

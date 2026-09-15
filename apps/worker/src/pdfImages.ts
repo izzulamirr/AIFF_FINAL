@@ -209,6 +209,77 @@ const CONTACT_COLS = 4;
 const CONTACT_GUTTER = 14;
 const CONTACT_CAPTION = 30;
 
+// The same thing across several pages at once. A whole document's weld flags
+// fit on one contact sheet, so labelling every sheet of an ISO costs ONE call
+// rather than one per sheet -- and the cells carry their own labels, so which
+// page a cell came from is carried by the label, not by position.
+export async function renderMultiPageContactSheet(
+  filePathOrBuffer: string | Buffer,
+  byPage: Array<{ pageNumber: number; regions: ContactSheetRegion[] }>
+): Promise<string | null> {
+  const wanted = byPage.filter((p) => p.regions.length > 0);
+  if (wanted.length === 0) return null;
+  const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
+  const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;
+
+  const cells: Array<{ label: string; src: Canvas; sx: number; sy: number; sw: number; sh: number }> = [];
+  const pad = CONTACT_PAD_PT * CONTACT_SCALE;
+  for (const { pageNumber, regions } of wanted) {
+    if (pageNumber < 1 || pageNumber > pdf.numPages) continue;
+    const page = await pdf.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: CONTACT_SCALE });
+    const full = createCanvas(viewport.width, viewport.height);
+    await page.render({ canvasContext: full.getContext("2d"), viewport }).promise;
+    for (const r of regions) {
+      cells.push({
+        label: r.label,
+        src: full,
+        sx: Math.max(0, r.bbox.x0 * CONTACT_SCALE - pad),
+        sy: Math.max(0, r.bbox.y0 * CONTACT_SCALE - pad),
+        sw: (r.bbox.x1 - r.bbox.x0) * CONTACT_SCALE + pad * 2,
+        sh: (r.bbox.y1 - r.bbox.y0) * CONTACT_SCALE + pad * 2,
+      });
+    }
+  }
+  if (cells.length === 0) return null;
+  return layOutCells(cells);
+}
+
+// Shared by both contact-sheet builders: a grid of boxed cells, each captioned
+// with its own label so an answer maps back without relying on grid order.
+function layOutCells(cells: Array<{ label: string; src: Canvas; sx: number; sy: number; sw: number; sh: number }>): string {
+  const cellW = Math.ceil(Math.max(...cells.map((c) => c.sw)));
+  const cellH = Math.ceil(Math.max(...cells.map((c) => c.sh)));
+  const cols = Math.min(CONTACT_COLS, cells.length);
+  const rows = Math.ceil(cells.length / cols);
+  const outW = cols * (cellW + CONTACT_GUTTER) + CONTACT_GUTTER;
+  const outH = rows * (cellH + CONTACT_CAPTION + CONTACT_GUTTER) + CONTACT_GUTTER;
+
+  const out = createCanvas(outW, outH);
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, outW, outH);
+
+  cells.forEach((c, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = CONTACT_GUTTER + col * (cellW + CONTACT_GUTTER);
+    const y = CONTACT_GUTTER + row * (cellH + CONTACT_CAPTION + CONTACT_GUTTER);
+    ctx.drawImage(c.src, c.sx, c.sy, c.sw, c.sh, x, y, c.sw, c.sh);
+    ctx.strokeStyle = "#999999";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x - 2, y - 2, cellW + 4, cellH + 4);
+    ctx.fillStyle = "#000000";
+    // A concrete family, not "sans-serif": the generic name resolves to nothing
+    // here and the captions come out blank, which silently breaks the mapping
+    // from an answer back to which flag it came from.
+    ctx.font = "bold 24px Arial";
+    ctx.fillText(`#${c.label}`, x + 2, y + cellH + 24);
+  });
+
+  return out.toBuffer("image/png").toString("base64");
+}
+
 export async function renderRegionContactSheet(
   filePathOrBuffer: string | Buffer,
   pageNumber: number,

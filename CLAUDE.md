@@ -413,6 +413,73 @@ On the reference ISO that is 36 weld rows enriched (sheets 2 and 3, the ones who
 were read), with fits of 2.9–3.4pt for a leader that lands on its mark. A weld the
 geometry located but could not name is reported, never guessed at.
 
+#### Spool membership without run order — this is the one that works
+
+**A spool is a CONTIGUOUS block of weld numbers.** Checked against all five sheets as
+stored and against the hand-verified answer, and it holds everywhere. That collapses the
+problem: a sheet's spool assignment is fully described by its CUT POINTS, N printed
+spool tags means N-1 cuts, and **run order is not needed at all** — which is why the
+ordering work above, still unsolved, does not block this.
+
+`src/extraction/isoSpoolCuts.ts` finds the cuts. A cut is at exactly two things:
+
+1. **A field weld** — read straight off the weld list, no drawing needed. On sheet 3
+   that is the entire answer, and on sheet 4 both cuts.
+2. **A valve flanged both sides on the main run** — found geometrically.
+
+A valve is an hourglass, and CAD draws it **two different ways**: as two separate
+triangles meeting at a point, or as ONE four-point polyline that crosses itself. Looking
+only for triangle pairs missed sheet 2's 150mm gate valve entirely. A flange bar is also
+a four-point path — what tells them apart is that the hourglass self-intersects.
+
+Three things that each cost a cut when they were wrong:
+
+- **A valve sits ON the pipe.** The title block and BOM table are full of glyph strokes
+  making the same two-triangle shape — 140 of them on sheet 1 — and none is near a weld.
+- **Take the nearest weld on EACH SIDE of the valve axis**, not the two nearest overall:
+  those can both be on the same side, which put one of sheet 2's cuts three welds early.
+- **Do NOT filter valves by the sheet's main bore.** A valve in a REDUCED section of the
+  main run is smaller than the line size and still cuts a spool — sheet 2's 150mm gate
+  valve sits between two 150mm welds on a 200mm line. Requiring the run bore threw that
+  cut away. Require only that the two flanking welds match EACH OTHER; the count check
+  is what catches a branch valve.
+
+The cut itself is **`max(flanking welds) - 1`**: everything numbered below the valve's
+downstream weld belongs to the spool ending there, branch welds numbered in between
+included, which is the "branch rides along" rule falling out for free.
+
+Measured against the reference ISO:
+
+| sheet | spools | cuts found | result |
+|---|---|---|---|
+| 1 | 3 | 1 of 2 | not trusted, left alone (welds unnumbered) |
+| 2 | 6 | **5 of 5** — after 6, 11, 14, 17, 22 | matches the hand-verified answer exactly |
+| 3 | 2 | **1 of 1** — field weld 6 | agrees with what was stored |
+| 4 | 3 | **2 of 2** — field welds 6, 7 | one weld moves, N-13 -> N-12 |
+| 5 | 4 | 0 of 3 | not trusted, left alone (welds unnumbered) |
+
+**A sheet whose cut count does not match its printed spool count is left alone, never
+guessed at.** Sheets 1 and 5 fail only because their number flags have not been read —
+one contact-sheet call would settle both.
+
+On sheet 2 this moves welds 13 and 14 into N-06 and weld 17 into N-07, which is exactly
+the correction the hand-verified answer calls for.
+
+```
+cd packages/db && node scripts/dump-weld-list.mjs welds.json
+pnpm --filter @easy/worker exec tsx scripts/spool-cuts.ts <file.pdf> welds.json geometry.json cuts.json
+cd packages/db && node scripts/import-spool-cuts.mjs cuts.json --write
+```
+
+The import writes `attributes.geometry_spool` next to the stored `spool_no` and changes
+nothing else, so the document page shows both and a reviewer can see which welds the
+drawing disagrees about.
+
+One bug worth remembering: an unread flag label parsed to weld number **0**, not null
+(`Number("") === 0`), and a cut computed from it landed at -1 — which then accidentally
+satisfied the "right number of cuts" check on sheet 1. Guard for `> 0`, not just
+non-null.
+
 #### Ordering the welds along the run — works, does not yet generalize
 
 `src/extraction/isoRunOrder.ts` walks the run and emits each weld's `comesAfter` and
