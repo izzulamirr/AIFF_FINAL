@@ -180,6 +180,53 @@ export function readSpoolTags(spoolTags: IsoSheetResult["spool_tags"]): string[]
     .filter((t): t is string => Boolean(t));
 }
 
+// Which of the valves pass 1 found actually break the sheet. The conjunction is
+// applied here rather than taken from the model's own is_boundary: a real run
+// returned both of a sheet's check valves as on_main_run + flanged_both_sides +
+// pipe_continues_past and then said is_boundary false, contradicting its own
+// three answers. The three observations are what it was asked to look at; the
+// conclusion from them is arithmetic.
+export function boundaryValvesOf(boundaries: IsoBoundariesResult): IsoValve[] {
+  return asArray(boundaries.valves).filter((v) => {
+    const observed = v.on_main_run != null || v.flanged_both_sides != null || v.pipe_continues_past != null;
+    if (!observed) return Boolean(v.is_boundary); // nothing to recompute from
+    return Boolean(v.on_main_run) && Boolean(v.flanged_both_sides) && v.pipe_continues_past !== false;
+  });
+}
+
+// Pass 1's answer reduced to what the spool walk needs. Its weld numbers are
+// only usable if every boundary got a distinct one: two spools cannot break at
+// the same weld, so a repeat means the field was not really read. A real run
+// returned weld 14 for all four of a sheet's ball valves.
+export function locatedBoundariesOf(boundaries: IsoBoundariesResult): {
+  located: NonNullable<IsoSheetResult["spool_boundaries"]>;
+  weldNumbersUsable: boolean;
+} {
+  const valves = boundaryValvesOf(boundaries);
+  const fieldWelds = asArray(boundaries.field_welds).filter((f) => String(f.weld_no ?? "").trim() !== "");
+
+  const located = [
+    ...valves
+      .filter((v) => String(v.nearest_upstream_weld ?? "").trim() !== "")
+      .map((v) => ({
+        after_weld: String(v.nearest_upstream_weld).trim(),
+        boundary_type: "valve",
+        evidence: [v.item_no ? `PT NO ${v.item_no}` : "", v.size, v.description, v.location_note].filter(Boolean).join(", "),
+      })),
+    ...fieldWelds.map((f) => ({
+      after_weld: String(f.weld_no).trim(),
+      boundary_type: "field_weld",
+      evidence: f.evidence ?? "hatched FW tick on the isometric",
+    })),
+  ];
+
+  const weldNos = located.map((b) => b.after_weld);
+  const everyBoundaryPlaced = located.length === valves.length + fieldWelds.length;
+  const allDistinct = new Set(weldNos).size === weldNos.length;
+
+  return { located, weldNumbersUsable: located.length > 0 && everyBoundaryPlaced && allDistinct };
+}
+
 // Pass 1's prompt. Exported so it can be run on its own against a single sheet
 // (scripts/probe-boundaries.ts) -- the boundary pass is the part whose accuracy
 // is worth measuring by itself, and doing so costs a fraction of a full sheet
@@ -257,6 +304,16 @@ export function spoolProblems(r: IsoSheetResult): string[] {
   const unknown = boundaryNos.filter((no) => !weldNos.has(no));
   if (unknown.length > 0) {
     problems.push(`spool_boundaries points at weld ${unknown.join(", ")}, which is not in the weld list you recorded for this sheet.`);
+  }
+
+  // Two spools cannot break at the same weld. A repeat means the weld number
+  // was not actually read off the drawing for each one -- a real run put all
+  // four of a sheet's ball valves at weld 14.
+  const repeated = [...new Set(boundaryNos.filter((no, i) => boundaryNos.indexOf(no) !== i))];
+  if (repeated.length > 0) {
+    problems.push(
+      `more than one boundary is recorded at weld ${repeated.join(", ")}. Each cut is at a different place on the run, so no two can share an after_weld -- go back to each valve in turn and read the weld label printed at the mark just before it.`
+    );
   }
 
   // A field weld IS a forced cut, so one that closes nothing means either the
@@ -408,30 +465,29 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       })
     );
 
-    // Pass 1's answer, reduced to what the spool walk needs: the weld each
-    // boundary sits just after.
-    const locatedBoundaries: NonNullable<IsoSheetResult["spool_boundaries"]> = [
-      ...asArray(boundaries.valves)
-        .filter((v) => v.is_boundary && String(v.nearest_upstream_weld ?? "").trim() !== "")
-        .map((v) => ({
-          after_weld: String(v.nearest_upstream_weld).trim(),
-          boundary_type: "valve",
-          evidence: [v.item_no ? `PT NO ${v.item_no}` : "", v.size, v.description, v.location_note].filter(Boolean).join(", "),
-        })),
-      ...asArray(boundaries.field_welds)
-        .filter((f) => String(f.weld_no ?? "").trim() !== "")
-        .map((f) => ({
-          after_weld: String(f.weld_no).trim(),
-          boundary_type: "field_weld",
-          evidence: f.evidence ?? "hatched FW tick on the isometric",
-        })),
-    ];
+    const boundaryValves = boundaryValvesOf(boundaries);
+    const { located: locatedBoundaries, weldNumbersUsable } = locatedBoundariesOf(boundaries);
 
-    const boundaryNote = locatedBoundaries.length
-      ? `\n\nSPOOL BOUNDARIES ALREADY FOUND on this sheet, by a pass that did nothing but look for them:\n` +
-        locatedBoundaries.map((b) => `  - after weld ${b.after_weld} (${b.boundary_type}): ${b.evidence}`).join("\n") +
-        `\nTake these as given. Record them in spool_boundaries as they stand, and set closes_spool true on exactly those welds. Your job for spools is the WELDS -- get every weld and its comes_after_weld right, so these boundaries land in the right places. Only contradict the list above if the drawing plainly shows a weld number here is wrong.`
-      : "";
+    // What pass 1 is good at is saying WHICH valves break the sheet; tying each
+    // to a weld number is a different job, done against the weld list that pass
+    // 2 is reading anyway. So pass 2 is always given the valves by name and
+    // asked to place them -- and pass 1's own weld numbers are passed on only
+    // when they survive `locatedBoundariesOf`'s checks.
+    const boundaryNote =
+      boundaryValves.length + asArray(boundaries.field_welds).length === 0
+        ? ""
+        : `\n\nSPOOL BOUNDARIES ON THIS SHEET, from a pass that did nothing but look for them. This sheet is cut into ${readSpoolTags(boundaries.spool_tags).length || "?"} spools, at these points and nowhere else:\n` +
+          boundaryValves
+            .map((v, i) => `  ${i + 1}. VALVE -- ${[v.item_no ? `PT NO ${v.item_no}` : "", v.size, v.description].filter(Boolean).join(", ")}\n       ${v.location_note ?? ""}`)
+            .join("\n") +
+          (asArray(boundaries.field_welds).length
+            ? `\n` + asArray(boundaries.field_welds).map((f) => `  - FIELD WELD at weld ${f.weld_no} -- ${f.evidence ?? ""}`).join("\n")
+            : "") +
+          `\n\nThese are the cuts. Do not add any, and do not drop any. YOUR JOB is to say where each one falls in the weld numbering: record one spool_boundaries entry per item above, with after_weld set to the ID of the last MAIN RUN weld before that valve or field weld, and set closes_spool true on exactly those welds. ` +
+          `If a branch takes off just before one of these valves and dead-ends, give the MAIN RUN's weld -- not the branch's. Two boundaries can never share the same after_weld.` +
+          (weldNumbersUsable
+            ? `\nThe locating pass read these weld numbers for them, as a starting point to check rather than copy: ${locatedBoundaries.map((b) => `${b.after_weld} (${b.boundary_type})`).join(", ")}.`
+            : "");
 
     const buildUserText = (retryNote: string) =>
       `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only, so extract only what is printed on it. ` +
@@ -492,7 +548,10 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     // which both passes read.
     const result: IsoSheetResult = {
       ...sheetRead,
-      spool_boundaries: locatedBoundaries.length > 0 ? locatedBoundaries : sheetRead.spool_boundaries,
+      // Pass 1 places the cuts only where it placed every one of them at a
+      // distinct weld; otherwise pass 2's placement stands, since pass 2 was
+      // told which valves to place and read the weld list to do it.
+      spool_boundaries: weldNumbersUsable ? locatedBoundaries : sheetRead.spool_boundaries,
       spool_tags: readSpoolTags(sheetRead.spool_tags).length > 0 ? sheetRead.spool_tags : boundaries.spool_tags,
     };
 
@@ -534,7 +593,7 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       const retryCandidate: IsoSheetResult = {
         ...result,
         spool_tags: readSpoolTags(retryResult.spool_tags).length > 0 ? retryResult.spool_tags : result.spool_tags,
-        spool_boundaries: locatedBoundaries.length > 0 ? locatedBoundaries : retryResult.spool_boundaries,
+        spool_boundaries: weldNumbersUsable ? locatedBoundaries : retryResult.spool_boundaries,
         welds: retryResult.welds,
       };
       if (spoolProblems(retryCandidate).length < problems.length) finalResult = retryCandidate;

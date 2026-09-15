@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSpoolsFromWeldTopology } from "@easy/shared";
-import { resolveBoundaryWelds, buildWeldTopology, readSpoolTags, spoolProblems } from "./iso";
+import { resolveBoundaryWelds, buildWeldTopology, readSpoolTags, spoolProblems, boundaryValvesOf, locatedBoundariesOf } from "./iso";
 
 type Weld = { weld_no: string; weld_type?: string; size?: string; comes_after_weld?: string; closes_spool?: boolean };
 
@@ -248,6 +248,75 @@ test("dangling welds are caught", () => {
     welds: [w(1, "BW", null), w(2, "BW", null), w(3, "BW", null), w(4, "BW", 3), w(9, "FW", 4)],
   });
   assert.ok(problems.some((p) => /left comes_after_weld blank on 3/.test(p)));
+});
+
+// --- what the boundary pass actually returned on a real run -----------------
+
+test("a valve's own three observations decide whether it is a boundary", () => {
+  // Both of sheet 5's check valves came back on the main run, flanged both
+  // sides, with pipe continuing past -- and is_boundary false, contradicting
+  // all three. The conclusion is arithmetic, so it is taken here.
+  const valves = boundaryValvesOf({
+    valves: [
+      { description: "200mm CHECK VALVE, DUAL PLATE", on_main_run: true, flanged_both_sides: true, pipe_continues_past: true, is_boundary: false },
+      { description: "80mm GATE VALVE", on_main_run: false, flanged_both_sides: true, pipe_continues_past: false, is_boundary: false },
+      { description: "200mm BALL VALVE", on_main_run: true, flanged_both_sides: true, pipe_continues_past: true, is_boundary: true },
+    ],
+  });
+  assert.deepEqual(valves.map((v) => v.description), ["200mm CHECK VALVE, DUAL PLATE", "200mm BALL VALVE"]);
+});
+
+test("repeated weld numbers across boundaries are not usable", () => {
+  // Sheet 2's real answer: four separate ball valves, all reported at weld 14.
+  const { weldNumbersUsable } = locatedBoundariesOf({
+    valves: [14, 14, 14, 14].map((no) => ({
+      description: "200mm BALL VALVE",
+      on_main_run: true,
+      flanged_both_sides: true,
+      pipe_continues_past: true,
+      nearest_upstream_weld: String(no),
+    })),
+    field_welds: [],
+  });
+  assert.equal(weldNumbersUsable, false);
+});
+
+test("distinct weld numbers for every boundary are usable", () => {
+  const { located, weldNumbersUsable } = locatedBoundariesOf({
+    valves: [4, 9, 14].map((no) => ({
+      description: "200mm BALL VALVE",
+      on_main_run: true,
+      flanged_both_sides: true,
+      pipe_continues_past: true,
+      nearest_upstream_weld: String(no),
+    })),
+    field_welds: [{ weld_no: "20", evidence: "hatched FW tick" }],
+  });
+  assert.equal(weldNumbersUsable, true);
+  assert.deepEqual(located.map((b) => b.after_weld), ["4", "9", "14", "20"]);
+});
+
+test("a boundary left unplaced makes the whole set unusable", () => {
+  const { weldNumbersUsable } = locatedBoundariesOf({
+    valves: [
+      { description: "v1", on_main_run: true, flanged_both_sides: true, pipe_continues_past: true, nearest_upstream_weld: "4" },
+      { description: "v2", on_main_run: true, flanged_both_sides: true, pipe_continues_past: true, nearest_upstream_weld: "" },
+    ],
+    field_welds: [],
+  });
+  assert.equal(weldNumbersUsable, false);
+});
+
+test("two boundaries at the same weld is caught as impossible", () => {
+  const problems = spoolProblems({
+    ...cleanRead,
+    spool_boundaries: [
+      { after_weld: "4", boundary_type: "valve", evidence: "PT NO 14, ball valve" },
+      { after_weld: "4", boundary_type: "valve", evidence: "PT NO 14, ball valve" },
+      { after_weld: "9", boundary_type: "field_weld", evidence: "hatched FW tick" },
+    ],
+  });
+  assert.ok(problems.some((p) => /more than one boundary is recorded at weld 4/.test(p)));
 });
 
 // --- generality: none of the above may depend on the reference drawing ------

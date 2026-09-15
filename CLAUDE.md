@@ -139,10 +139,29 @@ same images). A 5-sheet ISO goes from 5 sheet calls to 5 + 5.
 **What is and isn't verified.** The deterministic half is settled: given correct
 boundaries, every sheet of the reference ISO resolves exactly, sheet 2 included (26
 welds, 6 spools, three branches all taking off at closing welds — the arrangement that
-used to scatter them). That is pinned as a test. What is *not* verified is whether the
-model, asked on its own, actually finds the valves — that needs a real vision run, and
-the stored payload predates the boundary pass. Scored against that old payload the code
-gives **12/18**, all six misses being boundaries put at the wrong weld.
+used to scatter them). That is pinned as a test.
+
+The boundary pass has been measured once, on the reference ISO's two worst sheets
+(`scripts/probe-boundaries.ts`, ~$0.89 for both):
+
+- **Valve enumeration works.** Sheet 2 returned 8 valves against a BOM of exactly 8;
+  sheet 5 returned 6 against exactly 6. Main-run vs branch was right on every
+  small-bore valve.
+- **Tying a valve to a weld number did not.** Sheet 2 reported *all four* of its ball
+  valves as sitting after weld 14. Pass 1 is not reading the weld list — pass 2 is —
+  so placing valves in the weld numbering was the same "two jobs at once" mistake at a
+  smaller scale. Pass 2 is now always handed the boundary valves by name and asked to
+  place them; pass 1's own weld numbers are passed on only when every boundary got a
+  distinct one.
+- **The model contradicted its own observations.** Both of sheet 5's check valves came
+  back on the main run, flanged both sides, pipe continuing past — and `is_boundary`
+  false. `boundaryValvesOf` now applies that conjunction in code.
+
+Still unverified: whether pass 2, given the valves by name, places them on the right
+welds. That needs a full two-pass run on one sheet (~$1.40 at Opus rates).
+
+Scored against the old stored payload the code gives **12/18**, all six misses being
+boundaries put at the wrong weld.
 
 Note the boundary weld is the last **main-run** weld before the valve, not the last
 weld by number: on sheet 2 the cuts are after welds 4, 9, 14, 17, 20, because the
