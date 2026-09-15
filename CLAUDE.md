@@ -391,6 +391,21 @@ drawing. Take the NUMBER and the POSITION from geometry, and the TYPE from the t
 
 Thinking is deliberately off for that call: it is reading, not reasoning.
 
+**Render the contact sheet and look at it before paying for it.** `--preview <out.png>`
+on `scripts/export-weld-geometry.ts` builds the exact image the call would send and
+writes it to disk instead of sending it, and `--labels-from <labels.json>` replays a set
+of readings ({"2-1": "BW7", ...}) without a call at all. Two things that buys:
+
+- A broken render costs nothing to find. `renderMultiPageContactSheet` had never
+  actually been run when it was first needed for sheets 1 and 5.
+- The sheet is legible enough that the labels can be read straight off the preview and
+  fed back through `--labels-from`, for nothing. All 39 flags of sheets 1 and 5 were
+  read this way and agreed character-for-character with what the paid run had returned
+  — 39 of 39. **The self-check is what makes that safe**: the numbers on each page
+  must come back as a complete, unduplicated 1..N, and `reportCompleteness` says so
+  explicitly. Send every flag on the page including untraced ones, or that check cannot
+  run.
+
 So the weld half is done: **detection exact (92/92 by geometry), numbering exact (26/26
 by contact sheet), position for 87/92** — sheets 3 and 5 complete, 5 leaders outstanding
 across sheets 1, 2 and 4.
@@ -398,7 +413,7 @@ across sheets 1, 2 and 4.
 #### Seeing it in the database
 
 ```
-pnpm --filter @easy/worker exec tsx scripts/export-weld-geometry.ts <file.pdf> out.json [--read-labels 2,3]
+pnpm --filter @easy/worker exec tsx scripts/export-weld-geometry.ts <file.pdf> out.json [--read-labels 2,3] [--preview sheet.png] [--labels-from labels.json]
 cd packages/db && node scripts/import-weld-geometry.mjs out.json [documentId]
 ```
 
@@ -425,45 +440,73 @@ ordering work above, still unsolved, does not block this.
 
 1. **A field weld** — read straight off the weld list, no drawing needed. On sheet 3
    that is the entire answer, and on sheet 4 both cuts.
-2. **A valve flanged both sides on the main run** — found geometrically.
+2. **A bolted joint on the main run** — found geometrically, below.
 
-A valve is an hourglass, and CAD draws it **two different ways**: as two separate
-triangles meeting at a point, or as ONE four-point polyline that crosses itself. Looking
-only for triangle pairs missed sheet 2's 150mm gate valve entirely. A flange bar is also
-a four-point path — what tells them apart is that the hourglass self-intersects.
+**Look for the FLANGES, not the valve.** This is what took sheet 5 from 1 cut of 3 to
+3 of 3. Its three boundaries are a ball valve, a flanged swing check valve and a wafer
+check valve, and only the ball valve has a symbol worth recognising — the swing check
+is drawn as nothing but the gap between its two flanges. Valve symbols are whatever the
+CAD library happened to contain; a bolted joint is always the same picture, **a pair of
+flange bars facing each other**.
 
-Three things that each cost a cut when they were wrong:
+A flange is a short bar drawn across the pipe: a 4-corner polyline (usually 5 points,
+the first repeated), longest edge several times its shortest. On these sheets every one
+measures 26.3 x 15.2pt, long edge 24.3, ratio 4.0, lw 0.72 — identical at every joint,
+which is why they are paired by likeness TO EACH OTHER rather than against any absolute
+size. Two bars make a joint when they are alike in size, parallel, and close enough to
+be bolted.
 
-- **A valve sits ON the pipe.** The title block and BOM table are full of glyph strokes
-  making the same two-triangle shape — 140 of them on sheet 1 — and none is near a weld.
-- **Take the nearest weld on EACH SIDE of the valve axis**, not the two nearest overall:
-  those can both be on the same side, which put one of sheet 2's cuts three welds early.
-- **Do NOT filter valves by the sheet's main bore.** A valve in a REDUCED section of the
-  main run is smaller than the line size and still cuts a spool — sheet 2's 150mm gate
-  valve sits between two 150mm welds on a 200mm line. Requiring the run bore threw that
-  cut away. Require only that the two flanking welds match EACH OTHER; the count check
-  is what catches a branch valve.
+Four things that each cost a cut when they were wrong:
 
-The cut itself is **`max(flanking welds) - 1`**: everything numbered below the valve's
+- **A joint sits ON the pipe.** The title block and BOM table are full of glyph strokes
+  making these shapes — 140 of them on sheet 1 — and none is near a weld.
+- **Flanges bolt FACE TO FACE.** The line joining two bars' centres must run ACROSS
+  their faces, not along them. Two bars offset ALONG their faces are two different
+  pipes' fittings that happen to be adjacent: sheet 1's two 15mm vent branches each end
+  in a socket-weld fitting drawn as a bar, and pairing those invented a third cut
+  between welds 18 and 21. This test is the whole difference between 2 cuts and 3 there.
+- **Take one weld from EACH SIDE**, decided by the two welds lying in OPPOSITE
+  directions from the joint — not by projecting onto an axis taken from the symbol. A
+  valve drawn as two triangles can have both triangles sharing one bbox centre, making
+  that axis **(0,0)**; every weld then projected to side zero, nothing was found on
+  either side, and two real boundaries on sheet 5 were dropped by a bare `continue` with
+  no diagnostic. Nor simply the two nearest: those can both be on one side, which put
+  one of sheet 2's cuts three welds early.
+- **Do NOT filter by the sheet's main bore.** A valve in a REDUCED section of the main
+  run is smaller than the line size and still cuts a spool — sheet 2's 150mm gate
+  valve sits between two 150mm welds on a 200mm line. Require only that the two flanking
+  welds match EACH OTHER.
+
+**Requiring a weld on BOTH sides is what excludes a branch**, with no rule about bores
+or branches needed. A branch dead-ends in a blind flange, which is bolted on rather than
+welded, so there is no weld beyond it; a tie-in at the edge of the sheet is the same
+shape, the line continuing onto another drawing. Both drop out on their own.
+
+The cut itself is **`max(flanking welds) - 1`**: everything numbered below the joint's
 downstream weld belongs to the spool ending there, branch welds numbered in between
 included, which is the "branch rides along" rule falling out for free.
 
-Measured against the reference ISO:
+Measured against the reference ISO — **every sheet now resolves**:
 
 | sheet | spools | cuts found | result |
 |---|---|---|---|
-| 1 | 3 | 1 of 2 | not trusted, left alone (welds unnumbered) |
+| 1 | 3 | **2 of 2** — field weld 12, joint 6/7 | all 25 welds agree with what was stored |
 | 2 | 6 | **5 of 5** — after 6, 11, 14, 17, 22 | matches the hand-verified answer exactly |
 | 3 | 2 | **1 of 1** — field weld 6 | agrees with what was stored |
 | 4 | 3 | **2 of 2** — field welds 6, 7 | one weld moves, N-13 -> N-12 |
-| 5 | 4 | 0 of 3 | not trusted, left alone (welds unnumbered) |
+| 5 | 4 | **3 of 3** — after 5, 10, 12 | eight welds move; verified four ways |
 
 **A sheet whose cut count does not match its printed spool count is left alone, never
-guessed at.** Sheets 1 and 5 fail only because their number flags have not been read —
-one contact-sheet call would settle both.
+guessed at.** That check is what caught the sheet-1 over-cut described above.
 
-On sheet 2 this moves welds 13 and 14 into N-06 and weld 17 into N-07, which is exactly
-the correction the hand-verified answer calls for.
+On sheet 2 this moves welds 13 and 14 into N-06 and weld 17 into N-07, exactly the
+correction the hand-verified answer calls for. Sheet 5 is the one the stored extraction
+had most wrong: the drawing gives N-15 = 1-5, N-16 = 6-10, N-17 = 11-12, N-18 = 13-14,
+against a stored N-15 = {1} alone. Four independent things agree on it — the BOM's
+own item list (items 9, 10, 11 being the wafer check, the swing check and two ball
+valves), the flange pairs in the geometry, the printed spool-tag count, and **each spool
+tag's pointer leader landing inside the block of welds claimed for it**, which is worth
+remembering as a free cross-check on any sheet.
 
 ```
 cd packages/db && node scripts/dump-weld-list.mjs welds.json

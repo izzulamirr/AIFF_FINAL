@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignSpools, type WeldRow } from "./isoSpoolCuts";
+import { assignSpools, boltedJoints, flankingWelds, type Bar, type WeldRow } from "./isoSpoolCuts";
+import type { Pt } from "./isoWeldMarks";
 
 const welds = (spec: Array<[number, string, string]>): WeldRow[] =>
   spec.map(([weldNo, weldType, size]) => ({ weldNo, weldType, size }));
@@ -64,4 +65,93 @@ test("a weld beyond the last spool tag is left unassigned rather than guessed", 
   assert.equal(m.get(1), "A");
   assert.equal(m.get(2), "B");
   assert.equal(m.has(3), false);
+});
+
+// --- Sheet 5 of the reference ISO ------------------------------------------
+// Its three boundaries are a ball valve, a FLANGED SWING check valve and a
+// WAFER check valve, and only the ball valve has a valve symbol that can be
+// recognised -- the swing check is drawn as nothing but the gap between its two
+// flanges. Verified against the sheet four ways: the BOM's own item list, the
+// flange pairs on the drawing, the count of printed spool tags, and each spool
+// tag's pointer leader landing inside the block of welds claimed for it.
+const TAGS5 = ["N-15", "N-16", "N-17", "N-18"];
+const SHEET5 = welds([
+  [1, "BW", "200"], [2, "BW", "200"], [3, "BW", "200"], [4, "TW", "80"], [5, "BW", "80"],
+  [6, "BW", "200"], [7, "BW", "200"], [8, "BW", "200"], [9, "TW", "80"], [10, "BW", "80"],
+  [11, "BW", "200"], [12, "BW", "200"], [13, "BW", "200"], [14, "BW", "200"],
+]);
+
+test("sheet 5's cuts give the membership its spool tag leaders point at", () => {
+  assert.deepEqual(members(assignSpools(SHEET5, [5, 10, 12], TAGS5)), {
+    "N-15": [1, 2, 3, 4, 5],
+    "N-16": [6, 7, 8, 9, 10],
+    "N-17": [11, 12],
+    "N-18": [13, 14],
+  });
+});
+
+test("an 80mm branch rides along even when its welds are numbered across a cut", () => {
+  // The cut sits between main-run welds 8 and 11; the 80mm branch numbered 9/10
+  // in between belongs to the spool that closes there, not the one after it.
+  const m = assignSpools(SHEET5, [5, 10, 12], TAGS5);
+  assert.equal(m.get(9), "N-16");
+  assert.equal(m.get(10), "N-16");
+  assert.equal(m.get(11), "N-17");
+});
+
+// --- Finding a bolted joint -------------------------------------------------
+// A spool ends at the BOLTS, not at a valve symbol, so a joint is a pair of
+// flange bars facing each other. Coordinates here are deliberately a round
+// made-up scale, not the reference sheet's, so the rules cannot quietly become
+// fitted to one drawing.
+const bar = (x: number, y: number, dir: Pt, long = 20): Bar => ({ at: { x, y }, dir, long });
+const ACROSS: Pt = { x: 0, y: 1 };  // face drawn across a horizontal pipe
+
+test("two flanges facing each other along the pipe make a joint", () => {
+  const joints = boltedJoints([bar(100, 100, ACROSS), bar(140, 100, ACROSS)]);
+  assert.deepEqual(joints, [{ x: 120, y: 100 }]);
+});
+
+test("two flanges side by side on different pipes do not", () => {
+  // Same size, parallel, close -- but offset ALONG their faces rather than
+  // across them, so they are two pipes' fittings, not one bolted joint. This is
+  // sheet 1's pair of 15mm vent branches, which invented a third cut.
+  assert.deepEqual(boltedJoints([bar(100, 100, ACROSS), bar(100, 140, ACROSS)]), []);
+});
+
+test("a lone flange is not a joint", () => {
+  // A tie-in at the edge of the sheet: the line continues onto another drawing,
+  // so only one side of the bolted joint is actually drawn here.
+  assert.deepEqual(boltedJoints([bar(100, 100, ACROSS)]), []);
+});
+
+test("flanges of unlike size are not bolted to each other", () => {
+  assert.deepEqual(boltedJoints([bar(100, 100, ACROSS, 20), bar(140, 100, ACROSS, 40)]), []);
+});
+
+test("flanges too far apart to be bolted are not a joint", () => {
+  assert.deepEqual(boltedJoints([bar(100, 100, ACROSS), bar(400, 100, ACROSS)]), []);
+});
+
+// --- Which welds flank a joint ---------------------------------------------
+test("the flanking welds are one per side, not the two nearest", () => {
+  // Weld 1 at 10pt and weld 2 at 12pt sit on the SAME side; the real partner is
+  // weld 3 on the other. Taking the two nearest overall put one of sheet 2's
+  // cuts three welds early.
+  const positions = [
+    { x: 90, y: 100 },  // 0: left, 10pt
+    { x: 88, y: 100 },  // 1: left, 12pt
+    { x: 120, y: 100 }, // 2: right, 20pt
+  ];
+  assert.deepEqual(flankingWelds({ x: 100, y: 100 }, positions), [0, 2]);
+});
+
+test("a joint with a weld on only one side flanks nothing", () => {
+  // A branch valve backed by a BLIND flange, which is bolted on rather than
+  // welded -- so there is no weld beyond it. Correctly not a spool boundary.
+  assert.equal(flankingWelds({ x: 100, y: 100 }, [{ x: 90, y: 100 }, { x: 88, y: 102 }]), null);
+});
+
+test("a weld beyond the flanking radius is not counted as a side", () => {
+  assert.equal(flankingWelds({ x: 100, y: 100 }, [{ x: 90, y: 100 }, { x: 400, y: 100 }]), null);
 });
