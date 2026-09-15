@@ -67,7 +67,7 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
                     welds in the weld list -- and they account for every spool its PIPE SPOOLS schedule prints.{" "}
                     {moved.length > 0 ? (
                       <span className="text-amber-700">
-                        {moved.length} of {fromDrawing.length} welds belong to a different spool than the one stored -- those rows are marked
+                        {moved.length} of {fromDrawing.length} welds belong to a different spool than the one stored -- shown as a mismatch
                         below.
                       </span>
                     ) : corrected.length === 0 ? (
@@ -78,7 +78,7 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
                       <span className="text-green-700">
                         All {fromDrawing.length} welds now sit in the spool the drawing puts them in.{" "}
                         <span className="text-amber-700">
-                          {corrected.length} were corrected from what the extraction had recorded -- those rows say what they were.
+                          {corrected.length} of them were corrected from what the extraction had originally recorded.
                         </span>
                       </span>
                     )}
@@ -104,7 +104,7 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
                           <th className="w-28">Type</th>
                           <th className="w-20">Size</th>
                           <th className="w-28">NDE</th>
-                          <th className="w-56">Against the drawing</th>
+                          <th className="w-36">Against the drawing</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -115,18 +115,15 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
                             <td>{w.size}</td>
                             <td className="text-gray-500">{w.ndeCodes || "-"}</td>
                             <td className="text-xs">
+                              {/* Nothing to compare against on a sheet whose
+                                  boundaries could not be read off the drawing,
+                                  which is not a match and not a mismatch. */}
                               {w.drawingSpool == null ? (
-                                <span className="text-gray-400">not established</span>
-                              ) : w.drawingSpool !== w.spoolOf ? (
-                                <span className="font-medium text-amber-700">
-                                  belongs to <span className="font-mono">{w.drawingSpool.slice(-4)}</span>, not this one
-                                </span>
-                              ) : w.spoolWas && w.spoolWas !== w.spoolOf ? (
-                                <span className="text-amber-700">
-                                  corrected, was <span className="font-mono">{w.spoolWas.slice(-4)}</span>
-                                </span>
+                                <span className="text-gray-400">-</span>
+                              ) : w.drawingSpool === w.spoolOf ? (
+                                <span className="text-green-700">match</span>
                               ) : (
-                                <span className="text-green-700">confirmed</span>
+                                <span className="font-medium text-amber-700">mismatch</span>
                               )}
                             </td>
                           </tr>
