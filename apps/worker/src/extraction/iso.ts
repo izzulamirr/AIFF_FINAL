@@ -227,6 +227,104 @@ export function locatedBoundariesOf(boundaries: IsoBoundariesResult): {
   return { located, weldNumbersUsable: located.length > 0 && everyBoundaryPlaced && allDistinct };
 }
 
+export function buildIsoSheetPrompt(opts: {
+  sheetText: string;
+  drawingNumber?: string;
+  sheetLabel?: string;
+  pageNumber: number;
+  tileCount: number;
+  tileCols?: number;
+  tileRows?: number;
+  boundaryNote: string;
+  retryNote: string;
+}): string {
+  return (
+
+      `${opts.sheetText}\n\nThis is isometric drawing "${opts.drawingNumber ?? ""}"${opts.sheetLabel ? `, sheet ${opts.sheetLabel}` : ""} -- page ${opts.pageNumber} of the document. The attached images are THIS sheet only, so extract only what is printed on it. ` +
+      `The FIRST image is the whole sheet -- use it for the title block, the materials table, and for tracing where the run goes. ` +
+      (opts.tileCount
+        ? `The REMAINING ${opts.tileCount} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${opts.tileCols ?? 3}x${opts.tileRows ?? 2} slice of it at far higher resolution. Small annotation detail -- weld diamonds, item balloons -- is only legible in the TILES, so read those from them and use the whole-sheet image only to work out what sits where. Adjacent tiles OVERLAP, so a mark appearing in two tiles is ONE mark; never count it twice. `
+        : "") +
+      `Read the title block and Bill of Material table directly from the image(s); the text above (if any) is often just a footer/watermark, not the real content. ` +
+      `Extract the full title block (document number, drawing number, line number, size, spec, service, scale, sheet, revision, owner P&ID no., P&ID no., ` +
+      `owner GA drawing no., GA drawing no., any slope annotation, design/operating/hydrotest pressure and temperature, painting system, radiograph, test type, insulation spec, insulation thickness) ` +
+      `and Bill of Material rows via the record_iso_sheet tool call. ` +
+      `For from_location/to_location: trace the drawn pipe run itself from one end to the other -- the start is the callout where the piping begins ` +
+      `(equipment/nozzle connection, tie-in flag, or a "CONT'D FROM ..." continuation box) and the end is the callout where it terminates ` +
+      `("CONT'D ON ...", equipment/nozzle, or tie-in). These callouts sit at the ends of the drawn pipeline, not in the title block. ` +
+      `Read each unit from its column header and append it to the value (e.g. under a "PRESS. kPag" header the value 5 becomes "5 kPag"; under "TEMP. °C" the value 90 becomes "90 °C"; ` +
+      `"INSUL/THK(MM)" of 25 becomes "25 mm"). Leave non-numeric placeholders such as NA, NIL. or AMB. exactly as printed. ` +
+      `Where one field holds more than one value, join them with " / " -- never a line break.\n\n` +
+      `SPEC BREAKS: check THIS sheet for "MATL <class>" callout boxes -- a pair of them printed either side of a joint ON THIS SHEET marks a material/spec break. A "CONT'D ON/FROM ..." reference to a different line number is NOT a break by itself, even when that line's number carries a different class suffix -- it is simply where this run continues onto a separate drawing (often for an unrelated line, e.g. after a size change or a tie-in), and tells you nothing about this sheet's own BOM. Only record spec_breaks when an actual "MATL" callout pair is drawn on this sheet; otherwise record only the title-block class. Record every class present under spec_breaks (including the title-block class) with its pressure class in rating. ` +
+      `Then set item_spec_class on EVERY BOM row: a spec break is a point on the run, so each item sits on one definite side. ` +
+      `Place un-rated rows (plain pipe, weldolets, butt-weld elbows/tees/reducers) by POSITION -- follow the row's item-number balloons to where they sit on the drawn run and decide whether that point is upstream or downstream of the "MATL" callouts. A repeated item code split across two rows is the giveaway that one row is each side (e.g. pipe 28.1M on the long upstream run vs pipe 1.5M on the short stub past the break; 7 elbows upstream vs 1 downstream) -- place each row by where its balloons actually are, and record item_spec_basis "position". ` +
+      `Place rated rows AWAY FROM THE BREAK JOINT by their own rating (item_spec_basis "rating"): a "150# RF" flange, gasket, "150RF" bolt or 150# valve is the 150# class, a "300# RF" one or an alloy-overlay valve is the 300# class. ` +
+      `RATING ONLY PLACES AN ITEM WHERE IT TELLS THE CLASSES APART. Two classes on one sheet often share a rating -- a sheet running AC03N, AC03U and BC70N has AC03N and AC03U BOTH at 150# and only BC70N at 300# -- so a "150# RF" ball valve is NOT evidence for AC03N over AC03U, and neither is a class whose rating the drawing never prints. Before using rating, check the ratings you recorded in spec_breaks: if the item's rating matches more than one class, or if any class on the sheet has no rating printed, rating decides NOTHING and you must place the item by POSITION instead. Getting this wrong is not a rounding error -- it files a valve under a class it is nowhere near. ` +
+      `CRITICAL: rating does NOT identify the side AT the break joint, because that joint is rate-matched to the HIGHER class -- the mating flange on the lower-rated side, the joint gasket and its bolts are all made to the higher rating so they bolt together, yet the flange still BELONGS to the lower class because the break is at the joint face, after it. On a 150#/300# break a 300# flange sitting upstream of the MATL callout is a 150#-class item rate-matched up, NOT a 300#-class item. Place break-joint hardware by POSITION, basis "position (rate-matched to the higher class)". ` +
+      `Never place by rating where the rating comes from the component's own standard either: ASME B16.36 orifice flanges and their gaskets start at 300#, so a 150# line's orifice assembly is 300# with no break involved -- place those by position. ` +
+      `A sheet with no "MATL" callouts has no break on it: set item_spec_class to the title-block class for every row on that sheet, basis "sheet has no spec break".\n\n` +
+      `WELDS: every weld is drawn as a small mark on the pipe, usually labelled with its WELD LIST ID number -- this sheet's own WELD LIST table (columns ID / ND / Type / Category) gives every weld's size and type by that ID. Record one entry per weld under welds, reading the number from the TILES and looking up its type/size in the table BY THAT ID -- never by assuming the table's row order matches physical position along the pipe (a branch takeoff can carry an ID numbered out of sequence with where it sits, and the table itself can be grouped by category rather than by the walk). Attach any NDE code boxes leadered to that weld (e.g. "F5 G9 B11", "FX GX BX", "X") as nde_codes. Sweep the run end to end rather than sampling -- a missed mark undercounts the sheet. ` +
+      `For weld_type, cross-check the table against the mark itself: a genuine FIELD WELD carries its own distinct hatched "FW" tick at that weld's point on the isometric (sometimes drawn beside the weld's number label, not replacing it) -- if that hatched mark sits at a different weld than the table's row order would suggest, trust the mark on the drawing over the table.\n\n` +
+      `SPOOLS: this sheet's own "PIPE SPOOLS" schedule (near the title block) lists this line's spool tags for the sheet -- read just that list of tags, in order, into spool_tags. If the sheet genuinely prints no such schedule, leave spool_tags empty; sequential tags get invented automatically from however many spools the welds below produce.\n` +
+      `THAT LIST FIXES THE COUNT. N tags printed means the sheet is cut into exactly N spools, so there are exactly N-1 boundaries between them -- record those in spool_boundaries, one entry each, in order along the run.\n\n` +
+      `FINDING THE BOUNDARIES -- LOOK, DO NOT DIVIDE. A boundary is only ever (a) a valve flanged on BOTH sides sitting on the MAIN RUN -- a bowtie/hourglass symbol with a heavy flange bar drawn either side of it and its own BOM item balloon -- or (b) a field weld, the forced cut once a welded run passes 6000mm, drawn as a hatched "FW" tick. Nothing else: not an elbow, not a reducer, not a branch takeoff, and not a valve at the dead end of a BRANCH (a branch stays inside whichever spool its takeoff belongs to). ` +
+      `Go and locate each valve symbol and each hatched FW tick on the tiles FIRST, then read off which main-run weld sits immediately before it -- that weld's ID is after_weld. ` +
+      `Do NOT space the boundaries evenly through the weld numbering, and do not assume each spool holds a similar number of welds: real spools are very uneven, one may hold a single weld and the next a dozen. An evenly spaced answer (every 4th weld, say) is the signature of guessing rather than reading, and is wrong. ` +
+      `Cite what you actually saw in evidence -- the valve's BOM PT NO and description, or the weld ID carrying the FW tick and the dimension that forces the cut. If you cannot point at a specific drawn valve or FW tick, it is not a boundary.\n\n` +
+      `DO NOT try to sort the sheet's welds into spool groups yourself -- that whole-sheet grouping is exactly the task that goes wrong: it collapses a dozen-plus welds into a handful of buckets in one shot and drifts, jumping welds out of sequence into the wrong spool. Instead, answer two small LOCAL questions for EACH weld, looking only at that one weld's own immediate neighbourhood on the drawing:\n` +
+      `(1) comes_after_weld -- which weld sits immediately before THIS one along the pipe. Look at this weld's own mark and trace back one step to whatever weld or fitting comes right before it. Leave it blank ONLY for the very first weld on the sheet's run. Two different welds legitimately sharing the same comes_after_weld value is normal: that is exactly what a branch takeoff looks like -- the branch's first weld and the mainline's next weld both point back to the same shared weld.\n` +
+      `(2) closes_spool -- the same fact you recorded in spool_boundaries, marked against the weld itself: true for exactly the welds you listed as after_weld there, false everywhere else. If the two disagree, go back to the drawing and settle it rather than leaving them inconsistent. ` +
+      `Getting comes_after_weld and closes_spool right for each weld, one at a time, is what actually produces correct spools -- the grouping itself is computed afterward from your answers, so do not also try to pre-group welds or invent spool_no/spool_tag values on individual welds.\n\n` +
+      `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +
+      `Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, appended under the category they belong to and often in a different colour -- an extra PIPE row, an extra 150# blind flange, a small-bore gate valve, extra stud bolts. These are real material: record them with item_no and item_code left blank, taking description, size and quantity exactly as printed. Do not skip a row because it has no number, and do not renumber the table. ` +
+      `Do NOT record a sheet's "PIPE SPOOLS" list as BOM rows -- that list belongs in spool_tags instead.` +
+    opts.boundaryNote +
+    opts.retryNote
+  );
+}
+
+// How pass 1's answer is handed to pass 2. What pass 1 is good at is saying
+// WHICH valves break the sheet; tying each to a weld number is a different job,
+// done against the weld list that pass 2 is reading anyway. So the valves go
+// across by name and location, and pass 1's own weld numbers only as a hint,
+// and only when they survived locatedBoundariesOf's checks.
+export function buildBoundaryNote(
+  boundaries: IsoBoundariesResult,
+  located: NonNullable<IsoSheetResult["spool_boundaries"]>,
+  weldNumbersUsable: boolean
+): string {
+  const valves = boundaryValvesOf(boundaries);
+  const fieldWelds = asArray(boundaries.field_welds);
+  if (valves.length + fieldWelds.length === 0) return "";
+
+  const spoolCount = readSpoolTags(boundaries.spool_tags).length;
+  const expected = spoolCount > 0 ? spoolCount - 1 : null;
+  const found = valves.length + fieldWelds.length;
+
+  return (
+    `\n\nSPOOL BOUNDARIES ON THIS SHEET, from a pass that did nothing but look for them` +
+    (spoolCount > 0 ? `. Its PIPE SPOOLS schedule lists ${spoolCount} spools, so there are ${expected} cuts` : "") +
+    `:\n` +
+    valves
+      .map((v, i) => `  ${i + 1}. VALVE -- ${[v.item_no ? `PT NO ${v.item_no}` : "", v.size, v.description].filter(Boolean).join(", ")}\n       ${v.location_note ?? ""}`)
+      .join("\n") +
+    (fieldWelds.length ? `\n` + fieldWelds.map((f) => `  - FIELD WELD at weld ${f.weld_no} -- ${f.evidence ?? ""}`).join("\n") : "") +
+    `\n\nYOUR JOB is to say where each one falls in the weld numbering: record one spool_boundaries entry per item above, and set closes_spool true on exactly those welds.\n` +
+    `HOW TO PICK after_weld. A flanged valve is drawn as: pipe -- WELD -- flange -- VALVE -- flange -- WELD -- pipe. That first weld, the one joining the pipe to the valve's UPSTREAM flange, is the last weld of the spool that ends here, and it is the one you record. ` +
+    `Walk the main run toward the valve and take the VERY LAST weld mark you pass before reaching it -- not the one before that. Getting this off by one puts the whole spool boundary in the wrong place, and it is the single most common way this goes wrong. ` +
+    `The same applies past the valve: the weld on its downstream flange is the FIRST weld of the next spool, so it is never an after_weld.\n` +
+    `If a branch takes off just before one of these valves and dead-ends, give the MAIN RUN's weld -- not the branch's. Two boundaries can never share the same after_weld: each cut is at a different place on the run. ` +
+    (expected != null && found < expected
+      ? `\n\nNOTE: that locating pass found only ${found} of the ${expected} cuts this sheet must have. Place the ${found} above, then find the missing ${expected - found} yourself -- look for a both-sides-flanged valve on the main run that it missed, or a hatched FW tick. A likely miss is a valve in a REDUCED section of the main run: where the run steps down through a reducer, the valve there is smaller than the line size but still on the main run, not on a branch.`
+      : expected != null && found > expected
+        ? `\n\nNOTE: that locating pass gave ${found} cuts but this sheet has ${expected}. One of the items above is not really a boundary -- most likely a valve on a branch, or one with nothing continuing past it. Drop it.`
+        : "") +
+    (weldNumbersUsable
+      ? `\n\nThe locating pass read these weld numbers for them, as a starting point to check rather than copy: ${located.map((b) => `${b.after_weld} (${b.boundary_type})`).join(", ")}.`
+      : "")
+  );
+}
+
 // Pass 1's prompt. Exported so it can be run on its own against a single sheet
 // (scripts/probe-boundaries.ts) -- the boundary pass is the part whose accuracy
 // is worth measuring by itself, and doing so costs a fraction of a full sheet
@@ -473,63 +571,20 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     // 2 is reading anyway. So pass 2 is always given the valves by name and
     // asked to place them -- and pass 1's own weld numbers are passed on only
     // when they survive `locatedBoundariesOf`'s checks.
-    const boundaryNote =
-      boundaryValves.length + asArray(boundaries.field_welds).length === 0
-        ? ""
-        : `\n\nSPOOL BOUNDARIES ON THIS SHEET, from a pass that did nothing but look for them. This sheet is cut into ${readSpoolTags(boundaries.spool_tags).length || "?"} spools, at these points and nowhere else:\n` +
-          boundaryValves
-            .map((v, i) => `  ${i + 1}. VALVE -- ${[v.item_no ? `PT NO ${v.item_no}` : "", v.size, v.description].filter(Boolean).join(", ")}\n       ${v.location_note ?? ""}`)
-            .join("\n") +
-          (asArray(boundaries.field_welds).length
-            ? `\n` + asArray(boundaries.field_welds).map((f) => `  - FIELD WELD at weld ${f.weld_no} -- ${f.evidence ?? ""}`).join("\n")
-            : "") +
-          `\n\nThese are the cuts. Do not add any, and do not drop any. YOUR JOB is to say where each one falls in the weld numbering: record one spool_boundaries entry per item above, with after_weld set to the ID of the last MAIN RUN weld before that valve or field weld, and set closes_spool true on exactly those welds. ` +
-          `If a branch takes off just before one of these valves and dead-ends, give the MAIN RUN's weld -- not the branch's. Two boundaries can never share the same after_weld.` +
-          (weldNumbersUsable
-            ? `\nThe locating pass read these weld numbers for them, as a starting point to check rather than copy: ${locatedBoundaries.map((b) => `${b.after_weld} (${b.boundary_type})`).join(", ")}.`
-            : "");
+    const boundaryNote = buildBoundaryNote(boundaries, locatedBoundaries, weldNumbersUsable);
 
     const buildUserText = (retryNote: string) =>
-      `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only, so extract only what is printed on it. ` +
-      `The FIRST image is the whole sheet -- use it for the title block, the materials table, and for tracing where the run goes. ` +
-      (sheetTiles.length
-        ? `The REMAINING ${sheetTiles.length} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${sheetTiles[0]?.cols ?? 3}x${sheetTiles[0]?.rows ?? 2} slice of it at far higher resolution. Small annotation detail -- weld diamonds, item balloons -- is only legible in the TILES, so read those from them and use the whole-sheet image only to work out what sits where. Adjacent tiles OVERLAP, so a mark appearing in two tiles is ONE mark; never count it twice. `
-        : "") +
-      `Read the title block and Bill of Material table directly from the image(s); the text above (if any) is often just a footer/watermark, not the real content. ` +
-      `Extract the full title block (document number, drawing number, line number, size, spec, service, scale, sheet, revision, owner P&ID no., P&ID no., ` +
-      `owner GA drawing no., GA drawing no., any slope annotation, design/operating/hydrotest pressure and temperature, painting system, radiograph, test type, insulation spec, insulation thickness) ` +
-      `and Bill of Material rows via the record_iso_sheet tool call. ` +
-      `For from_location/to_location: trace the drawn pipe run itself from one end to the other -- the start is the callout where the piping begins ` +
-      `(equipment/nozzle connection, tie-in flag, or a "CONT'D FROM ..." continuation box) and the end is the callout where it terminates ` +
-      `("CONT'D ON ...", equipment/nozzle, or tie-in). These callouts sit at the ends of the drawn pipeline, not in the title block. ` +
-      `Read each unit from its column header and append it to the value (e.g. under a "PRESS. kPag" header the value 5 becomes "5 kPag"; under "TEMP. °C" the value 90 becomes "90 °C"; ` +
-      `"INSUL/THK(MM)" of 25 becomes "25 mm"). Leave non-numeric placeholders such as NA, NIL. or AMB. exactly as printed. ` +
-      `Where one field holds more than one value, join them with " / " -- never a line break.\n\n` +
-      `SPEC BREAKS: check THIS sheet for "MATL <class>" callout boxes -- a pair of them printed either side of a joint ON THIS SHEET marks a material/spec break. A "CONT'D ON/FROM ..." reference to a different line number is NOT a break by itself, even when that line's number carries a different class suffix -- it is simply where this run continues onto a separate drawing (often for an unrelated line, e.g. after a size change or a tie-in), and tells you nothing about this sheet's own BOM. Only record spec_breaks when an actual "MATL" callout pair is drawn on this sheet; otherwise record only the title-block class. Record every class present under spec_breaks (including the title-block class) with its pressure class in rating. ` +
-      `Then set item_spec_class on EVERY BOM row: a spec break is a point on the run, so each item sits on one definite side. ` +
-      `Place un-rated rows (plain pipe, weldolets, butt-weld elbows/tees/reducers) by POSITION -- follow the row's item-number balloons to where they sit on the drawn run and decide whether that point is upstream or downstream of the "MATL" callouts. A repeated item code split across two rows is the giveaway that one row is each side (e.g. pipe 28.1M on the long upstream run vs pipe 1.5M on the short stub past the break; 7 elbows upstream vs 1 downstream) -- place each row by where its balloons actually are, and record item_spec_basis "position". ` +
-      `Place rated rows AWAY FROM THE BREAK JOINT by their own rating (item_spec_basis "rating"): a "150# RF" flange, gasket, "150RF" bolt or 150# valve is the 150# class, a "300# RF" one or an alloy-overlay valve is the 300# class. ` +
-      `RATING ONLY PLACES AN ITEM WHERE IT TELLS THE CLASSES APART. Two classes on one sheet often share a rating -- a sheet running AC03N, AC03U and BC70N has AC03N and AC03U BOTH at 150# and only BC70N at 300# -- so a "150# RF" ball valve is NOT evidence for AC03N over AC03U, and neither is a class whose rating the drawing never prints. Before using rating, check the ratings you recorded in spec_breaks: if the item's rating matches more than one class, or if any class on the sheet has no rating printed, rating decides NOTHING and you must place the item by POSITION instead. Getting this wrong is not a rounding error -- it files a valve under a class it is nowhere near. ` +
-      `CRITICAL: rating does NOT identify the side AT the break joint, because that joint is rate-matched to the HIGHER class -- the mating flange on the lower-rated side, the joint gasket and its bolts are all made to the higher rating so they bolt together, yet the flange still BELONGS to the lower class because the break is at the joint face, after it. On a 150#/300# break a 300# flange sitting upstream of the MATL callout is a 150#-class item rate-matched up, NOT a 300#-class item. Place break-joint hardware by POSITION, basis "position (rate-matched to the higher class)". ` +
-      `Never place by rating where the rating comes from the component's own standard either: ASME B16.36 orifice flanges and their gaskets start at 300#, so a 150# line's orifice assembly is 300# with no break involved -- place those by position. ` +
-      `A sheet with no "MATL" callouts has no break on it: set item_spec_class to the title-block class for every row on that sheet, basis "sheet has no spec break".\n\n` +
-      `WELDS: every weld is drawn as a small mark on the pipe, usually labelled with its WELD LIST ID number -- this sheet's own WELD LIST table (columns ID / ND / Type / Category) gives every weld's size and type by that ID. Record one entry per weld under welds, reading the number from the TILES and looking up its type/size in the table BY THAT ID -- never by assuming the table's row order matches physical position along the pipe (a branch takeoff can carry an ID numbered out of sequence with where it sits, and the table itself can be grouped by category rather than by the walk). Attach any NDE code boxes leadered to that weld (e.g. "F5 G9 B11", "FX GX BX", "X") as nde_codes. Sweep the run end to end rather than sampling -- a missed mark undercounts the sheet. ` +
-      `For weld_type, cross-check the table against the mark itself: a genuine FIELD WELD carries its own distinct hatched "FW" tick at that weld's point on the isometric (sometimes drawn beside the weld's number label, not replacing it) -- if that hatched mark sits at a different weld than the table's row order would suggest, trust the mark on the drawing over the table.\n\n` +
-      `SPOOLS: this sheet's own "PIPE SPOOLS" schedule (near the title block) lists this line's spool tags for the sheet -- read just that list of tags, in order, into spool_tags. If the sheet genuinely prints no such schedule, leave spool_tags empty; sequential tags get invented automatically from however many spools the welds below produce.\n` +
-      `THAT LIST FIXES THE COUNT. N tags printed means the sheet is cut into exactly N spools, so there are exactly N-1 boundaries between them -- record those in spool_boundaries, one entry each, in order along the run.\n\n` +
-      `FINDING THE BOUNDARIES -- LOOK, DO NOT DIVIDE. A boundary is only ever (a) a valve flanged on BOTH sides sitting on the MAIN RUN -- a bowtie/hourglass symbol with a heavy flange bar drawn either side of it and its own BOM item balloon -- or (b) a field weld, the forced cut once a welded run passes 6000mm, drawn as a hatched "FW" tick. Nothing else: not an elbow, not a reducer, not a branch takeoff, and not a valve at the dead end of a BRANCH (a branch stays inside whichever spool its takeoff belongs to). ` +
-      `Go and locate each valve symbol and each hatched FW tick on the tiles FIRST, then read off which main-run weld sits immediately before it -- that weld's ID is after_weld. ` +
-      `Do NOT space the boundaries evenly through the weld numbering, and do not assume each spool holds a similar number of welds: real spools are very uneven, one may hold a single weld and the next a dozen. An evenly spaced answer (every 4th weld, say) is the signature of guessing rather than reading, and is wrong. ` +
-      `Cite what you actually saw in evidence -- the valve's BOM PT NO and description, or the weld ID carrying the FW tick and the dimension that forces the cut. If you cannot point at a specific drawn valve or FW tick, it is not a boundary.\n\n` +
-      `DO NOT try to sort the sheet's welds into spool groups yourself -- that whole-sheet grouping is exactly the task that goes wrong: it collapses a dozen-plus welds into a handful of buckets in one shot and drifts, jumping welds out of sequence into the wrong spool. Instead, answer two small LOCAL questions for EACH weld, looking only at that one weld's own immediate neighbourhood on the drawing:\n` +
-      `(1) comes_after_weld -- which weld sits immediately before THIS one along the pipe. Look at this weld's own mark and trace back one step to whatever weld or fitting comes right before it. Leave it blank ONLY for the very first weld on the sheet's run. Two different welds legitimately sharing the same comes_after_weld value is normal: that is exactly what a branch takeoff looks like -- the branch's first weld and the mainline's next weld both point back to the same shared weld.\n` +
-      `(2) closes_spool -- the same fact you recorded in spool_boundaries, marked against the weld itself: true for exactly the welds you listed as after_weld there, false everywhere else. If the two disagree, go back to the drawing and settle it rather than leaving them inconsistent. ` +
-      `Getting comes_after_weld and closes_spool right for each weld, one at a time, is what actually produces correct spools -- the grouping itself is computed afterward from your answers, so do not also try to pre-group welds or invent spool_no/spool_tag values on individual welds.\n\n` +
-      `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +
-      `Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, appended under the category they belong to and often in a different colour -- an extra PIPE row, an extra 150# blind flange, a small-bore gate valve, extra stud bolts. These are real material: record them with item_no and item_code left blank, taking description, size and quantity exactly as printed. Do not skip a row because it has no number, and do not renumber the table. ` +
-      `Do NOT record a sheet's "PIPE SPOOLS" list as BOM rows -- that list belongs in spool_tags instead.` +
-      boundaryNote +
-      retryNote;
+      buildIsoSheetPrompt({
+        sheetText,
+        drawingNumber: sheet.drawing_number,
+        sheetLabel: sheet.sheet,
+        pageNumber: sheet.pages.start,
+        tileCount: sheetTiles.length,
+        tileCols: sheetTiles[0]?.cols,
+        tileRows: sheetTiles[0]?.rows,
+        boundaryNote,
+        retryNote,
+      });
 
     const sheetRead = await callWithRetry(() =>
       callTool<IsoSheetResult>(client, {

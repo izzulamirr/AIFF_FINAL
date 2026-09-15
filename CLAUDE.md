@@ -157,11 +157,23 @@ The boundary pass has been measured once, on the reference ISO's two worst sheet
   back on the main run, flanged both sides, pipe continuing past — and `is_boundary`
   false. `boundaryValvesOf` now applies that conjunction in code.
 
-Still unverified: whether pass 2, given the valves by name, places them on the right
-welds. That needs a full two-pass run on one sheet (~$1.40 at Opus rates).
+Pass 2 has since been measured on the same sheet, replaying that saved pass-1 answer
+(`scripts/probe-sheet.ts`, ~$0.89):
 
-Scored against the old stored payload the code gives **12/18**, all six misses being
-boundaries put at the wrong weld.
+- **It recovered the boundary pass 1 missed.** Told it had 4 of 5 cuts, it found the
+  150mm gate valve in the reduced main-run section — the one pass 1 had filed as a
+  branch. The count-mismatch note in `buildBoundaryNote` is what does this.
+- **Welds and bores read correctly**: 26 welds, with 5/6 at 15mm, 10/11 and 21/22 at
+  80mm, 14/15 at 150mm, and both 80mm branches hanging off the right takeoff welds.
+- **Placement was one weld early on three of five cuts** — it returned boundaries after
+  welds 3, 8, 13, 17, 23 where the drawing has 4, 9, 14, 17, 20. A flanged valve is
+  drawn `pipe — WELD — flange — VALVE — flange — WELD — pipe`, and the model was naming
+  the weld *before* the upstream flange weld rather than the flange weld itself. Both
+  the schema and `buildBoundaryNote` now spell that out; **unverified**, no credit left.
+
+So the ordering and branch handling hold up on the hardest sheet, and what remains is a
+one-weld offset rather than a structural failure. Scored against the older stored
+payload the code gives **12/18**.
 
 Note the boundary weld is the last **main-run** weld before the valve, not the last
 weld by number: on sheet 2 the cuts are after welds 4, 9, 14, 17, 20, because the

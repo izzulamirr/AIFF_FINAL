@@ -101,7 +101,8 @@ export const ISO_SPOOL_BOUNDARIES_TOOL: ClaudeTool = {
             nearest_upstream_weld: {
               type: "string",
               description:
-                'The ID number of the weld immediately BEFORE this valve along the main run -- read the weld label printed at that mark (a small flag like "BW12" gives "12") and give the bare number. This is what ties the boundary to the weld list. Blank if no weld mark is legible upstream of it.',
+                'The ID number of the weld immediately BEFORE this valve along the main run -- the weld joining the pipe to the valve\'s own upstream flange, which is the very last weld mark you pass walking toward it, not the one before that. Read the label printed at that mark (a small flag like "BW12" gives "12") and give the bare number. ' +
+                "Blank it rather than guessing: a wrong number here is worse than none, and no two valves can share one. Every valve on the sheet sits at its own point on the run, so if you find yourself about to give the same weld for two different valves, you have not read the marks -- leave them blank instead.",
             },
             location_note: {
               type: "string",
@@ -222,7 +223,9 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
             after_weld: {
               type: "string",
               description:
-                "The ID number of the last weld on the MAIN RUN before this boundary -- the weld immediately upstream of the valve or the field weld itself. Bare number, no prefix. " +
+                "The ID number of the last weld on the MAIN RUN before this boundary. Bare number, no prefix. " +
+                "A flanged valve is drawn as: pipe -- WELD -- flange -- VALVE -- flange -- WELD -- pipe. The weld you want is the FIRST of those two, the one joining the pipe to the valve's upstream flange: walk the main run toward the valve and take the very last weld mark you pass before reaching it, not the one before that. " +
+                "Being off by one here moves the whole spool boundary, and it is the most common way this goes wrong. The weld on the valve's downstream flange starts the NEXT spool, so it is never an after_weld. For a field weld, it is that weld itself. " +
                 "If a branch takes off upstream of this point and dead-ends (typically at its own small valve and blind flange), that branch belongs to the spool ending here and is handled automatically -- so give the MAIN RUN's weld here, never the branch's own last weld.",
             },
             boundary_type: {
