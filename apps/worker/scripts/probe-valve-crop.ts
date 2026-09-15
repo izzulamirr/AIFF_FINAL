@@ -20,23 +20,28 @@ import { renderPdfPageCrops } from "../src/pdfImages";
 const INPUT_PER_M = 15;
 const OUTPUT_PER_M = 75;
 
+// Deliberately NOT asked as upstream/downstream. Which side of a valve is
+// upstream depends on which way the fluid flows, and a close-up crop does not
+// show that -- a real run read the drawing correctly and then filled the two
+// fields the wrong way round. The pair is unordered here and ordered in code
+// from the weld chain, which does know the run's direction.
 const TOOL: ClaudeTool = {
   name: "read_valve_welds",
   description: "Reads the two weld marks either side of one valve on an isometric drawing.",
   input_schema: {
     type: "object",
     properties: {
-      upstream_weld: {
+      weld_one: {
         type: "string",
-        description: "ID number of the weld mark on the valve's upstream side (the side the pipe comes IN from). Bare number, read from its label flag. Blank if not legible.",
+        description: "ID number of the weld mark on ONE side of the valve, read from its own hexagonal flag. Bare number. Blank if not legible. Either side -- order does not matter.",
       },
-      downstream_weld: {
+      weld_two: {
         type: "string",
-        description: "ID number of the weld mark on the valve's downstream side (the side the pipe carries ON to). Bare number. Blank if not legible.",
+        description: "ID number of the weld mark on the OTHER side of the valve, read from its own hexagonal flag. Bare number. Blank if not legible.",
       },
-      what_you_see: { type: "string", description: "Briefly, the run of symbols from one weld to the other, in order." },
+      what_you_see: { type: "string", description: "Briefly, the run of symbols from one weld to the other, in order, saying where each sits in the image." },
     },
-    required: ["upstream_weld", "downstream_weld"],
+    required: ["weld_one", "weld_two"],
   },
 };
 
@@ -97,7 +102,7 @@ async function main() {
               `   ... pipe -- a WELD MARK -- flange ][ VALVE ][ flange -- a WELD MARK -- pipe ...\n\n` +
               `A weld mark is a small filled dot on the pipe, with a leader line out to a HEXAGONAL flag -- a six-sided outline with a point at each end -- carrying a label like "BW7", "FW6" or "TH6". The number in that flag is the weld number: "BW7" is weld 7.\n\n` +
               `Do NOT read a weld number off a SQUARE or RECTANGULAR box. Those are BOM item balloons -- "[2]", "[14]", "[7]" -- and they number the part (a valve, a weldolet, a reducer), not a weld. A square box near a weld dot is a different thing entirely, and taking its number is the main way this goes wrong. Only a hexagonal flag gives a weld number.\n\n` +
-              `Give me those two weld numbers: the one on the side the pipe comes IN from, and the one on the side it carries ON to. ` +
+              `Give me BOTH of those weld numbers -- one from each side of the valve. Which is which does not matter and you should not try to work it out: just read the two marks. ` +
               `Follow each dot's own leader line out to its hexagonal flag and read the number there -- do not take a nearby flag that belongs to a different dot, and do not guess a number from the sequence. ` +
               `Note that the two are often NOT consecutive numbers: branch welds are numbered in among the run's own, so weld 4 can be followed by weld 7. ` +
               `If either dot's leader does not reach a legible HEXAGONAL flag inside this image, leave that field blank rather than guessing. A blank is a useful answer; a wrong number is not.`,
@@ -113,10 +118,15 @@ async function main() {
     console.log("no tool call returned");
     return;
   }
-  const r = block.input as { upstream_weld?: string; downstream_weld?: string; what_you_see?: string };
+  const r = block.input as { weld_one?: string; weld_two?: string; what_you_see?: string };
 
-  console.log(`\nupstream weld:   ${r.upstream_weld || "(blank)"}${v.expected_after != null ? `   expected ${v.expected_after}` : ""}`);
-  console.log(`downstream weld: ${r.downstream_weld || "(blank)"}${v.expected_downstream != null ? `   expected ${v.expected_downstream}` : ""}`);
+  const pair = [r.weld_one, r.weld_two].map((x) => (x ?? "").trim()).filter(Boolean);
+  const want = [v.expected_after, v.expected_downstream].filter((x) => x != null).map(String);
+  console.log(`\nflanking welds read: ${pair.join(" and ") || "(none)"}${want.length === 2 ? `   expected ${want.join(" and ")}` : ""}`);
+  if (want.length === 2) {
+    const hits = want.filter((n) => pair.includes(n)).length;
+    console.log(hits === 2 ? "=> PAIR CORRECT" : `=> ${hits}/2 of the expected pair`);
+  }
   if (r.what_you_see) console.log(`\nsaw: ${r.what_you_see}`);
 
   const usage = message.usage;

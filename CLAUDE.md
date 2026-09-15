@@ -225,9 +225,45 @@ clearer than in any tile. One call was run against the first valve on sheet 2:
   `MIN_CROP_FRACTION` now floors the region size. Size a crop by what must be
   READABLE, not by what must be VISIBLE.
 
+After those two fixes, the crop method reads cleanly. Two valves on sheet 2, one call
+each (~$0.08):
+
+- valve at (0.191, 0.600): **"BW3" and "BW7"**, with "the square box [14] is the valve
+  BOM balloon, not a weld" said unprompted — the hexagonal/square distinction landed.
+- valve at (0.460, 0.381): **"BW18" and "BW20"**, same clarity, balloons rejected again.
+
+Both gave a definite pair and described which leader ran where. No guessing, no blanks.
+
+One more design error found and fixed on the way: **do not ask for the upstream and
+downstream weld.** Which side of a valve is upstream depends on the flow direction, and
+a close-up crop does not show it — a run read the drawing correctly ("the dot on the
+upper-right side goes to BW7") and then filled the two fields the wrong way round. Ask
+for the flanking pair UNORDERED and order it in code from the weld chain, which does
+know the run's direction.
+
+#### A caveat on the scores above
+
+The 4, 9, 14, 17, 20 that earlier attempts were scored against is **inferred, not
+verified**. What was verified by hand is the spool *membership* — N-04 = welds 1-6,
+N-05 = 7-11, and so on. The boundary weld numbers were then derived by assuming the run
+passes through the welds in numeric order.
+
+The crop reading gives reason to doubt that: it puts the first valve between welds 3
+and 7, not 4 and 7. Both are consistent with N-04 holding welds 1-6 — they differ only
+in whether the run reaches weld 3 before or after weld 4. Weld numbering on an ISO does
+not have to follow run order (the weld_no schema text warns about exactly this), so
+"boundary after weld 3" with the run going ...2 -> 4 -> 3 -> valve -> 7... would put
+welds 1-6 in N-04 just as well.
+
+This matters because `buildSpoolsFromWeldTopology` works on the topology, never on the
+numbers: get `comes_after_weld` right and the boundary lands correctly whichever way
+the numbering runs. So before scoring another placement run, confirm against the
+drawing which welds actually flank each valve. Some of the earlier 1/5 and 2/5 scores
+may have been against the wrong expectation.
+
 Still to do: give pass 1 an approximate position per valve (fractions of the page) so
 crops can be cut without knowing the answer first, then run placement per valve on its
-own crop.
+own crop, ordering each pair against the weld chain.
 
 The ordering and branch handling hold up on the hardest sheet; what remains is this
 one-weld offset rather than a structural failure. Scored against the older stored
