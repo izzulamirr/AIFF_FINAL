@@ -107,7 +107,42 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
         type: "array",
         items: { type: "string" },
         description:
-          'Just the list of spool tags from this sheet\'s own "PIPE SPOOLS" schedule (a short list near the title block, e.g. "8\\"-22-214-01-CRD-0002-AC03N-N-04", "...-N-05" ...), in the order printed -- nothing else, no weld assignment here. If the sheet genuinely prints no such schedule (rare), invent sequential tags "<line_number>-01", "-02", ... -- the number of tags should match however many spools the boundary rule on each weld (see closes_spool below) actually produces once walked.',
+          'Just the list of spool tags from this sheet\'s own "PIPE SPOOLS" schedule (a short list near the title block, e.g. "8\\"-22-214-01-CRD-0002-AC03N-N-04", "...-N-05" ...), in the order printed -- nothing else, no weld assignment here. If the sheet genuinely prints no such schedule (rare), invent sequential tags "<line_number>-01", "-02", ... This list SETS THE COUNT: N tags printed means the sheet is cut into exactly N spools, so spool_boundaries below must hold exactly N-1 entries.',
+      },
+      spool_boundaries: {
+        type: "array",
+        description:
+          'The points where one spool ENDS and the next begins, in order along the run -- exactly one entry per boundary. ' +
+          'COUNT IS FIXED BY THE SHEET: if spool_tags holds N tags, this array holds exactly N-1 entries, because N spools are separated by N-1 cuts. Do not return more or fewer.\n\n' +
+          'A boundary exists at exactly two things and nothing else:\n' +
+          '(a) a VALVE FLANGED ON BOTH SIDES sitting on the MAIN RUN -- the only real bolted disassembly point. On the isometric a valve is a bowtie/hourglass symbol with a flange (a short heavy bar across the pipe) drawn on each side of it, and it carries its own BOM item balloon. ' +
+          'A valve at the dead end of a BRANCH is NOT a boundary -- the branch stays inside whichever spool its takeoff belongs to.\n' +
+          '(b) a FIELD WELD -- the forced cut once a continuous welded run passes 6000mm, drawn as a distinct hatched "FW" tick at that weld.\n\n' +
+          'FIND THESE BY LOOKING, NOT BY DIVIDING. Do not space the boundaries evenly along the weld numbering, and do not assume spools hold a similar number of welds each -- real spools are very uneven (one may hold a single weld, the next a dozen). ' +
+          'Locate each valve symbol and each hatched FW tick on the drawing first, then read off which weld sits immediately before it. Every entry must cite what you actually saw there in evidence; if you cannot point to a specific drawn valve or FW tick, it is not a boundary.',
+        items: {
+          type: "object",
+          properties: {
+            after_weld: {
+              type: "string",
+              description:
+                "The ID number of the last weld on the MAIN RUN before this boundary -- the weld immediately upstream of the valve or the field weld itself. Bare number, no prefix. " +
+                "If a branch takes off upstream of this point and dead-ends (typically at its own small valve and blind flange), that branch belongs to the spool ending here and is handled automatically -- so give the MAIN RUN's weld here, never the branch's own last weld.",
+            },
+            boundary_type: {
+              type: "string",
+              enum: ["valve", "field_weld"],
+              description: '"valve" for a both-sides-flanged valve on the main run; "field_weld" for a forced 6000mm cut marked by a hatched FW tick.',
+            },
+            evidence: {
+              type: "string",
+              description:
+                'What you actually see at this point on the drawing, specific enough to check. For a valve: its BOM PT NO and description plus the welds either side, e.g. "PT NO 7, 8\\" 150# GATE VALVE, flanged both sides, between welds 14 and 15". ' +
+                'For a field weld: the weld ID carrying the hatched FW tick and the run dimension that forces the cut, e.g. "weld 6 carries the hatched FW mark; 6200mm dimension spans welds 1-6".',
+            },
+          },
+          required: ["after_weld", "boundary_type", "evidence"],
+        },
       },
       welds: {
         type: "array",
@@ -140,7 +175,9 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
             },
             closes_spool: {
               type: "boolean",
-              description: "true if a spool ends at THIS weld -- see the SPOOL BOUNDARY RULE above. false for every other weld, including this one being a branch's own dead-end.",
+              description:
+                "true if a spool ends at THIS weld -- see the SPOOL BOUNDARY RULE above. false for every other weld, including this one being a branch's own dead-end. " +
+                "This is the SAME fact as spool_boundaries, recorded against the weld: it must be true for exactly the welds you listed in spool_boundaries.after_weld, and false everywhere else. If the two disagree, re-check the drawing rather than leaving them inconsistent.",
             },
           },
           required: ["weld_no"],

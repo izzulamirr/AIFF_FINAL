@@ -13,6 +13,7 @@
 
 import { readFileSync } from "node:fs";
 import { buildSpoolsFromWeldTopology, type WeldTopology } from "@easy/shared";
+import { spoolProblems } from "../src/extraction/iso";
 
 const REFERENCE: Record<number, Record<string, number[]>> = {
   1: {
@@ -35,6 +36,7 @@ const REFERENCE: Record<number, Record<string, number[]>> = {
 
 interface RawWeld {
   weld_no: string;
+  weld_type?: string;
   comes_after_weld?: string;
   closes_spool?: boolean;
 }
@@ -46,6 +48,11 @@ if (!payloadPath) {
 }
 
 const raw = JSON.parse(readFileSync(payloadPath, "utf8"));
+
+// Payloads captured before spool_boundaries existed only carry the per-weld
+// closes_spool flags. --simulate-boundaries rebuilds a boundary list from those
+// so the validators can be exercised against a real recorded failure.
+const simulate = process.argv.includes("--simulate-boundaries");
 
 // Spool tags carry the full printed tag (`..."-AC03N-N-04`); the reference is
 // keyed on just the trailing `N-04`.
@@ -64,11 +71,27 @@ for (const entry of raw.sheets ?? []) {
 
   const welds: RawWeld[] = sheet.welds ?? [];
   const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
+
+  // Mirrors the worker: the evidence-bearing boundary list wins where the
+  // sheet returned one, per-weld closes_spool is the fallback, and a field
+  // weld always closes the spool it ends.
+  const boundaryWelds = new Set<number>();
+  for (const b of sheet.spool_boundaries ?? []) {
+    const no = Number(String(b?.after_weld ?? "").trim());
+    if (Number.isFinite(no)) boundaryWelds.add(no);
+  }
+  if (boundaryWelds.size === 0) {
+    for (const w of welds) if (w.closes_spool) boundaryWelds.add(Number(w.weld_no));
+  }
+  for (const w of welds) {
+    if (String(w.weld_type ?? "").trim().toUpperCase() === "FW") boundaryWelds.add(Number(w.weld_no));
+  }
+
   const topology: WeldTopology[] = [...weldByNo.entries()].map(([weldNo, w]) => ({
     weldNo,
     comesAfterWeld:
       w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
-    closesSpool: Boolean(w.closes_spool),
+    closesSpool: boundaryWelds.has(weldNo),
   }));
 
   const spoolTags: string[] = (sheet.spool_tags ?? [])
@@ -79,6 +102,12 @@ for (const entry of raw.sheets ?? []) {
   const got = new Map(spools.map((s) => [shortTag(s.spoolTag), s.weldNumbers]));
 
   console.log(`\nSheet ${sheetNo}`);
+
+  const checked = simulate
+    ? { ...sheet, spool_boundaries: welds.filter((w) => w.closes_spool).map((w) => ({ after_weld: String(w.weld_no), boundary_type: "valve", evidence: "" })) }
+    : sheet;
+  for (const problem of spoolProblems(checked)) console.log(`  CHECK   ${problem.slice(0, 150)}...`);
+
   for (const [tag, wantWelds] of Object.entries(want)) {
     total += 1;
     const g = got.get(tag);

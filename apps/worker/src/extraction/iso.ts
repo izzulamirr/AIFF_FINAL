@@ -49,6 +49,7 @@ interface IsoSheetResult {
   // The schema asks for plain tag strings; the object form is only here
   // because real runs have drifted to it -- see where this is unwrapped below.
   spool_tags?: Array<string | { spool_tag?: string }>;
+  spool_boundaries?: Array<{ after_weld?: string; boundary_type?: string; evidence?: string }>;
   welds?: Array<{ weld_no: string; weld_type?: string; size?: string; nde_codes?: string; comes_after_weld?: string; closes_spool?: boolean }>;
   bom_items: Array<{
     item_no?: string;
@@ -84,6 +85,87 @@ function asArray<T>(value: T[] | T | null | undefined): T[] {
 
 function normalizeKey(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
+}
+
+const missingLinkCount = (welds: IsoSheetResult["welds"]) =>
+  asArray(welds).filter((w) => w.comes_after_weld == null || String(w.comes_after_weld).trim() === "").length;
+
+// What a correct spool read of a sheet has to satisfy, checked against what
+// that same sheet prints -- so a bad read is caught from the drawing's own
+// evidence rather than from a fixed expectation about any one drawing.
+// Exported so it can be run over stored payloads offline (see
+// scripts/replay-spools.ts) without paying for a vision call.
+//
+// Each problem is phrased as the complaint the retry quotes back, so a retry
+// always names the specific defect rather than asking again in general terms.
+export function spoolProblems(r: IsoSheetResult): string[] {
+  const problems: string[] = [];
+  const welds = asArray(r.welds);
+  if (welds.length === 0) return problems;
+
+  // Every weld except the sheet's true first one should carry a
+  // comes_after_weld pointer -- that is what buildSpoolsFromWeldTopology needs
+  // to place it in a spool at all. More than one weld missing it means welds
+  // that would fall out of every spool.
+  const missing = missingLinkCount(r.welds);
+  if (missing > 1) {
+    problems.push(
+      `you recorded ${welds.length} welds but left comes_after_weld blank on ${missing} of them -- only the sheet's very first weld should ever be blank there. Go weld by weld and trace back one step to whatever comes immediately before each one, even on branches.`
+    );
+  }
+
+  const weldNos = new Set(welds.map((w) => Number(w.weld_no)).filter(Number.isFinite));
+  const boundaries = asArray(r.spool_boundaries);
+  const boundaryNos = boundaries.map((b) => Number(String(b.after_weld ?? "").trim())).filter(Number.isFinite);
+  const tagCount = asArray(r.spool_tags).length;
+
+  // The PIPE SPOOLS schedule is printed on the sheet, so the number of cuts is
+  // not a judgement call: N spools are separated by N-1 boundaries.
+  if (tagCount > 0 && boundaries.length !== tagCount - 1) {
+    problems.push(
+      `you read ${tagCount} spool tags from the PIPE SPOOLS schedule, which means the sheet is cut into ${tagCount} spools and there must be exactly ${tagCount - 1} boundaries -- but you gave ${boundaries.length}. Find every both-sides-flanged valve on the main run and every hatched FW tick, and record one boundary per cut.`
+    );
+  }
+
+  const unknown = boundaryNos.filter((no) => !weldNos.has(no));
+  if (unknown.length > 0) {
+    problems.push(`spool_boundaries points at weld ${unknown.join(", ")}, which is not in the weld list you recorded for this sheet.`);
+  }
+
+  // A field weld IS a forced cut, so one that closes nothing means either the
+  // weld type or the boundary list is misread.
+  const uncoveredFw = welds
+    .filter((w) => normalizeKey(w.weld_type) === "FW")
+    .map((w) => Number(w.weld_no))
+    .filter((no) => Number.isFinite(no) && !boundaryNos.includes(no));
+  if (uncoveredFw.length > 0) {
+    problems.push(
+      `weld ${uncoveredFw.join(", ")} is typed FW (field weld) but is not in spool_boundaries. A field weld is itself the forced cut past 6000mm, so it always ends the spool it closes -- either it is a boundary, or it is not really a field weld and its type is wrong.`
+    );
+  }
+
+  // A boundary is only a boundary because something is drawn there, so an
+  // entry that cannot name what it saw is an inferred one.
+  const vague = boundaries.filter((b) => normalizeKey(b.boundary_type) === "VALVE" && !/valve/i.test(String(b.evidence ?? "")));
+  if (vague.length > 0) {
+    problems.push(
+      `${vague.length} of your boundaries are typed "valve" but their evidence does not name a valve (${vague.map((b) => `after weld ${b.after_weld}`).join(", ")}). Give the valve's BOM PT NO and description for each, e.g. "PT NO 7, 200mm BALL VALVE, flanged both sides, between welds 14 and 15" -- if you cannot name the valve you are looking at, you have not found the boundary.`
+    );
+  }
+
+  // Evenly spaced boundaries are the signature of dividing the weld numbering
+  // up rather than finding the valves: real spools are uneven.
+  if (boundaryNos.length >= 3) {
+    const sorted = [...boundaryNos].sort((a, b) => a - b);
+    const gaps = sorted.slice(1).map((no, i) => no - sorted[i]);
+    if (gaps.every((g) => g === gaps[0])) {
+      problems.push(
+        `your boundaries are at welds ${sorted.join(", ")} -- exactly ${gaps[0]} apart every time. That even spacing is what dividing the weld numbering looks like, not what reading the drawing looks like; real spools are uneven. Go back to the tiles, find each valve symbol (bowtie with a flange bar either side) and each hatched FW tick by eye, and read off the main-run weld immediately before each one.`
+      );
+    }
+  }
+
+  return problems;
 }
 
 // Keeps the FIRST occurrence, so a weld read from a tile that also carries
@@ -193,10 +275,15 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       `A sheet with no "MATL" callouts has no break on it: set item_spec_class to the title-block class for every row on that sheet, basis "sheet has no spec break".\n\n` +
       `WELDS: every weld is drawn as a small mark on the pipe, usually labelled with its WELD LIST ID number -- this sheet's own WELD LIST table (columns ID / ND / Type / Category) gives every weld's size and type by that ID. Record one entry per weld under welds, reading the number from the TILES and looking up its type/size in the table BY THAT ID -- never by assuming the table's row order matches physical position along the pipe (a branch takeoff can carry an ID numbered out of sequence with where it sits, and the table itself can be grouped by category rather than by the walk). Attach any NDE code boxes leadered to that weld (e.g. "F5 G9 B11", "FX GX BX", "X") as nde_codes. Sweep the run end to end rather than sampling -- a missed mark undercounts the sheet. ` +
       `For weld_type, cross-check the table against the mark itself: a genuine FIELD WELD carries its own distinct hatched "FW" tick at that weld's point on the isometric (sometimes drawn beside the weld's number label, not replacing it) -- if that hatched mark sits at a different weld than the table's row order would suggest, trust the mark on the drawing over the table.\n\n` +
-      `SPOOLS: this sheet's own "PIPE SPOOLS" schedule (near the title block) lists this line's spool tags for the sheet -- read just that list of tags, in order, into spool_tags. If the sheet genuinely prints no such schedule, leave spool_tags empty; sequential tags get invented automatically from however many spools the welds below produce.\n\n` +
+      `SPOOLS: this sheet's own "PIPE SPOOLS" schedule (near the title block) lists this line's spool tags for the sheet -- read just that list of tags, in order, into spool_tags. If the sheet genuinely prints no such schedule, leave spool_tags empty; sequential tags get invented automatically from however many spools the welds below produce.\n` +
+      `THAT LIST FIXES THE COUNT. N tags printed means the sheet is cut into exactly N spools, so there are exactly N-1 boundaries between them -- record those in spool_boundaries, one entry each, in order along the run.\n\n` +
+      `FINDING THE BOUNDARIES -- LOOK, DO NOT DIVIDE. A boundary is only ever (a) a valve flanged on BOTH sides sitting on the MAIN RUN -- a bowtie/hourglass symbol with a heavy flange bar drawn either side of it and its own BOM item balloon -- or (b) a field weld, the forced cut once a welded run passes 6000mm, drawn as a hatched "FW" tick. Nothing else: not an elbow, not a reducer, not a branch takeoff, and not a valve at the dead end of a BRANCH (a branch stays inside whichever spool its takeoff belongs to). ` +
+      `Go and locate each valve symbol and each hatched FW tick on the tiles FIRST, then read off which main-run weld sits immediately before it -- that weld's ID is after_weld. ` +
+      `Do NOT space the boundaries evenly through the weld numbering, and do not assume each spool holds a similar number of welds: real spools are very uneven, one may hold a single weld and the next a dozen. An evenly spaced answer (every 4th weld, say) is the signature of guessing rather than reading, and is wrong. ` +
+      `Cite what you actually saw in evidence -- the valve's BOM PT NO and description, or the weld ID carrying the FW tick and the dimension that forces the cut. If you cannot point at a specific drawn valve or FW tick, it is not a boundary.\n\n` +
       `DO NOT try to sort the sheet's welds into spool groups yourself -- that whole-sheet grouping is exactly the task that goes wrong: it collapses a dozen-plus welds into a handful of buckets in one shot and drifts, jumping welds out of sequence into the wrong spool. Instead, answer two small LOCAL questions for EACH weld, looking only at that one weld's own immediate neighbourhood on the drawing:\n` +
       `(1) comes_after_weld -- which weld sits immediately before THIS one along the pipe. Look at this weld's own mark and trace back one step to whatever weld or fitting comes right before it. Leave it blank ONLY for the very first weld on the sheet's run. Two different welds legitimately sharing the same comes_after_weld value is normal: that is exactly what a branch takeoff looks like -- the branch's first weld and the mainline's next weld both point back to the same shared weld.\n` +
-      `(2) closes_spool -- true only if a spool ends AT this weld: either a valve flanged on both sides sits immediately after it (the only real bolted disassembly point), or this weld IS the field weld closing a forced cut past 6000mm of continuous welded pipe. False for everything else -- an elbow, reducer, or branch takeoff never closes a spool, and neither does a branch's own dead end (nothing continues past it anyway, so it does not need to). ` +
+      `(2) closes_spool -- the same fact you recorded in spool_boundaries, marked against the weld itself: true for exactly the welds you listed as after_weld there, false everywhere else. If the two disagree, go back to the drawing and settle it rather than leaving them inconsistent. ` +
       `Getting comes_after_weld and closes_spool right for each weld, one at a time, is what actually produces correct spools -- the grouping itself is computed afterward from your answers, so do not also try to pre-group welds or invent spool_no/spool_tag values on individual welds.\n\n` +
       `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +
       `Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, appended under the category they belong to and often in a different colour -- an extra PIPE row, an extra 150# blind flange, a small-bore gate valve, extra stud bolts. These are real material: record them with item_no and item_code left blank, taking description, size and quantity exactly as printed. Do not skip a row because it has no number, and do not renumber the table. ` +
@@ -214,34 +301,47 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       })
     );
 
-    // Every weld except the sheet's true first one should carry a
-    // comes_after_weld pointer -- that is what buildSpoolsFromWeldTopology
-    // needs to place it in a spool at all. More than one weld missing it is
-    // a detectable miss (dangling welds that would fall out of every
-    // spool), not a legitimate answer. Retry this exact sheet once with a
-    // sharper, explicit call-out before accepting the gap. Welds are
-    // re-taken from the retry too (never mixed with the first attempt's),
-    // since comes_after_weld only makes sense against the SAME weld IDs it
-    // was read against.
-    const missingLinkCount = (welds: IsoSheetResult["welds"]) =>
-      asArray(welds).filter((w) => w.comes_after_weld == null || String(w.comes_after_weld).trim() === "").length;
-
+    // Retry the sheet once when its own printed schedule contradicts the read.
+    // Welds are re-taken from the retry as a set (never merged with the first
+    // attempt's), since comes_after_weld and after_weld only mean anything
+    // against the same weld IDs they were read against.
     let finalResult = result;
-    if (asArray(result.welds).length > 0 && missingLinkCount(result.welds) > 1) {
+    const problems = spoolProblems(result);
+    if (problems.length > 0) {
+      // The sheet's own BOM already says which valves exist on it. Quoting
+      // those rows back turns "find the valves" into "find these specific
+      // valves", and the line size separates main-run valves (a boundary
+      // each, where flanged both sides) from small-bore branch ones (never).
+      const valveRows = asArray(result.bom_items).filter((i) => /valve/i.test(`${i.description ?? ""} ${i.component_type ?? ""}`));
+      const valveNote = valveRows.length
+        ? `\n\nThe BOM you just read from this sheet lists these valves${result.size ? ` (the line itself is ${result.size})` : ""}:\n` +
+          valveRows.map((v) => `  - ${v.quantity ? `${v.quantity}x ` : ""}${v.size ?? "?"} ${v.description ?? ""}${v.item_no ? ` (PT NO ${v.item_no})` : ""}`).join("\n") +
+          `\nEvery one of these is drawn somewhere on this sheet. The ones at the LINE's own size sit on the main run -- each of those, where it is flanged on both sides and has pipe continuing past it, is a boundary. Smaller ones are branch/small-bore valves and are not.`
+        : "";
+
       const retryResult = await callWithRetry(() =>
         callTool<IsoSheetResult>(client, {
           tool: ISO_SHEET_TOOL,
           systemPrompt: SYSTEM_PROMPT,
           userText: buildUserText(
-            `\n\nRETRY -- READ CAREFULLY: your previous attempt on this exact sheet recorded ${asArray(result.welds).length} welds but left comes_after_weld blank on ${missingLinkCount(result.welds)} of them. Only the sheet's very first weld should ever be blank there -- go weld by weld this time and trace back one step to whatever comes immediately before each one, even on branches.`
+            `\n\nRETRY -- READ CAREFULLY. Your previous attempt on this exact sheet has ${problems.length === 1 ? "a problem" : `${problems.length} problems`} that the sheet itself contradicts:\n` +
+              problems.map((p, i) => `(${i + 1}) ${p}`).join("\n") +
+              valveNote +
+              `\n\nRe-read the drawing and fix these. Work from the valve symbols and FW ticks you can actually see on the tiles -- name each one in evidence -- rather than inferring boundaries from the weld numbering.`
           ),
           maxTokens: 32000,
           useThinking: true,
           images: [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)],
         })
       );
-      if (missingLinkCount(retryResult.welds) < missingLinkCount(result.welds)) {
-        finalResult = { ...result, spool_tags: retryResult.spool_tags, welds: retryResult.welds };
+      // Keep the retry only if it is actually a cleaner read.
+      if (spoolProblems(retryResult).length < problems.length) {
+        finalResult = {
+          ...result,
+          spool_tags: retryResult.spool_tags,
+          spool_boundaries: retryResult.spool_boundaries,
+          welds: retryResult.welds,
+        };
       }
     }
 
@@ -271,10 +371,30 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     // the walk here assembles those answers into spools, mapped onto the
     // sheet's own printed "PIPE SPOOLS" tags (spool_tags) in order.
     const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
+
+    // Which welds a spool ends at. spool_boundaries is the evidence-bearing
+    // answer (each entry names the valve or FW tick it was read from) and is
+    // checked against the sheet's own spool count above, so it wins where it
+    // exists; the per-weld closes_spool flags are the fallback for a sheet
+    // that returned no boundary list at all.
+    const boundaryWelds = new Set<number>();
+    for (const b of asArray(result.spool_boundaries)) {
+      const no = Number(String(b.after_weld ?? "").trim());
+      if (Number.isFinite(no)) boundaryWelds.add(no);
+    }
+    if (boundaryWelds.size === 0) {
+      for (const w of welds) if (w.closes_spool) boundaryWelds.add(Number(w.weld_no));
+    }
+    // Not a judgement call: a field weld IS the forced cut past 6000mm, so it
+    // always closes the spool it ends, whatever the model said about it.
+    for (const w of welds) {
+      if (normalizeKey(w.weld_type) === "FW") boundaryWelds.add(Number(w.weld_no));
+    }
+
     const weldTopology: WeldTopology[] = [...weldByNo.entries()].map(([weldNo, w]) => ({
       weldNo,
       comesAfterWeld: w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
-      closesSpool: Boolean(w.closes_spool),
+      closesSpool: boundaryWelds.has(weldNo),
     }));
     // Tool-call JSON is not strictly validated against input_schema, and this
     // field in particular has come back as objects ({spool_tag, ...}) rather
@@ -295,7 +415,12 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       const lastWeld = lastWeldNo != null ? weldByNo.get(lastWeldNo) : undefined;
       if (!lastWeld) return undefined;
       if (normalizeKey(lastWeld.weld_type) === "FW") return `forced 6000mm cut, closes at field weld FW-${lastWeld.weld_no}`;
-      if (lastWeld.closes_spool) return `ends at a valve after weld ${lastWeld.weld_no}`;
+      if (boundaryWelds.has(Number(lastWeld.weld_no))) {
+        // The model's own evidence for this boundary, where it gave any --
+        // what a reviewer needs to check the cut without reopening the sheet.
+        const evidence = asArray(result.spool_boundaries).find((b) => Number(String(b.after_weld ?? "").trim()) === Number(lastWeld.weld_no))?.evidence;
+        return evidence ? `ends at a valve after weld ${lastWeld.weld_no} (${n(evidence) ?? evidence})` : `ends at a valve after weld ${lastWeld.weld_no}`;
+      }
       return isLastSpool ? "runs to the end of the sheet" : undefined;
     }
 
