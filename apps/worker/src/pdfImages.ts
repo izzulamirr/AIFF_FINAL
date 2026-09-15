@@ -185,6 +185,91 @@ export async function renderPdfPageCrops(
   return crops;
 }
 
+// Cuts a set of known small regions out of one page and lays them side by side
+// on a single sheet, each numbered.
+//
+// This exists because of how badly the alternative works. Asking a model to find
+// a weld's number flag on a drawing means asking it to follow a leader line
+// through a thicket of crossing leaders -- the same valve, cropped and asked
+// three times, gave three different answers. But the flags' POSITIONS come off
+// the PDF geometry exactly (see extraction/isoWeldMarks.ts), so the reading job
+// can be reduced to what vision is actually good at: here are 26 labels, blown
+// up and laid out in a grid, read them.
+//
+// It is also tiny. A whole sheet plus its tiles runs ~16k image tokens; a
+// contact sheet of 26 flags is around 1k.
+export interface ContactSheetRegion {
+  label: string;
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+}
+
+const CONTACT_SCALE = 5; // page points -> px; a 15pt flag lands ~75px tall
+const CONTACT_PAD_PT = 3;
+const CONTACT_COLS = 4;
+const CONTACT_GUTTER = 14;
+const CONTACT_CAPTION = 30;
+
+export async function renderRegionContactSheet(
+  filePathOrBuffer: string | Buffer,
+  pageNumber: number,
+  regions: ContactSheetRegion[]
+): Promise<string | null> {
+  if (regions.length === 0) return null;
+  const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
+  const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;
+  if (pageNumber < 1 || pageNumber > pdf.numPages) return null;
+  const page = await pdf.getPage(pageNumber);
+
+  // One render of the whole page, then cut from it -- re-rendering per region
+  // would mean replaying the content stream once for every flag on the sheet.
+  const viewport = page.getViewport({ scale: CONTACT_SCALE });
+  const full = createCanvas(viewport.width, viewport.height);
+  await page.render({ canvasContext: full.getContext("2d"), viewport }).promise;
+
+  const pad = CONTACT_PAD_PT * CONTACT_SCALE;
+  const cells = regions.map((r) => ({
+    label: r.label,
+    sx: Math.max(0, r.bbox.x0 * CONTACT_SCALE - pad),
+    sy: Math.max(0, r.bbox.y0 * CONTACT_SCALE - pad),
+    sw: (r.bbox.x1 - r.bbox.x0) * CONTACT_SCALE + pad * 2,
+    sh: (r.bbox.y1 - r.bbox.y0) * CONTACT_SCALE + pad * 2,
+  }));
+
+  const cellW = Math.ceil(Math.max(...cells.map((c) => c.sw)));
+  const cellH = Math.ceil(Math.max(...cells.map((c) => c.sh)));
+  const cols = Math.min(CONTACT_COLS, cells.length);
+  const rows = Math.ceil(cells.length / cols);
+  const outW = cols * (cellW + CONTACT_GUTTER) + CONTACT_GUTTER;
+  const outH = rows * (cellH + CONTACT_CAPTION + CONTACT_GUTTER) + CONTACT_GUTTER;
+
+  const out = createCanvas(outW, outH);
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, outW, outH);
+
+  cells.forEach((c, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = CONTACT_GUTTER + col * (cellW + CONTACT_GUTTER);
+    const y = CONTACT_GUTTER + row * (cellH + CONTACT_CAPTION + CONTACT_GUTTER);
+
+    ctx.drawImage(full, c.sx, c.sy, c.sw, c.sh, x, y, c.sw, c.sh);
+    // A box so each cell's edge is unambiguous, and its number underneath so
+    // the answer can be tied back to a position without relying on grid order.
+    ctx.strokeStyle = "#999999";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x - 2, y - 2, cellW + 4, cellH + 4);
+    ctx.fillStyle = "#000000";
+    // A concrete family, not "sans-serif": the generic name resolves to nothing
+    // here and the captions come out blank, which silently breaks the mapping
+    // from an answer back to which flag it came from.
+    ctx.font = "bold 24px Arial";
+    ctx.fillText(`#${c.label}`, x + 2, y + cellH + 24);
+  });
+
+  return out.toBuffer("image/png").toString("base64");
+}
+
 export async function renderPdfPages(filePathOrBuffer: string | Buffer, pageNumbers: number[]): Promise<RenderedPage[]> {
   const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
   const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;

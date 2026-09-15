@@ -340,10 +340,27 @@ twice on sheet 4 and produced 17 rows for 16 welds). Leader tracing reaches 82%,
 sheet 3 is perfect. The remaining 17 are flags whose leader the walk does not reach;
 worth diagnosing individually, the way the ellipse case was.
 
-What geometry CANNOT do here is read the number inside a flag — the exporter outlines
-text, so a label is glyph paths and `getTextContent()` returns nothing. But that is now
-a much smaller ask: one small image at a known location, against the candidate set the
-weld list already gives.
+#### Reading the numbers: a contact sheet of flags
+
+Geometry cannot read the number inside a flag — the exporter outlines text, so a label
+is glyph paths and `getTextContent()` returns nothing. But knowing every flag's exact
+box turns that into a different job. `renderRegionContactSheet` in `pdfImages.ts` cuts
+each flag out at 5x and lays them on one numbered grid, and `ISO_WELD_FLAGS_TOOL` reads
+them. The model never has to find anything — it reads short labels that are already
+isolated and blown up.
+
+On sheet 2 of the reference ISO: **26/26 labels read exactly**, complete and unique
+1..26, `TH6` correctly distinguished from the buttwelds. 2,844 input tokens for the
+whole sheet's welds (~$0.08) against ~16k for the tile set, and the weld TYPE comes free
+in the prefix. Run it with `scripts/probe-flag-labels.ts`, which also checks the numbers
+read form a complete unduplicated set — a strong self-check, since a misread almost
+always shows up as a gap or a repeat.
+
+Thinking is deliberately off for that call: it is reading, not reasoning.
+
+So the weld half is done: **detection exact (92/92 by geometry), numbering exact (26/26
+by contact sheet), position for 75/92** (the leader-trace gap). What remains is the last
+17 leaders, and ordering the welds along the run.
 
 #### Geometry spike — the raw numbers behind the above
 

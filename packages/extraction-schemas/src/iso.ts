@@ -34,6 +34,37 @@ export const LOCATE_ISO_SECTIONS_TOOL: ClaudeTool = {
   },
 };
 
+// Reading the weld numbers off a contact sheet of flags cut from the drawing by
+// geometry (see apps/worker/src/extraction/isoWeldMarks.ts and
+// renderRegionContactSheet). Finding which flag belongs to which weld mark is
+// done in code; all that is left for the model is reading short labels that have
+// been isolated and blown up, which is what vision is reliably good at.
+export const ISO_WELD_FLAGS_TOOL: ClaudeTool = {
+  name: "read_weld_flags",
+  description: "Reads the weld number printed inside each numbered cell of a contact sheet of weld flags cut from an isometric drawing.",
+  input_schema: {
+    type: "object",
+    properties: {
+      flags: {
+        type: "array",
+        description: "One entry per numbered cell in the image, in order. Every cell has exactly one label in it; none may be skipped.",
+        items: {
+          type: "object",
+          properties: {
+            cell: { type: "integer", description: 'The cell number printed under the box, without the "#".' },
+            label: {
+              type: "string",
+              description: 'The label inside the hexagon, exactly as printed, e.g. "BW7", "FW12", "TH6", "TW9". Keep the letter prefix; it gives the weld type.',
+            },
+          },
+          required: ["cell", "label"],
+        },
+      },
+    },
+    required: ["flags"],
+  },
+};
+
 // How to walk an isometric's run, which is what fixes the ORDER everything else
 // is expressed in. An isometric is drawn on three 30-degree axes and its welds
 // are not necessarily numbered in the order the pipe reaches them, so "which
