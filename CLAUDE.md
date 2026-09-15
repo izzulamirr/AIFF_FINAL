@@ -60,16 +60,38 @@ out-of-sequence groupings, e.g. `[5,6,13]`):
 
 `buildSpoolsFromWeldTopology` in `packages/shared/src/spoolRules.ts` walks those
 per-weld answers into spools deterministically, then maps them onto the sheet's own
-printed `spool_tags` in order.
+printed `spool_tags` in order. Where a weld closes a spool, only the **main run**
+starts the next one — any branch taking off at that same weld keeps the closing
+spool's index (the main run is told apart from a branch by subtree size, since a
+branch dead-ends after a few welds while the main run carries on).
 
-**Known gap (unresolved as of the last session):** this fixed the *ordering*
-failure mode (spools are now always internally sequential), but valve-detection
-*recall* on dense sheets (multiple valves close together) is still inconsistent —
-the model sometimes doesn't set `closes_spool: true` at the right position, or at
-all, on a busy sheet. Verified by hand against all 5 sheets of the reference ISO;
-only the simplest sheet (one field weld, two spools) came back perfectly correct on
-a real API run. If picking this up again, the next lever to try is probably
-per-valve close-up tiles rather than the current fixed 3×2 whole-sheet tile grid.
+### Regression-checking this without paying for a vision run
+
+Scoring the walk against the hand-verified reading of the reference ISO:
+
+```
+cd packages/db   && node scripts/check-spools.mjs [documentId]      # what's in the DB now
+cd packages/db   && node scripts/dump-iso-welds.mjs <documentId> --out raw.json
+cd apps/worker   && tsx scripts/replay-spools.ts raw.json           # what the CURRENT code would produce
+```
+
+`check-spools.mjs` scores the rows actually stored; `replay-spools.ts` re-runs the
+current code over a stored payload, so the two disagreeing means the DB rows are
+stale relative to the code. Both carry the same hand-verified reference table.
+
+**Known gap:** the *ordering* failure mode is fixed (spools are always internally
+sequential) and so is branch handling, but valve-detection *recall* on dense sheets
+is still the limit — the model sometimes sets `closes_spool: true` at the wrong weld,
+or misses it. On the reference ISO the current code scores **12/18**: sheets 1, 3 and
+4 are perfect, sheets 2 and 5 (the dense ones) lose 6 spools purely to misplaced
+`closes_spool` answers. If picking this up again, the lever to try is per-valve
+close-up tiles rather than the current fixed 3×2 whole-sheet tile grid — the
+remaining gap is a *reading* problem, not a grouping one.
+
+Also note: tool-call JSON is **not** strictly validated against `input_schema`. Real
+runs have returned `spool_tags` as objects (`{spool_tag, ends_at_mainline_weld}`)
+rather than the declared `string[]`, so the worker unwraps both shapes. Expect
+field-name/shape drift and parse defensively.
 
 ### Windows/tooling gotchas hit while working on this
 - A long-running `tsx watch` worker process does **not** reliably reload changes made

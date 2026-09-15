@@ -61,14 +61,54 @@ export function buildSpoolsFromWeldTopology(welds: WeldTopology[], spoolTags: st
     }
   }
 
+  // How many welds hang off each weld, itself included. Used only to tell a
+  // branch apart from the main run where a spool closes: the main run carries
+  // on to the end of the sheet, a branch dead-ends after a few welds at its
+  // own small valve or blind flange.
+  const subtreeSizeCache = new Map<number, number>();
+  const sizingInProgress = new Set<number>();
+  function subtreeSize(weldNo: number): number {
+    const cached = subtreeSizeCache.get(weldNo);
+    if (cached != null) return cached;
+    if (sizingInProgress.has(weldNo)) return 0; // guards a cyclic comes_after_weld
+    sizingInProgress.add(weldNo);
+    let size = 1;
+    for (const child of childrenOf.get(weldNo) ?? []) size += subtreeSize(child);
+    sizingInProgress.delete(weldNo);
+    subtreeSizeCache.set(weldNo, size);
+    return size;
+  }
+
   const weldSpoolIndex = new Map<number, number>();
   let spoolCounter = 0;
 
   function walk(weldNo: number, currentSpoolIndex: number) {
     if (weldSpoolIndex.has(weldNo)) return; // guards a cyclic or duplicated comes_after_weld
     weldSpoolIndex.set(weldNo, currentSpoolIndex);
-    const nextSpoolIndex = byNo.get(weldNo)?.closesSpool ? ++spoolCounter : currentSpoolIndex;
-    for (const child of childrenOf.get(weldNo) ?? []) walk(child, nextSpoolIndex);
+    const children = childrenOf.get(weldNo) ?? [];
+
+    if (!byNo.get(weldNo)?.closesSpool) {
+      for (const child of children) walk(child, currentSpoolIndex);
+      return;
+    }
+
+    // A spool ends at this weld -- but only the MAIN RUN starts the next one.
+    // A branch taking off at this same weld rides along inside the spool that
+    // is closing here, all the way to its own dead end, even when that dead
+    // end is the last thing before the valve. Walking the branches first, then
+    // bumping the counter for the main run, keeps spool indexes in the same
+    // order the sheet reads.
+    let mainlineChild: number | undefined;
+    let largestSubtree = -1;
+    for (const child of children) {
+      const size = subtreeSize(child);
+      if (size > largestSubtree) {
+        largestSubtree = size;
+        mainlineChild = child;
+      }
+    }
+    for (const child of children) if (child !== mainlineChild) walk(child, currentSpoolIndex);
+    if (mainlineChild != null) walk(mainlineChild, ++spoolCounter);
   }
 
   // Roots are walked in the order the model listed the welds, which is the

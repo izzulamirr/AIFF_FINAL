@@ -46,7 +46,9 @@ interface IsoSheetResult {
   insul_spec?: string;
   insul_thickness_mm?: string;
   spec_breaks?: Array<{ spec_class: string; location_note?: string; rating?: string }>;
-  spool_tags?: string[];
+  // The schema asks for plain tag strings; the object form is only here
+  // because real runs have drifted to it -- see where this is unwrapped below.
+  spool_tags?: Array<string | { spool_tag?: string }>;
   welds?: Array<{ weld_no: string; weld_type?: string; size?: string; nde_codes?: string; comes_after_weld?: string; closes_spool?: boolean }>;
   bom_items: Array<{
     item_no?: string;
@@ -274,8 +276,13 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       comesAfterWeld: w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
       closesSpool: Boolean(w.closes_spool),
     }));
+    // Tool-call JSON is not strictly validated against input_schema, and this
+    // field in particular has come back as objects ({spool_tag, ...}) rather
+    // than the plain strings the schema asks for. Unwrap that shape instead of
+    // letting a drifted payload throw and fail the whole sheet.
     const spoolTags = asArray(result.spool_tags)
-      .map((t) => n(t) ?? t)
+      .map((t) => (typeof t === "string" ? t : ((t as { spool_tag?: string } | null)?.spool_tag ?? undefined)))
+      .map((t) => (t != null ? (n(t) ?? t) : undefined))
       .filter((t): t is string => Boolean(t));
     const { spools: resolvedSpools, weldToSpoolTag } = buildSpoolsFromWeldTopology(weldTopology, spoolTags);
 
