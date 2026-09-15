@@ -78,6 +78,7 @@ const ARRIVED_PT = 6;
 // from the leader: the mark it means is the one it is pointing at.
 const POINTING_PT = 40;
 const POINTING_COS = 0.88; // ~28 degrees either side
+const OVERSHOOT_PT = 22;
 const MAX_HOPS = 5;
 const MIN_LEADER_PT = 5;
 
@@ -170,7 +171,14 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
         if (pointedAt) return { d: pointed, at: pointedAt };
       }
     }
-    return { d: best, at };
+    // Last resort: a leader can OVERSHOOT its mark, running a little past the dot
+    // instead of stopping at it, which puts the mark behind the tip where the
+    // forward cone cannot see it. Accept the nearest mark in any direction, but
+    // only from close range -- far enough to cover an overshoot, not far enough
+    // to reach a neighbouring weld. The one-flag-per-mark check below is what
+    // stops this stealing a mark that belongs to someone else.
+    if (best <= OVERSHOOT_PT) return { d: best, at };
+    return { d: Infinity, at: null };
   };
 
   const hits: WeldMarkHit[] = [];
@@ -200,7 +208,7 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
     while (queue.length > 0) {
       const node = queue.shift()!;
       const hit = arrivalFrom(node.at, { x: node.at.x - node.from.x, y: node.at.y - node.from.y });
-      if (hit.at && hit.d <= POINTING_PT) {
+      if (hit.at && Number.isFinite(hit.d)) {
         if (!best || node.length < best.length) best = { tip: hit.at ?? node.at, hops: node.hops, d: hit.d, length: node.length };
         continue; // arrived -- no reason to walk past it
       }

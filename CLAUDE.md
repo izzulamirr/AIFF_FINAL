@@ -354,8 +354,17 @@ Two things took the trace from 75 to 87:
 
 Two smaller thresholds account for the last few: a real leader can be as short as 7pt
 (`MIN_LEADER_PT`), and a leader can start up to ~5pt off the flag's box rather than
-touching it. Sheets 3, 4 and 5 are complete; 3 flags on sheets 1 and 2 have no segment
-leaving the flag at all and are still outstanding.
+touching it. A leader can also OVERSHOOT — run a little past its dot rather than
+stopping at it, putting the mark behind the tip where the forward cone cannot see it —
+so a short any-direction fallback (`OVERSHOOT_PT`) catches that.
+
+Sheets 3, 4 and 5 are complete. The last 3, on sheets 1 and 2, fail EARLIER than
+arrival: no candidate leader segment is found leaving the flag at all, so there is no
+tip to match from. Raising the arrival tolerances does nothing for them (swept 22 →
+55pt: no change, no collisions), which is the evidence that the problem is at the start
+of the walk, not the end. Whatever attaches those flags to their marks is either not a
+stroked segment or begins further from the flag box than anything else on the sheet —
+worth cropping one and looking, the way the arrowhead and ellipse cases were settled.
 
 #### Reading the numbers: a contact sheet of flags
 
