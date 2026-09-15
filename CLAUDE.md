@@ -327,18 +327,33 @@ free to run):
 
 | sheet | flags found | welds known | leaders traced |
 |---|---|---|---|
-| 1 | 25 | 25 | 22 |
-| 2 | 26 | 26 | 19 |
+| 1 | 25 | 25 | 23 |
+| 2 | 26 | 26 | 25 |
 | 3 | 11 | 11 | **11** |
-| 4 | 16 | 16 | 13 |
-| 5 | 14 | 14 | 10 |
-| **total** | **92** | **92** | **75 (82%)** |
+| 4 | 16 | 16 | 14 |
+| 5 | 14 | 14 | **14** |
+| **total** | **92** | **92** | **87 (95%)** |
 
 **Weld detection is exact on every sheet** — 92 flags against 92 hand-verified welds,
 no miscounts and no duplicates, which vision never managed (it once reported weld 1
-twice on sheet 4 and produced 17 rows for 16 welds). Leader tracing reaches 82%, and
-sheet 3 is perfect. The remaining 17 are flags whose leader the walk does not reach;
-worth diagnosing individually, the way the ellipse case was.
+twice on sheet 4 and produced 17 rows for 16 welds).
+
+Two things took the trace from 75 to 87:
+
+- **Leaders end in an ARROWHEAD, drawn as its own filled triangle**, so the leader LINE
+  stops at the arrow's base, several points short of the mark it points at. Widening the
+  arrival radius blindly starts matching whatever mark is nearby; instead, when a leader
+  stops short, the mark is looked for STRAIGHT ON from it — nearest mark within 40pt and
+  a ~28 degree cone of the direction the leader was travelling. `markDistance` is
+  reported so a reviewer can tell a landed match (~3pt, certain) from a pointed one.
+- **Each mark belongs to exactly one flag.** Two flags claiming the same mark means one
+  leader was followed somewhere wrong, so the better fit keeps it and the other is
+  returned as untraced rather than reporting a weld at another weld's position. That
+  check stays clean at every threshold tried, which is the main evidence the pointing
+  matches are not grabbing each other's marks.
+
+The 5 remaining are flags whose leader the walk does not reach at all. Sheets 3 and 5
+are complete.
 
 #### Reading the numbers: a contact sheet of flags
 
@@ -359,8 +374,8 @@ always shows up as a gap or a repeat.
 Thinking is deliberately off for that call: it is reading, not reasoning.
 
 So the weld half is done: **detection exact (92/92 by geometry), numbering exact (26/26
-by contact sheet), position for 75/92** (the leader-trace gap). What remains is the last
-17 leaders, and ordering the welds along the run.
+by contact sheet), position for 87/92** — sheets 3 and 5 complete, 5 leaders outstanding
+across sheets 1, 2 and 4. What remains is those 5, and ordering the welds along the run.
 
 #### Geometry spike — the raw numbers behind the above
 

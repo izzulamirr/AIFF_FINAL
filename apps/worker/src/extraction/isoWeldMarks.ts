@@ -30,7 +30,13 @@ export interface WeldMarkHit {
   flagBox: { x0: number; y0: number; x1: number; y1: number };
   /** Where the leader lands: the weld's own mark on the pipe. */
   mark: Pt;
-  /** How far the leader tip was from the mark's centre -- a fit quality. */
+  /**
+   * How far the leader's last point was from the mark's centre. Around 3pt means
+   * the leader lands on the mark and the match is certain; a larger value means
+   * the leader stopped short (at its arrowhead, or partway along a split
+   * polyline) and the mark was matched by what the leader POINTS at, which is
+   * good but less certain. Worth surfacing to a reviewer rather than hiding.
+   */
   markDistance: number;
   /** Segments walked from flag to mark. */
   hops: number;
@@ -63,7 +69,15 @@ const FLAG_HEIGHT_TOLERANCE = 2;
 // a bent leader into separate segments, so a leader is walked, not read off one
 // path.
 const JOIN_TOLERANCE_PT = 1.2;
+// A leader that lands this close to a mark has plainly arrived at it.
 const ARRIVED_PT = 6;
+// Leaders end in an ARROWHEAD, and the arrowhead is drawn as its own filled
+// triangle -- so the leader LINE stops at the arrow's base, short of the mark it
+// points at. Rather than widen the radius blindly, which starts picking up
+// whichever mark happens to be nearby, keep looking further but only STRAIGHT ON
+// from the leader: the mark it means is the one it is pointing at.
+const POINTING_PT = 40;
+const POINTING_COS = 0.88; // ~28 degrees either side
 const MAX_HOPS = 5;
 const MIN_LEADER_PT = 8;
 
@@ -119,7 +133,10 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
     index(b, { seg, from: b, to: a });
   }
 
-  const nearestMark = (p: Pt) => {
+  // Where a leader ends up: the mark it touches, or failing that the nearest one
+  // it is pointing straight at. `heading` is the direction the leader was
+  // travelling when it stopped.
+  const arrivalFrom = (p: Pt, heading: Pt | null) => {
     let best = Infinity;
     let at: Pt | null = null;
     for (const m of marks) {
@@ -130,6 +147,29 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
         at = c;
       }
     }
+    if (best <= ARRIVED_PT) return { d: best, at };
+
+    if (heading) {
+      const hlen = Math.hypot(heading.x, heading.y);
+      if (hlen > 0.001) {
+        const hx = heading.x / hlen;
+        const hy = heading.y / hlen;
+        let pointed = Infinity;
+        let pointedAt: Pt | null = null;
+        for (const m of marks) {
+          const c = centre(m);
+          const d = dist(c, p);
+          if (d > POINTING_PT || d < 0.001) continue;
+          const cos = ((c.x - p.x) / d) * hx + ((c.y - p.y) / d) * hy;
+          if (cos < POINTING_COS) continue;
+          if (d < pointed) {
+            pointed = d;
+            pointedAt = c;
+          }
+        }
+        if (pointedAt) return { d: pointed, at: pointedAt };
+      }
+    }
     return { d: best, at };
   };
 
@@ -137,7 +177,7 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
   const untraced: Pt[] = [];
 
   for (const flag of flags) {
-    type Walk = { at: Pt; hops: number; length: number; used: Set<GeomPath> };
+    type Walk = { at: Pt; from: Pt; hops: number; length: number; used: Set<GeomPath> };
     const starts: Walk[] = [];
     for (const seg of segments) {
       const a = seg.points[0];
@@ -149,7 +189,7 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
         if (gapTo(flag.bbox, near) > 3) continue;
         if (!isOutside(flag.bbox, far, 3)) continue;
         if (dist(near, far) < MIN_LEADER_PT) continue;
-        starts.push({ at: far, hops: 1, length: dist(near, far), used: new Set([seg]) });
+        starts.push({ at: far, from: near, hops: 1, length: dist(near, far), used: new Set([seg]) });
       }
     }
 
@@ -159,8 +199,8 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
     let best: { tip: Pt; hops: number; d: number; length: number } | null = null;
     while (queue.length > 0) {
       const node = queue.shift()!;
-      const hit = nearestMark(node.at);
-      if (hit.d <= ARRIVED_PT) {
+      const hit = arrivalFrom(node.at, { x: node.at.x - node.from.x, y: node.at.y - node.from.y });
+      if (hit.at && hit.d <= POINTING_PT) {
         if (!best || node.length < best.length) best = { tip: hit.at ?? node.at, hops: node.hops, d: hit.d, length: node.length };
         continue; // arrived -- no reason to walk past it
       }
@@ -170,7 +210,7 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
         if (dist(next.from, node.at) > JOIN_TOLERANCE_PT * 1.5) continue;
         const used = new Set(node.used);
         used.add(next.seg);
-        queue.push({ at: next.to, hops: node.hops + 1, length: node.length + dist(next.from, next.to), used });
+        queue.push({ at: next.to, from: next.from, hops: node.hops + 1, length: node.length + dist(next.from, next.to), used });
       }
     }
 
@@ -181,5 +221,22 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
     }
   }
 
-  return { pageNumber, width: geom.width, height: geom.height, flagCount: flags.length, hits, untraced };
+  // Each weld mark belongs to exactly one flag, so two flags claiming the same
+  // mark means at least one leader was followed to the wrong place. Keep the
+  // better fit and give the other one back as untraced rather than reporting a
+  // weld at a position that belongs to a different weld.
+  const claimed = new Map<string, WeldMarkHit>();
+  const kept: WeldMarkHit[] = [];
+  for (const hit of [...hits].sort((a, b) => a.markDistance - b.markDistance)) {
+    const k = `${hit.mark.x.toFixed(1)},${hit.mark.y.toFixed(1)}`;
+    const held = claimed.get(k);
+    if (held) {
+      untraced.push(hit.flag);
+      continue;
+    }
+    claimed.set(k, hit);
+    kept.push(hit);
+  }
+
+  return { pageNumber, width: geom.width, height: geom.height, flagCount: flags.length, hits: kept, untraced };
 }
