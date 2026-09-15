@@ -375,7 +375,51 @@ Thinking is deliberately off for that call: it is reading, not reasoning.
 
 So the weld half is done: **detection exact (92/92 by geometry), numbering exact (26/26
 by contact sheet), position for 87/92** — sheets 3 and 5 complete, 5 leaders outstanding
-across sheets 1, 2 and 4. What remains is those 5, and ordering the welds along the run.
+across sheets 1, 2 and 4.
+
+#### Ordering the welds along the run — works, does not yet generalize
+
+`src/extraction/isoRunOrder.ts` walks the run and emits each weld's `comesAfter` and
+whether it sits on a branch — which is exactly what `comes_after_weld` is, and what
+`buildSpoolsFromWeldTopology` consumes. Verified end to end on sheet 3 against the real
+weld numbers (`scripts/probe-weld-chain.ts`, ~$0.04):
+
+```
+BW1 -> BW2 -> BW3 -> BW4 -> BW5 -> BW7 -> BW8 -> BW9 -> BW10 -> BW11
+```
+
+Every placed weld in the right order. Three things had to be right:
+
+- **Page position cannot orient the walk.** An isometric is drawn on three 30-degree
+  axes, so "up and to the right" on paper is a HORIZONTAL direction in the plant, not a
+  rise — "flow runs downward" is about elevation, which the page's y does not carry. The
+  weld NUMBERING orients it instead: start from the end nearest the lowest-numbered
+  weld. (Geometry still supplies adjacency and branches, which numbering cannot.)
+- **Continue from where the run actually arrived**, not from the longest edge at the
+  node. Node merging has to be loose enough to bridge a fitting (a valve with its
+  flanges breaks the drawn line), which pulls several distinct points into one node —
+  and "longest first" then jumps clean over the short connector the run really takes.
+  This alone moved BW3 from the end of the chain to its right place.
+- **Sweep leftover components**, or welds on a stretch the first walk never reaches are
+  silently dropped.
+
+**Where it stops:** only **55 of 87** located welds get ordered, and sheet 3 is the only
+one that comes out clean. The cause is measured, not guessed — the run is found by line
+weight, and the heaviest weight does not carry the whole run:
+
+| page | marks on `lw=1.98` |
+|---|---|
+| 1 | 20/23 |
+| 2 | 13/25 |
+| 3 | 10/11 |
+| 4 | 7/14 |
+| 5 | 5/14 |
+
+So the pipe is drawn at MIXED weights and cannot be isolated by weight alone. Finding it
+by weight was the shortcut; the real fix is to grow the run outward from the weld marks
+along connected segments, preferring collinear continuation — the marks are known
+exactly, and every one of them is on the run by definition. That is the next piece, and
+it needs no API credit.
 
 #### Geometry spike — the raw numbers behind the above
 
