@@ -180,6 +180,43 @@ export function readSpoolTags(spoolTags: IsoSheetResult["spool_tags"]): string[]
     .filter((t): t is string => Boolean(t));
 }
 
+// Pass 1's prompt. Exported so it can be run on its own against a single sheet
+// (scripts/probe-boundaries.ts) -- the boundary pass is the part whose accuracy
+// is worth measuring by itself, and doing so costs a fraction of a full sheet
+// extraction.
+export function buildSpoolBoundaryPrompt(opts: {
+  drawingNumber?: string;
+  sheetLabel?: string;
+  pageNumber: number;
+  imageNote: string;
+}): string {
+  return (
+    `This is isometric drawing "${opts.drawingNumber ?? "(unnamed)"}"${opts.sheetLabel ? `, sheet ${opts.sheetLabel}` : ""} -- page ${opts.pageNumber} of the document. The attached images are THIS sheet only. ${opts.imageNote}\n\n` +
+    `YOUR ONLY JOB HERE is to find where this sheet's pipe spools break. Ignore the title block, the materials table and the weld list except where they help you answer that.\n\n` +
+    `A spool is one shop-welded assembly: welded up in the shop, trucked to site, bolted into place. So it can only end in two places.\n` +
+    `(1) AT A VALVE that is flanged on both sides and sits on the MAIN RUN -- the bolted joints either side are what let the pipe come apart there. Drawn as a bowtie/hourglass symbol with a heavy flange bar each side, an item balloon leadered to it, and usually an operator (handwheel, lever, a "VALVE_WRENCH" callout) alongside.\n` +
+    `(2) AT A FIELD WELD -- the forced cut once a continuous welded run passes the ~6000mm that fits on a truck. Drawn as a hatched "FW" tick at that weld's own point.\n` +
+    `Nothing else breaks a spool. Not an elbow, not a reducer, not a branch takeoff, and NOT a valve on a branch: a branch (a smaller-bore drain, vent or instrument tap that leaves the run and dead-ends at its own blind flange) stays inside whichever spool its takeoff belongs to, however far it runs and whatever is on it.\n\n` +
+    `Work in this order:\n` +
+    `1. Read line_size from the title block / line number -- the main run's own size. Everything below depends on it.\n` +
+    `2. Read the "PIPE SPOOLS" schedule near the title block into spool_tags. N tags means this sheet is cut into N spools, so you are looking for exactly N-1 boundaries. Use that as your check at the end, not as a way to place them.\n` +
+    `3. Sweep the WHOLE drawing on the tiles and list EVERY valve you can see in valves -- main run and branches alike. Cross-check the count against the BOM's valve rows before you answer: if the BOM shows four 200mm ball valves and you found three, you have missed one, so go back and find it. Listing a valve and marking it not-a-boundary is right and expected; missing one is not.\n` +
+    `4. For each valve answer the three local questions -- is it on the main run (at line_size, not a smaller branch), is it flanged on both sides, does the run carry on past it -- and set is_boundary true only when all three are true. A valve at the very end of the run has nothing after it, so it is not a boundary.\n` +
+    `5. Give nearest_upstream_weld for each valve by reading the weld label printed at the mark just before it ("BW12" gives "12"). This is what ties your answer to the weld list.\n` +
+    `6. List every hatched FW tick in field_welds, read off the DRAWING -- the weld list table is often grouped by category, so its row order does not tell you which weld is the field weld.\n\n` +
+    `Do not place boundaries by spacing them through the weld numbering. Spools are very uneven -- one may hold a single weld and the next a dozen. If you cannot point at a drawn valve or FW tick, it is not a boundary.`
+  );
+}
+
+export function buildSheetImageNote(tileCount: number, cols = 3, rows = 2): string {
+  return (
+    `The FIRST image is the whole sheet -- use it to see where the run goes and what sits where. ` +
+    (tileCount
+      ? `The REMAINING ${tileCount} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${cols}x${rows} slice of it at far higher resolution. Small annotation detail -- weld marks, item balloons, the flanges either side of a valve -- is only legible in the TILES. Adjacent tiles OVERLAP, so a symbol appearing in two tiles is ONE symbol; never count it twice. `
+      : "")
+  );
+}
+
 // What a correct spool read of a sheet has to satisfy, checked against what
 // that same sheet prints -- so a bad read is caught from the drawing's own
 // evidence rather than from a fixed expectation about any one drawing.
@@ -347,11 +384,7 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       .filter((img): img is string => Boolean(img));
     const sheetTiles = pageRangeToNumbers(sheet.pages).flatMap((n) => tilesByPage.get(n) ?? []);
 
-    const imageNote =
-      `The FIRST image is the whole sheet -- use it to see where the run goes and what sits where. ` +
-      (sheetTiles.length
-        ? `The REMAINING ${sheetTiles.length} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${sheetTiles[0]?.cols ?? 3}x${sheetTiles[0]?.rows ?? 2} slice of it at far higher resolution. Small annotation detail -- weld marks, item balloons, the flanges either side of a valve -- is only legible in the TILES. Adjacent tiles OVERLAP, so a symbol appearing in two tiles is ONE symbol; never count it twice. `
-        : "");
+    const imageNote = buildSheetImageNote(sheetTiles.length, sheetTiles[0]?.cols, sheetTiles[0]?.rows);
     const sheetImageSet = [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)];
 
     // PASS 1 -- where the spools break, asked on its own before anything else.
@@ -363,21 +396,12 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       callTool<IsoBoundariesResult>(client, {
         tool: ISO_SPOOL_BOUNDARIES_TOOL,
         systemPrompt: SYSTEM_PROMPT,
-        userText:
-          `This is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only. ${imageNote}\n\n` +
-          `YOUR ONLY JOB HERE is to find where this sheet's pipe spools break. Ignore the title block, the materials table and the weld list except where they help you answer that.\n\n` +
-          `A spool is one shop-welded assembly: welded up in the shop, trucked to site, bolted into place. So it can only end in two places.\n` +
-          `(1) AT A VALVE that is flanged on both sides and sits on the MAIN RUN -- the bolted joints either side are what let the pipe come apart there. Drawn as a bowtie/hourglass symbol with a heavy flange bar each side, an item balloon leadered to it, and usually an operator (handwheel, lever, a "VALVE_WRENCH" callout) alongside.\n` +
-          `(2) AT A FIELD WELD -- the forced cut once a continuous welded run passes the ~6000mm that fits on a truck. Drawn as a hatched "FW" tick at that weld's own point.\n` +
-          `Nothing else breaks a spool. Not an elbow, not a reducer, not a branch takeoff, and NOT a valve on a branch: a branch (a smaller-bore drain, vent or instrument tap that leaves the run and dead-ends at its own blind flange) stays inside whichever spool its takeoff belongs to, however far it runs and whatever is on it.\n\n` +
-          `Work in this order:\n` +
-          `1. Read line_size from the title block / line number -- the main run's own size. Everything below depends on it.\n` +
-          `2. Read the "PIPE SPOOLS" schedule near the title block into spool_tags. N tags means this sheet is cut into N spools, so you are looking for exactly N-1 boundaries. Use that as your check at the end, not as a way to place them.\n` +
-          `3. Sweep the WHOLE drawing on the tiles and list EVERY valve you can see in valves -- main run and branches alike. Cross-check the count against the BOM's valve rows before you answer: if the BOM shows four 200mm ball valves and you found three, you have missed one, so go back and find it. Listing a valve and marking it not-a-boundary is right and expected; missing one is not.\n` +
-          `4. For each valve answer the three local questions -- is it on the main run (at line_size, not a smaller branch), is it flanged on both sides, does the run carry on past it -- and set is_boundary true only when all three are true. A valve at the very end of the run has nothing after it, so it is not a boundary.\n` +
-          `5. Give nearest_upstream_weld for each valve by reading the weld label printed at the mark just before it ("BW12" gives "12"). This is what ties your answer to the weld list.\n` +
-          `6. List every hatched FW tick in field_welds, read off the DRAWING -- the weld list table is often grouped by category, so its row order does not tell you which weld is the field weld.\n\n` +
-          `Do not place boundaries by spacing them through the weld numbering. Spools are very uneven -- one may hold a single weld and the next a dozen. If you cannot point at a drawn valve or FW tick, it is not a boundary.`,
+        userText: buildSpoolBoundaryPrompt({
+          drawingNumber: sheet.drawing_number,
+          sheetLabel: sheet.sheet,
+          pageNumber: sheet.pages.start,
+          imageNote,
+        }),
         maxTokens: 16000,
         useThinking: true,
         images: sheetImageSet,
