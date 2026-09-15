@@ -298,13 +298,34 @@ Ruled out by measurement, do not spend on these again:
   **0 text items**. The CAD export outlined every label, so `BW7` is vector paths, not
   text. `pdfText.ts` seeing only a footer watermark is the same fact.
 
-The remaining idea, untried: the leaders and weld dots ARE real geometry in the PDF even
-though the text is outlined. `getOperatorList()` gives the path operators, so a weld dot
-(a small filled circle on the pipe polyline) could be matched to its flag by following
-the actual leader path instead of looking at a picture of it — turning attribution into
-graph traversal. The flag's NUMBER would still need reading, but only for a small glyph
-group at a known location, which is a much easier ask than "find the flag this dot
-belongs to". Worth a spike before any more vision spend.
+**The weld list table is the complete set of welds on a sheet.** Nothing else drawn is a
+weld, so any number reported that is not one of its IDs was read off something else — a
+square BOM item balloon, most often. Both the schema and the probe now say so, and the
+probe rejects an out-of-list number rather than passing it on. Weld identity is a solved
+input; only ORDER and ADJACENCY need the drawing.
+
+#### Geometry spike — done, and it is feasible
+
+Page 2 of the reference ISO through `getOperatorList()`:
+
+| | |
+|---|---|
+| `constructPath` ops | 11,310 |
+| subpaths recovered | 13,926 |
+| runs over 40pt (pipe and leaders) | 13,040 |
+| `closeFillStroke` (filled shapes — dots, flags) | 2,578 |
+
+The drawing is fully vector: the pipe polyline, every leader line and every weld dot are
+real paths. So matching a weld dot to its flag can be **graph traversal instead of
+vision** — follow the leader path from the dot and see which flag outline it lands in.
+
+One wrinkle: `constructPath` args come back in pre-transform space (values like
+31248, 22560), so the CTM stack has to be tracked through the 85 `transform` ops to map
+them to page coordinates. That is the main work in the spike.
+
+The flag's NUMBER would still need reading, but only for a small glyph group at a known
+location — a far easier ask than "find the flag this dot belongs to", and it could even
+be matched against the weld list's known IDs rather than read open-endedly.
 
 The ordering and branch handling hold up on the hardest sheet; what remains is this
 one-weld offset rather than a structural failure. Scored against the older stored

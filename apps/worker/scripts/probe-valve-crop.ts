@@ -106,6 +106,7 @@ async function main() {
               `   ... pipe -- a WELD MARK -- flange ][ VALVE ][ flange -- a WELD MARK -- pipe ...\n\n` +
               `A weld mark is a small filled dot on the pipe, with a leader line out to a HEXAGONAL flag -- a six-sided outline with a point at each end -- carrying a label like "BW7", "FW6" or "TH6". The number in that flag is the weld number: "BW7" is weld 7.\n\n` +
               `Do NOT read a weld number off a SQUARE or RECTANGULAR box. Those are BOM item balloons -- "[2]", "[14]", "[7]" -- and they number the part (a valve, a weldolet, a reducer), not a weld. A square box near a weld dot is a different thing entirely, and taking its number is the main way this goes wrong. Only a hexagonal flag gives a weld number.\n\n` +
+              `THE WELD LIST ABOVE IS THE COMPLETE SET OF WELDS ON THIS SHEET -- nothing else on the drawing is a weld. Every number you report must be one of those IDs. If what you are about to give is not in that list, you have read something that is not a weld, and the right answer is a blank.\n\n` +
               `Give me BOTH of those weld numbers -- one from each side of the valve. Which is which does not matter and you should not try to work it out: just read the two marks. ` +
               `Follow each dot's own leader line out to its hexagonal flag and read the number there -- do not take a nearby flag that belongs to a different dot, and do not guess a number from the sequence. ` +
               `Note that the two are often NOT consecutive numbers: branch welds are numbered in among the run's own, so weld 4 can be followed by weld 7. ` +
@@ -130,7 +131,14 @@ ${FLOW_DIRECTION_RULE}
   }
   const r = block.input as { weld_one?: string; weld_two?: string; what_you_see?: string; weld_flow_reaches_first?: string };
 
-  const pair = [r.weld_one, r.weld_two].map((x) => (x ?? "").trim()).filter(Boolean);
+  // The weld list is the complete set of welds on the sheet, so anything not in
+  // it was read off something that is not a weld.
+  const known = new Set((v.welds ?? []).map((w) => String(Number(w.weld_no))));
+  const raw = [r.weld_one, r.weld_two].map((x) => (x ?? "").trim()).filter(Boolean);
+  const rejected = raw.filter((n) => !known.has(String(Number(n))));
+  const pair = raw.filter((n) => known.has(String(Number(n))));
+  if (rejected.length) console.log(`
+REJECTED (not in the weld list): ${rejected.join(", ")}`);
   const want = [v.expected_after, v.expected_downstream].filter((x) => x != null).map(String);
   console.log(`\nflanking welds read: ${pair.join(" and ") || "(none)"}${want.length === 2 ? `   expected ${want.join(" and ")}` : ""}`);
   if (want.length === 2) {

@@ -112,6 +112,7 @@ export const ISO_SPOOL_BOUNDARIES_TOOL: ClaudeTool = {
             nearest_upstream_weld: {
               type: "string",
               description:
+                "The sheet's WELD LIST table is the complete set of welds on it -- nothing else drawn is a weld, and every number given here must be one of that table's IDs. A number in a SQUARE box is a BOM item balloon (the valve's own part number, a weldolet's, a reducer's) and is never a weld; weld numbers come from HEXAGONAL flags. " +
                 'The ID number of the weld immediately BEFORE this valve along the main run -- the weld joining the pipe to the valve\'s own upstream flange, which is the very last weld mark you pass walking toward it, not the one before that. Read the label printed at that mark (a small flag like "BW12" gives "12") and give the bare number. ' +
                 "Blank it rather than guessing: a wrong number here is worse than none, and no two valves can share one. Every valve on the sheet sits at its own point on the run, so if you find yourself about to give the same weld for two different valves, you have not read the marks -- leave them blank instead.",
             },
