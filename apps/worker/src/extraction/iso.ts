@@ -3,6 +3,7 @@ import {
   LOCATE_ISO_SECTIONS_TOOL,
   ISO_SPOOL_BOUNDARIES_TOOL,
   ISO_SHEET_TOOL,
+  FLOW_DIRECTION_RULE,
   buildSystemPrompt,
   buildNumberedText,
   sliceText,
@@ -273,6 +274,8 @@ export function buildIsoSheetPrompt(opts: {
       `Cite what you actually saw in evidence -- the valve's BOM PT NO and description, or the weld ID carrying the FW tick and the dimension that forces the cut. If you cannot point at a specific drawn valve or FW tick, it is not a boundary.\n\n` +
       `DO NOT try to sort the sheet's welds into spool groups yourself -- that whole-sheet grouping is exactly the task that goes wrong: it collapses a dozen-plus welds into a handful of buckets in one shot and drifts, jumping welds out of sequence into the wrong spool. Instead, answer two small LOCAL questions for EACH weld, looking only at that one weld's own immediate neighbourhood on the drawing:\n` +
       `(1) comes_after_weld -- which weld sits immediately before THIS one along the pipe. Look at this weld's own mark and trace back one step to whatever weld or fitting comes right before it. Leave it blank ONLY for the very first weld on the sheet's run. Two different welds legitimately sharing the same comes_after_weld value is normal: that is exactly what a branch takeoff looks like -- the branch's first weld and the mainline's next weld both point back to the same shared weld.\n` +
+      `${FLOW_DIRECTION_RULE}\n` +
+      `BEFORE means before in that walk, NOT lower-numbered. Welds are frequently numbered out of the order the pipe reaches them, so the run can go weld 2, then weld 4, then weld 3. Record what the drawing shows and never reorder a weld to make the numbers ascend.\n` +
       `(2) closes_spool -- the same fact you recorded in spool_boundaries, marked against the weld itself: true for exactly the welds you listed as after_weld there, false everywhere else. If the two disagree, go back to the drawing and settle it rather than leaving them inconsistent. ` +
       `Getting comes_after_weld and closes_spool right for each weld, one at a time, is what actually produces correct spools -- the grouping itself is computed afterward from your answers, so do not also try to pre-group welds or invent spool_no/spool_tag values on individual welds.\n\n` +
       `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +

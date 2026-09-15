@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
-import { buildSystemPrompt, type ClaudeTool } from "@easy/extraction-schemas";
+import { buildSystemPrompt, FLOW_DIRECTION_RULE, type ClaudeTool } from "@easy/extraction-schemas";
 import { renderPdfPageCrops } from "../src/pdfImages";
 
 const INPUT_PER_M = 15;
@@ -40,6 +40,10 @@ const TOOL: ClaudeTool = {
         description: "ID number of the weld mark on the OTHER side of the valve, read from its own hexagonal flag. Bare number. Blank if not legible.",
       },
       what_you_see: { type: "string", description: "Briefly, the run of symbols from one weld to the other, in order, saying where each sits in the image." },
+      weld_flow_reaches_first: {
+        type: "string",
+        description: "Of the two welds above, the one the FLOW reaches FIRST -- see the tracing rule in the prompt. This is the one that ends the spool. Blank if the direction cannot be told from this crop.",
+      },
     },
     required: ["weld_one", "weld_two"],
   },
@@ -105,7 +109,13 @@ async function main() {
               `Give me BOTH of those weld numbers -- one from each side of the valve. Which is which does not matter and you should not try to work it out: just read the two marks. ` +
               `Follow each dot's own leader line out to its hexagonal flag and read the number there -- do not take a nearby flag that belongs to a different dot, and do not guess a number from the sequence. ` +
               `Note that the two are often NOT consecutive numbers: branch welds are numbered in among the run's own, so weld 4 can be followed by weld 7. ` +
-              `If either dot's leader does not reach a legible HEXAGONAL flag inside this image, leave that field blank rather than guessing. A blank is a useful answer; a wrong number is not.`,
+              `If either dot's leader does not reach a legible HEXAGONAL flag inside this image, leave that field blank rather than guessing. A blank is a useful answer; a wrong number is not.
+
+` +
+              `Then, separately: say which of the two the FLOW reaches FIRST, in weld_flow_reaches_first.
+${FLOW_DIRECTION_RULE}
+` +
+              `So on this crop: the higher end of the pipe is upstream. If the crop does not show enough to tell, leave it blank.`,
           },
         ],
       },
@@ -118,7 +128,7 @@ async function main() {
     console.log("no tool call returned");
     return;
   }
-  const r = block.input as { weld_one?: string; weld_two?: string; what_you_see?: string };
+  const r = block.input as { weld_one?: string; weld_two?: string; what_you_see?: string; weld_flow_reaches_first?: string };
 
   const pair = [r.weld_one, r.weld_two].map((x) => (x ?? "").trim()).filter(Boolean);
   const want = [v.expected_after, v.expected_downstream].filter((x) => x != null).map(String);
@@ -127,6 +137,7 @@ async function main() {
     const hits = want.filter((n) => pair.includes(n)).length;
     console.log(hits === 2 ? "=> PAIR CORRECT" : `=> ${hits}/2 of the expected pair`);
   }
+  console.log(`flow reaches first:  ${r.weld_flow_reaches_first || "(blank)"}   <- the weld that CLOSES the spool`);
   if (r.what_you_see) console.log(`\nsaw: ${r.what_you_see}`);
 
   const usage = message.usage;

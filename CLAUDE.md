@@ -225,14 +225,24 @@ clearer than in any tile. One call was run against the first valve on sheet 2:
   `MIN_CROP_FRACTION` now floors the region size. Size a crop by what must be
   READABLE, not by what must be VISIBLE.
 
-After those two fixes, the crop method reads cleanly. Two valves on sheet 2, one call
-each (~$0.08):
+The two fixes helped but **did not solve it**. The same valve on sheet 2, same crop,
+asked three times, gave three different answers:
 
-- valve at (0.191, 0.600): **"BW3" and "BW7"**, with "the square box [14] is the valve
-  BOM balloon, not a weld" said unprompted — the hexagonal/square distinction landed.
-- valve at (0.460, 0.381): **"BW18" and "BW20"**, same clarity, balloons rejected again.
+| run | flanking welds read |
+|---|---|
+| 1 | blank, and `2` — the square item balloon |
+| 2 | `BW3` and `BW7` |
+| 3 | `BW7` and `BW9` |
 
-Both gave a definite pair and described which leader ran where. No guessing, no blanks.
+The flags themselves are legible — by run 2 it was volunteering "the square box [14] is
+the valve BOM balloon, not a weld", so the hexagonal/square distinction landed. What it
+cannot do reliably is match each weld DOT to its OWN flag: the leaders are long, they
+cross each other and they cross the pipe, and following one to its end is line-tracing
+rather than recognition. Run 3 contradicted itself in its own description — "its leader
+runs down to the hexagonal flag BW7 (upper area)".
+
+**So per-valve crops are not the answer either.** Legibility was never the constraint;
+leader-to-flag attribution is, and making the picture bigger does not help with it.
 
 One more design error found and fixed on the way: **do not ask for the upstream and
 downstream weld.** Which side of a valve is upstream depends on the flow direction, and
@@ -261,9 +271,40 @@ the numbering runs. So before scoring another placement run, confirm against the
 drawing which welds actually flank each valve. Some of the earlier 1/5 and 2/5 scores
 may have been against the wrong expectation.
 
-Still to do: give pass 1 an approximate position per valve (fractions of the page) so
-crops can be cut without knowing the answer first, then run placement per valve on its
-own crop, ordering each pair against the weld chain.
+#### Tracing direction — a rule from the piping side
+
+Which way a run goes is not guesswork, and `FLOW_DIRECTION_RULE` in
+`packages/extraction-schemas/src/iso.ts` now carries it into every prompt that needs an
+order (`comes_after_weld`, boundary placement):
+
+> Follow a drawn flow arrow where there is one. Where there is none, **flow runs
+> downward** — start at the top of the run and work down; the EL elevations at the run's
+> ends confirm which end is high. Where the run splits at a branch, take the **EAST leg
+> first, then the WEST**. A branch is a detour you come back from, never a change of
+> direction of the main run.
+
+Also spelled out alongside it: *before* means before **in that walk**, not
+lower-numbered. Welds are frequently numbered out of the order the pipe reaches them, so
+a run can go weld 2, then 4, then 3 — record what the drawing shows and never reorder to
+make numbers ascend. This is why `buildSpoolsFromWeldTopology` works on topology alone.
+
+#### What to try next, and what is already ruled out
+
+Ruled out by measurement, do not spend on these again:
+- more/denser tiles — the valves and flags are already legible at 3×2
+- per-valve close-up crops — legible, but the readings are unstable (above)
+- prompt wording about which weld to pick — three variants, no improvement
+- **reading the labels as PDF text** — checked: page 2 of the reference ISO returns
+  **0 text items**. The CAD export outlined every label, so `BW7` is vector paths, not
+  text. `pdfText.ts` seeing only a footer watermark is the same fact.
+
+The remaining idea, untried: the leaders and weld dots ARE real geometry in the PDF even
+though the text is outlined. `getOperatorList()` gives the path operators, so a weld dot
+(a small filled circle on the pipe polyline) could be matched to its flag by following
+the actual leader path instead of looking at a picture of it — turning attribution into
+graph traversal. The flag's NUMBER would still need reading, but only for a small glyph
+group at a known location, which is a much easier ask than "find the flag this dot
+belongs to". Worth a spike before any more vision spend.
 
 The ordering and branch handling hold up on the hardest sheet; what remains is this
 one-weld offset rather than a structural failure. Scored against the older stored

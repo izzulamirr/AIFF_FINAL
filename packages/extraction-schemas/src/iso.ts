@@ -34,6 +34,17 @@ export const LOCATE_ISO_SECTIONS_TOOL: ClaudeTool = {
   },
 };
 
+// How to walk an isometric's run, which is what fixes the ORDER everything else
+// is expressed in. An isometric is drawn on three 30-degree axes and its welds
+// are not necessarily numbered in the order the pipe reaches them, so "which
+// way round does this run go" has to be decided from the drawing, not from the
+// numbering.
+export const FLOW_DIRECTION_RULE =
+  "TRACING THE RUN. Follow the pipe in the direction of FLOW. Where a flow arrow is drawn on the run, follow it. " +
+  "Where no arrow is drawn, flow runs DOWNWARD: start at the top of the run and work down, and check the EL elevations printed at the run's ends if you need to confirm which end is the high one. " +
+  "Where the run splits at a branch, take the EAST leg first and the WEST leg after it (the title block's north arrow orients the sheet). " +
+  "A branch is a detour you come back from, never a change of direction of the main run: the main run carries on downward past the takeoff regardless of what the branch does.";
+
 // Spool boundaries get their own pass, run before the sheet is read, because
 // asking for them as one field among forty of a full sheet extraction did not
 // work: on a busy sheet the model stopped looking for valves and divided the
@@ -270,7 +281,9 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
             comes_after_weld: {
               type: "string",
               description:
-                "The weld ID number that sits immediately BEFORE this one along the pipe -- look at this weld's own mark and trace back to whatever weld/fitting comes right before it (on the mainline, or on a branch if this weld is on one). Leave BLANK only for the very first weld on the sheet's run (the one nearest its \"CONT'D FROM\" / equipment start). Two different welds legitimately sharing the same comes_after_weld value is normal and expected: it means a branch takes off right there -- both the branch's first weld and the mainline's next weld point back to that same shared weld.",
+                "The weld ID number that sits immediately BEFORE this one along the pipe -- look at this weld's own mark and trace back to whatever weld/fitting comes right before it (on the mainline, or on a branch if this weld is on one). Leave BLANK only for the very first weld on the sheet's run (the one nearest its \"CONT'D FROM\" / equipment start). Two different welds legitimately sharing the same comes_after_weld value is normal and expected: it means a branch takes off right there -- both the branch's first weld and the mainline's next weld point back to that same shared weld.\n\n" +
+                FLOW_DIRECTION_RULE +
+                "\nBEFORE means before in that walk, NOT lower-numbered. Welds are frequently numbered out of the order the pipe reaches them, so the run can go weld 2, then weld 4, then weld 3 -- if that is what the drawing shows, record it, and never reorder a weld to make the numbers ascend.",
             },
             closes_spool: {
               type: "boolean",
