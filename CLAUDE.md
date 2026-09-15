@@ -304,7 +304,48 @@ square BOM item balloon, most often. Both the schema and the probe now say so, a
 probe rejects an out-of-list number rather than passing it on. Weld identity is a solved
 input; only ORDER and ADJACENCY need the drawing.
 
-#### Geometry spike — done, and it is feasible
+#### Reading welds off the geometry — built, and it works
+
+`src/pdfGeometry.ts` recovers a page's drawn paths (CTM tracked through the
+save/restore/transform stack, based on the viewport matrix so a rotated sheet lands the
+right way up). `src/extraction/isoWeldMarks.ts` then finds each weld and its number flag
+without looking at a picture:
+
+- **A weld number flag is a hexagon outline** — 7 points (six corners plus the close),
+  all drawn to one height (15pt here), width varying with label length.
+- **A weld mark is a small filled blob near the leader's far end.** Deliberately *not*
+  tested for roundness: a weld dot is a circle drawn in one of the three isometric
+  planes, so it projects to an ellipse squashed differently depending on which way its
+  pipe runs — a real one came through at 7.2 × 2.3pt. Requiring roundness cost 8 of 26
+  welds on one sheet.
+- **A leader is walked, not read.** CAD splits a bent leader into separate segments, so
+  the tracer indexes segment endpoints and walks flag → segment → segment until it
+  arrives at a mark.
+
+Measured across all five sheets of the reference ISO (`scripts/trace-weld-marks.ts`,
+free to run):
+
+| sheet | flags found | welds known | leaders traced |
+|---|---|---|---|
+| 1 | 25 | 25 | 22 |
+| 2 | 26 | 26 | 19 |
+| 3 | 11 | 11 | **11** |
+| 4 | 16 | 16 | 13 |
+| 5 | 14 | 14 | 10 |
+| **total** | **92** | **92** | **75 (82%)** |
+
+**Weld detection is exact on every sheet** — 92 flags against 92 hand-verified welds,
+no miscounts and no duplicates, which vision never managed (it once reported weld 1
+twice on sheet 4 and produced 17 rows for 16 welds). Leader tracing reaches 82%, and
+sheet 3 is perfect. The remaining 17 are flags whose leader the walk does not reach;
+worth diagnosing individually, the way the ellipse case was.
+
+What geometry CANNOT do here is read the number inside a flag — the exporter outlines
+text, so a label is glyph paths and `getTextContent()` returns nothing. But that is now
+a much smaller ask: one small image at a known location, against the candidate set the
+weld list already gives.
+
+#### Geometry spike — the raw numbers behind the above
 
 Page 2 of the reference ISO through `getOperatorList()`:
 
