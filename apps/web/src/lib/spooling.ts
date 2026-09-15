@@ -23,7 +23,6 @@ export interface SpoolWeld {
   weldNo: string;
   weldType: string;
   size: string;
-  ndeCodes: string;
   /** The spool this weld is stored under. */
   spoolOf: string;
   /**
@@ -102,7 +101,6 @@ export function buildSpoolSheets(tags: SpoolingTag[]): SpoolSheet[] {
           weldNo: String(a.weld_no ?? ""),
           weldType: String(a.weld_type ?? "-"),
           size: String(a.size ?? "-"),
-          ndeCodes: String(a.nde_codes ?? ""),
           spoolOf: spoolNo,
           drawingSpool: a.geometry_spool == null ? null : String(a.geometry_spool),
           spoolWas: a.spool_no_vision == null ? null : String(a.spool_no_vision),

@@ -61,7 +61,6 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
                           <th className="w-20 py-1">Weld</th>
                           <th className="w-28">Type</th>
                           <th className="w-20">Size</th>
-                          <th className="w-28">NDE</th>
                           <th className="w-36">Against the drawing</th>
                         </tr>
                       </thead>
@@ -71,7 +70,6 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
                             <td className="py-1">{w.weldNo}</td>
                             <td>{w.weldType}</td>
                             <td>{w.size}</td>
-                            <td className="text-gray-500">{w.ndeCodes || "-"}</td>
                             <td className="text-xs">
                               {/* Nothing to compare against on a sheet whose
                                   boundaries could not be read off the drawing,
