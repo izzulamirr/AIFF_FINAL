@@ -37,8 +37,8 @@ export interface WeldRow {
 
 export interface SpoolCutResult {
   cuts: number[];
-  /** One line per cut found, saying what it was read from. */
-  evidence: string[];
+  /** One entry per cut found, saying what it was read off the drawing from. */
+  evidence: Array<{ cut: number; why: string }>;
   /** Valves seen on the pipe but rejected, and why. */
   rejected: string[];
 }
@@ -201,7 +201,7 @@ export async function readSpoolCuts(
   const bore = new Map(welds.map((w) => [w.weldNo, String(w.size ?? "").trim()]));
 
   const cuts = new Set<number>();
-  const evidence: string[] = [];
+  const evidence: Array<{ cut: number; why: string }> = [];
   const rejected: string[] = [];
 
   // (1) Field welds, straight off the weld list. A field weld IS the forced cut,
@@ -209,7 +209,7 @@ export async function readSpoolCuts(
   for (const w of welds) {
     if (String(w.weldType ?? "").trim().toUpperCase() !== "FW") continue;
     cuts.add(w.weldNo);
-    evidence.push(`field weld ${w.weldNo} closes a spool, so the cut is after weld ${w.weldNo}`);
+    evidence.push({ cut: w.weldNo, why: `closes at field weld ${w.weldNo}, the forced cut` });
   }
 
   // (2) Bolted joints: a pair of flange bars facing each other. This is the
@@ -284,7 +284,7 @@ export async function readSpoolCuts(
     const cut = Math.max(...ns) - 1;
     if (cuts.has(cut)) continue;
     cuts.add(cut);
-    evidence.push(`bolted joint between welds ${[...ns].sort((a, b) => a - b).join(" and ")}, so the cut is after weld ${cut}`);
+    evidence.push({ cut, why: `ends after weld ${cut}, at the bolted joint between welds ${[...ns].sort((a, b) => a - b).join(" and ")}` });
   }
 
   return { cuts: [...cuts].sort((a, b) => a - b), evidence, rejected };

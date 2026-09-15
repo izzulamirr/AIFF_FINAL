@@ -21,7 +21,14 @@ async function main() {
   const list = JSON.parse(readFileSync(listPath, "utf8"));
   const geo = JSON.parse(readFileSync(geoPath, "utf8"));
 
-  const out: Array<{ page: number; cuts: number[]; trusted: boolean; assignment: Array<{ rowId: number; weldNo: number; spool: string; stored: string }> }> = [];
+  const out: Array<{
+    page: number;
+    cuts: number[];
+    trusted: boolean;
+    /** Why each cut is where it is, carried through so a spool row can say so. */
+    evidence: Array<{ cut: number; why: string }>;
+    assignment: Array<{ rowId: number; weldNo: number; spool: string; stored: string }>;
+  }> = [];
   let agree = 0;
   let differ = 0;
 
@@ -39,13 +46,13 @@ async function main() {
 
     const expected = p.spoolTags.length - 1;
     console.log(`\npage ${p.page}: ${p.spoolTags.length} spool tags -> ${expected} cuts expected; found ${cuts.length}${cuts.length ? ` [${cuts.join(", ")}]` : ""}`);
-    for (const e of evidence) console.log(`   + ${e}`);
+    for (const e of evidence) console.log(`   + cut after ${e.cut}: ${e.why}`);
     for (const r of rejected) console.log(`   - ${r}`);
 
     const trusted = cuts.length === expected && expected >= 0;
     if (!trusted) {
       console.log(`   !! left alone: ${cuts.length} cuts for ${p.spoolTags.length} spools`);
-      out.push({ page: p.page, cuts, trusted: false, assignment: [] });
+      out.push({ page: p.page, cuts, trusted: false, evidence, assignment: [] });
       continue;
     }
     const assigned = assignSpools(p.welds, cuts, p.spoolTags);
@@ -57,7 +64,7 @@ async function main() {
     differ += changed.length;
     console.log(`   ${assignment.length - changed.length} welds agree with what is stored, ${changed.length} differ`);
     for (const ch of changed) console.log(`      weld ${ch.weldNo}: stored ${ch.stored.slice(-4)} -> drawing says ${ch.spool.slice(-4)}`);
-    out.push({ page: p.page, cuts, trusted: true, assignment });
+    out.push({ page: p.page, cuts, trusted: true, evidence, assignment });
   }
 
   writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), pages: out }, null, 2));

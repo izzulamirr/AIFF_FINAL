@@ -126,6 +126,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         // vision extraction produced. Absent on sheets whose boundaries could
         // not be established.
         drawingSpool: string | null;
+        spoolWas: string | null;
       }>;
     }>;
   }> = [];
@@ -295,6 +296,10 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
             ndeCodes: String(a.nde_codes ?? ""),
             spoolOf: spoolNo,
             drawingSpool: a.geometry_spool == null ? null : String(a.geometry_spool),
+            // What the vision extraction had recorded before the drawing's
+            // answer was promoted to spool_no. Present only on welds that
+            // actually moved, so it is the audit trail for this sheet.
+            spoolWas: a.spool_no_vision == null ? null : String(a.spool_no_vision),
           });
           weldsBySpoolMap.set(spoolNo, list);
         }
@@ -747,17 +752,27 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                                   </p>
                                 );
                               }
+                              const corrected = fromDrawing.filter((w) => w.spoolWas && w.spoolWas !== w.spoolOf);
                               const moved = fromDrawing.filter((w) => w.drawingSpool !== w.spoolOf);
                               return (
                                 <p className="mb-2 text-xs text-gray-500">
-                                  The spool boundaries on this sheet were read off the drawing itself -- from the valves flanged on the run and the
+                                  The spool boundaries on this sheet were read off the drawing itself -- from the bolted joints on the run and the
                                   field welds in the weld list -- and they account for every spool its PIPE SPOOLS schedule prints.{" "}
-                                  {moved.length === 0 ? (
-                                    <span className="text-green-700">All {fromDrawing.length} welds land in the same spool the extraction gave them.</span>
-                                  ) : (
+                                  {moved.length > 0 ? (
                                     <span className="text-amber-700">
-                                      {moved.length} of {fromDrawing.length} welds belong to a different spool than the extraction recorded -- those
+                                      {moved.length} of {fromDrawing.length} welds belong to a different spool than the one stored -- those
                                       rows are marked below.
+                                    </span>
+                                  ) : corrected.length === 0 ? (
+                                    <span className="text-green-700">
+                                      All {fromDrawing.length} welds sit in the spool the drawing puts them in, and none had to be corrected.
+                                    </span>
+                                  ) : (
+                                    <span className="text-green-700">
+                                      All {fromDrawing.length} welds now sit in the spool the drawing puts them in.{" "}
+                                      <span className="text-amber-700">
+                                        {corrected.length} were corrected from what the extraction had recorded -- those rows say what they were.
+                                      </span>
                                     </span>
                                   )}
                                 </p>
@@ -780,7 +795,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                                       <th className="w-24">Type</th>
                                       <th className="w-24">Size</th>
                                       <th className="w-28">NDE codes</th>
-                                      <th className="w-56">Spool, read off the drawing</th>
+                                      <th className="w-56">Against the drawing</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -792,13 +807,17 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                                         <td className="text-gray-500">{w.ndeCodes || "-"}</td>
                                         <td className="text-xs">
                                           {w.drawingSpool == null ? (
-                                            <span className="text-gray-400">-</span>
-                                          ) : w.drawingSpool === w.spoolOf ? (
-                                            <span className="text-green-700">same</span>
-                                          ) : (
+                                            <span className="text-gray-400">not established</span>
+                                          ) : w.drawingSpool !== w.spoolOf ? (
                                             <span className="font-medium text-amber-700">
                                               belongs to <span className="font-mono">{w.drawingSpool.slice(-4)}</span>, not this one
                                             </span>
+                                          ) : w.spoolWas && w.spoolWas !== w.spoolOf ? (
+                                            <span className="text-amber-700">
+                                              corrected, was <span className="font-mono">{w.spoolWas.slice(-4)}</span>
+                                            </span>
+                                          ) : (
+                                            <span className="text-green-700">confirmed</span>
                                           )}
                                         </td>
                                       </tr>
