@@ -17,7 +17,6 @@ import {
   type RoutingFittingRow,
 } from "@/lib/verifyIso";
 import { ExtractedTagsTable, type TagGroup } from "./ExtractedTagsTable";
-import { IsoTabs } from "./IsoTabs";
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   pid: "P&ID",
@@ -99,35 +98,6 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
     groups: Array<{
       specClass: string;
       items: Array<{ id: number; itemNo: string; description: string; itemCode: string; qty: string; basis: string }>;
-    }>;
-  }> = [];
-  // Pipe spools (keyed by each sheet's own printed "PIPE SPOOLS" tags, built
-  // from per-weld topology -- see buildSpoolsFromWeldTopology in
-  // @easy/shared) and the weld list, one block per SHEET.
-  let spoolsAndWelds: Array<{
-    lineNumber: string;
-    sheetLabel: string;
-    page: number | null;
-    spools: Array<{ id: number; spoolNo: string; weldCount: number; note: string }>;
-    // Welds grouped under the spool they sit in -- "Unassigned" holds welds
-    // whose spool couldn't be determined, always listed last.
-    weldsBySpool: Array<{
-      spoolNo: string;
-      welds: Array<{
-        id: number;
-        weldNo: string;
-        weldType: string;
-        size: string;
-        ndeCodes: string;
-        /** The spool this weld is stored under, so a row can say whether the drawing agrees. */
-        spoolOf: string;
-        // Which spool this weld belongs to according to the DRAWING -- the
-        // boundaries read off it geometrically, rather than the grouping the
-        // vision extraction produced. Absent on sheets whose boundaries could
-        // not be established.
-        drawingSpool: string | null;
-        spoolWas: string | null;
-      }>;
     }>;
   }> = [];
 
@@ -258,68 +228,6 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
       })
       .filter((v): v is NonNullable<typeof v> => v !== null);
 
-    spoolsAndWelds = [...isoLineTagsAll]
-      .sort((a, b) => (a.sourcePage ?? 0) - (b.sourcePage ?? 0))
-      .map((line) => {
-        const lineAttrs = line.attributes as Record<string, unknown>;
-        const norm = normalizeTagNumber(line.tagNumber);
-        const onThisSheet = (t: (typeof tags)[number]) => {
-          if (line.sourcePage != null && t.sourcePage !== line.sourcePage) return false;
-          const ln = (t.attributes as Record<string, unknown>).line_number;
-          return typeof ln === "string" && normalizeTagNumber(ln) === norm;
-        };
-        const spools = tags
-          .filter((t) => t.tagType === "spool" && onThisSheet(t))
-          .map((t) => {
-            const a = t.attributes as Record<string, unknown>;
-            const weldNumbers = Array.isArray(a.weld_numbers) ? a.weld_numbers : [];
-            return {
-              id: t.id,
-              spoolNo: t.tagNumber,
-              spoolIndex: Number(a.spool_index ?? 0),
-              weldCount: weldNumbers.length,
-              note: String(a.note ?? ""),
-            };
-          })
-          // Read in the sheet's own printed schedule order.
-          .sort((x, y) => x.spoolIndex - y.spoolIndex);
-        const weldsBySpoolMap = new Map<string, NonNullable<(typeof spoolsAndWelds)[number]["weldsBySpool"][number]["welds"]>>();
-        for (const t of tags.filter((t) => t.tagType === "weld" && onThisSheet(t))) {
-          const a = t.attributes as Record<string, unknown>;
-          const spoolNo = String(a.spool_no ?? "-");
-          const list = weldsBySpoolMap.get(spoolNo) ?? [];
-          list.push({
-            id: t.id,
-            weldNo: String(a.weld_no ?? ""),
-            weldType: String(a.weld_type ?? "-"),
-            size: String(a.size ?? "-"),
-            ndeCodes: String(a.nde_codes ?? ""),
-            spoolOf: spoolNo,
-            drawingSpool: a.geometry_spool == null ? null : String(a.geometry_spool),
-            // What the vision extraction had recorded before the drawing's
-            // answer was promoted to spool_no. Present only on welds that
-            // actually moved, so it is the audit trail for this sheet.
-            spoolWas: a.spool_no_vision == null ? null : String(a.spool_no_vision),
-          });
-          weldsBySpoolMap.set(spoolNo, list);
-        }
-        // "Unassigned" (spool couldn't be determined) always listed last;
-        // real spool numbers in natural order, each sorted by weld number.
-        const weldsBySpool = [...weldsBySpoolMap.entries()]
-          .sort(([a], [b]) => {
-            if (a === "-") return 1;
-            if (b === "-") return -1;
-            return a.localeCompare(b, undefined, { numeric: true });
-          })
-          .map(([spoolNo, spoolWelds]) => ({
-            spoolNo,
-            welds: [...spoolWelds].sort((x, y) => x.weldNo.localeCompare(y.weldNo, undefined, { numeric: true })),
-          }));
-        if (spools.length === 0 && weldsBySpool.length === 0) return null;
-        const sheetLabel = typeof lineAttrs.sheet === "string" && lineAttrs.sheet ? lineAttrs.sheet : line.sourcePage != null ? `page ${line.sourcePage}` : "";
-        return { lineNumber: line.tagNumber, sheetLabel, page: line.sourcePage, spools, weldsBySpool };
-      })
-      .filter((v): v is NonNullable<typeof v> => v !== null);
 
     // Routing & fitting count, ISO vs the project's P&IDs -- same always-on
     // pattern as design basis, aggregated across every extracted P&ID (a
@@ -454,13 +362,6 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         <section className="rounded border p-4">
           <h2 className="mb-2 font-medium">ISO checks</h2>
 
-          <IsoTabs
-            tabs={[
-              {
-                id: "checks",
-                label: "Design basis, routing & BOM",
-                content: (
-                  <>
           <h3 className="mb-2 mt-4 font-medium">Design basis: ISO vs PLL</h3>
           {designBasis.length === 0 && <p className="mb-4 text-sm text-gray-500">No PLL uploaded/extracted in this project yet.</p>}
           {designBasis.map(({ lineNumber, pllDocName, rows }) => (
@@ -686,155 +587,6 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
               ))}
             </>
           )}
-                  </>
-                ),
-              },
-              {
-                id: "spools-welds",
-                label: "Spooling & Weld List",
-                content: (
-                  <>
-                    {spoolsAndWelds.length === 0 && (
-                      <p className="text-sm text-gray-500">
-                        No pipe spool / weld list data for this document. Re-extract this document to get them.
-                      </p>
-                    )}
-                    {spoolsAndWelds.map(({ lineNumber, sheetLabel, page, spools, weldsBySpool }) => (
-                      <div key={`${lineNumber}-${page ?? sheetLabel}`} className="mb-6 rounded border p-3">
-                        <p className="mb-2 text-sm font-medium">
-                          Sheet {sheetLabel || "?"} <span className="font-normal text-gray-500">&middot; line</span>{" "}
-                          <span className="font-mono font-normal">{lineNumber}</span>
-                        </p>
-
-                        {spools.length > 0 && (
-                          <div className="mb-3">
-                            <p className="mb-1 text-sm font-medium">
-                              Pipe spools <span className="font-normal text-gray-500">({spools.length})</span>
-                            </p>
-                            <p className="mb-2 text-xs text-gray-500">
-                              Read directly off the sheet&rsquo;s own &ldquo;PIPE SPOOLS&rdquo; schedule and pointer-arrow tags -- a spool ends only
-                              at a valve flanged on both sides, or at a forced 6000&nbsp;mm cut closed by a field weld.
-                            </p>
-                            <table className="w-full text-left text-sm">
-                              <thead>
-                                <tr className="border-b">
-                                  <th className="py-1">Spool</th>
-                                  <th className="w-24">Welds</th>
-                                  <th>Note</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {spools.map((s) => (
-                                  <tr key={s.id} className="border-b">
-                                    <td className="py-1 font-mono text-xs">{s.spoolNo}</td>
-                                    <td>{s.weldCount}</td>
-                                    <td className="text-gray-500">{s.note || "-"}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-
-                        {weldsBySpool.length > 0 && (
-                          <div>
-                            <p className="mb-1 text-sm font-medium">
-                              Weld list <span className="font-normal text-gray-500">({weldsBySpool.reduce((sum, g) => sum + g.welds.length, 0)})</span>
-                            </p>
-                            {(() => {
-                              const all = weldsBySpool.flatMap((g) => g.welds);
-                              const fromDrawing = all.filter((w) => w.drawingSpool);
-                              if (fromDrawing.length === 0) {
-                                return (
-                                  <p className="mb-2 text-xs text-gray-500">
-                                    This sheet&rsquo;s spool boundaries could not be established from the drawing, so the grouping below is the one
-                                    the extraction produced and has not been checked against it.
-                                  </p>
-                                );
-                              }
-                              const corrected = fromDrawing.filter((w) => w.spoolWas && w.spoolWas !== w.spoolOf);
-                              const moved = fromDrawing.filter((w) => w.drawingSpool !== w.spoolOf);
-                              return (
-                                <p className="mb-2 text-xs text-gray-500">
-                                  The spool boundaries on this sheet were read off the drawing itself -- from the bolted joints on the run and the
-                                  field welds in the weld list -- and they account for every spool its PIPE SPOOLS schedule prints.{" "}
-                                  {moved.length > 0 ? (
-                                    <span className="text-amber-700">
-                                      {moved.length} of {fromDrawing.length} welds belong to a different spool than the one stored -- those
-                                      rows are marked below.
-                                    </span>
-                                  ) : corrected.length === 0 ? (
-                                    <span className="text-green-700">
-                                      All {fromDrawing.length} welds sit in the spool the drawing puts them in, and none had to be corrected.
-                                    </span>
-                                  ) : (
-                                    <span className="text-green-700">
-                                      All {fromDrawing.length} welds now sit in the spool the drawing puts them in.{" "}
-                                      <span className="text-amber-700">
-                                        {corrected.length} were corrected from what the extraction had recorded -- those rows say what they were.
-                                      </span>
-                                    </span>
-                                  )}
-                                </p>
-                              );
-                            })()}
-                            {weldsBySpool.map(({ spoolNo, welds }) => (
-                              <div key={spoolNo} className="mb-3">
-                                <p className="text-sm font-medium">
-                                  {spoolNo === "-" ? (
-                                    <span className="text-amber-600">Unassigned</span>
-                                  ) : (
-                                    <span className="font-mono">{spoolNo}</span>
-                                  )}{" "}
-                                  <span className="font-normal text-gray-500">({welds.length} weld{welds.length > 1 ? "s" : ""})</span>
-                                </p>
-                                <table className="w-full text-left text-sm">
-                                  <thead>
-                                    <tr className="border-b">
-                                      <th className="py-1 w-20">Weld no.</th>
-                                      <th className="w-24">Type</th>
-                                      <th className="w-24">Size</th>
-                                      <th className="w-28">NDE codes</th>
-                                      <th className="w-56">Against the drawing</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {welds.map((w) => (
-                                      <tr key={w.id} className="border-b">
-                                        <td className="py-1">{w.weldNo}</td>
-                                        <td>{w.weldType}</td>
-                                        <td>{w.size}</td>
-                                        <td className="text-gray-500">{w.ndeCodes || "-"}</td>
-                                        <td className="text-xs">
-                                          {w.drawingSpool == null ? (
-                                            <span className="text-gray-400">not established</span>
-                                          ) : w.drawingSpool !== w.spoolOf ? (
-                                            <span className="font-medium text-amber-700">
-                                              belongs to <span className="font-mono">{w.drawingSpool.slice(-4)}</span>, not this one
-                                            </span>
-                                          ) : w.spoolWas && w.spoolWas !== w.spoolOf ? (
-                                            <span className="text-amber-700">
-                                              corrected, was <span className="font-mono">{w.spoolWas.slice(-4)}</span>
-                                            </span>
-                                          ) : (
-                                            <span className="text-green-700">confirmed</span>
-                                          )}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </>
-                ),
-              },
-            ]}
-          />
         </section>
       )}
 
