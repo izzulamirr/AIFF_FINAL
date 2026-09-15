@@ -58,12 +58,35 @@ out-of-sequence groupings, e.g. `[5,6,13]`):
   two welds sharing one `comes_after_weld` parent)
 - `closes_spool` — does a spool end right at this weld
 
-It also asks for the boundaries directly, as `spool_boundaries` — one entry per cut,
-each naming its type and the **evidence** for it (the valve's BOM item and the welds
-either side, or the weld carrying the hatched FW tick). This exists because on dense
-sheets the model was not finding the valves at all: it was dividing the weld
-numbering into even pieces (sheet 2 came back with cuts at welds 4, 8, 12, 16, 20 for
-26 welds and 6 spools). Requiring evidence makes a guess visible instead of plausible.
+### Boundaries get their own pass, before the sheet is read
+
+Each sheet is read **twice**, and the order matters:
+
+1. `ISO_SPOOL_BOUNDARIES_TOOL` (`locate_iso_spool_boundaries`) — finds only where the
+   spools break, and nothing else.
+2. `ISO_SHEET_TOOL` (`record_iso_sheet`) — the full read, handed pass 1's boundaries
+   as given, so its job for spools is just the welds and their `comes_after_weld`.
+
+This split exists because asking for boundaries as one field among forty did not work.
+On a busy sheet the model stopped looking for valves altogether and divided the weld
+numbering into even pieces: sheet 2 of the reference ISO came back cut at welds 4, 8,
+12, 16 and 20 — 26 welds and 6 spools, spaced exactly 4 apart. Rendering that sheet's
+tiles and reading them by hand settled *why*: the valves are perfectly legible at the
+current 3×2 tiling (bowtie symbols with flange bars and BOM balloons leadered to
+them), so it was never a resolution problem, and denser tiles would not have fixed it.
+It was attention. Alone, with nothing else to record, finding the valves is a task a
+sweep of the drawing actually answers.
+
+Pass 1 asks for **every valve on the sheet**, not just the boundary ones — enumerating
+what is drawn is far more reliable than picking out a subset, the BOM's valve rows
+give a count to check against, and each valve then answers three local yes/no
+questions (on the main run? flanged both sides? does pipe continue past it?) instead
+of one whole-sheet judgement. On the reference sheet 2 that enumeration lands on the
+right number by itself: four 200mm ball valves plus one 150mm gate valve in the
+reduced section = the five boundaries its PIPE SPOOLS schedule implies.
+
+Boundaries carry **evidence** (the valve's BOM item and where it sits, or the weld
+carrying the hatched FW tick), so a guess is visible rather than merely plausible.
 
 `buildSpoolsFromWeldTopology` in `packages/shared/src/spoolRules.ts` walks those
 answers into spools deterministically, then maps them onto the sheet's printed
@@ -110,13 +133,22 @@ non-contiguous weld numbering) so the logic can't quietly become fitted to one I
 current code over a stored payload — the two disagreeing means the DB rows are stale
 relative to the code.
 
-**Known gap:** the deterministic half is settled and tested. What is *not* verified is
-whether the evidence requirement and the retry actually make the model find the valves
-on a dense sheet — that needs a real vision run, and the reference ISO's stored payload
-predates these fields. On that stored payload the code scores **12/18**, with all six
-misses being boundaries the model put at the wrong weld; sheets 1, 3 and 4 are exact.
-If the gap persists on a fresh run, the next lever is per-valve close-up tiles rather
-than the fixed 3×2 whole-sheet grid in `renderPdfPageTiles`.
+**Cost note:** the boundary pass is an extra tool call per sheet (~16k max tokens,
+same images). A 5-sheet ISO goes from 5 sheet calls to 5 + 5.
+
+**What is and isn't verified.** The deterministic half is settled: given correct
+boundaries, every sheet of the reference ISO resolves exactly, sheet 2 included (26
+welds, 6 spools, three branches all taking off at closing welds — the arrangement that
+used to scatter them). That is pinned as a test. What is *not* verified is whether the
+model, asked on its own, actually finds the valves — that needs a real vision run, and
+the stored payload predates the boundary pass. Scored against that old payload the code
+gives **12/18**, all six misses being boundaries put at the wrong weld.
+
+Note the boundary weld is the last **main-run** weld before the valve, not the last
+weld by number: on sheet 2 the cuts are after welds 4, 9, 14, 17, 20, because the
+branches hanging off welds 9 and 20 ride along inside the spools that close there.
+Don't assume tiling is the lever if a sheet reads badly — check first whether the
+detail is legible, with `scripts/dump-tiles.ts`, before spending on more tiles.
 
 Also note: tool-call JSON is **not** strictly validated against `input_schema`. Real
 runs have returned `spool_tags` as objects (`{spool_tag, ends_at_mainline_weld}`)

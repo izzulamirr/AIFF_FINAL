@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   LOCATE_ISO_SECTIONS_TOOL,
+  ISO_SPOOL_BOUNDARIES_TOOL,
   ISO_SHEET_TOOL,
   buildSystemPrompt,
   buildNumberedText,
@@ -15,6 +16,25 @@ import type { DocTypeExtractor, TagDraft } from "./types";
 
 interface LocateIsoResult {
   sheets: Array<{ drawing_number: string; sheet?: string; pages: PageRange }>;
+}
+
+interface IsoValve {
+  item_no?: string;
+  description?: string;
+  size?: string;
+  on_main_run?: boolean;
+  flanged_both_sides?: boolean;
+  pipe_continues_past?: boolean;
+  is_boundary?: boolean;
+  nearest_upstream_weld?: string;
+  location_note?: string;
+}
+
+interface IsoBoundariesResult {
+  line_size?: string;
+  spool_tags?: Array<string | { spool_tag?: string }>;
+  valves?: IsoValve[];
+  field_welds?: Array<{ weld_no?: string; evidence?: string }>;
 }
 
 interface IsoSheetResult {
@@ -326,6 +346,69 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       .map((n) => imageByPage.get(n))
       .filter((img): img is string => Boolean(img));
     const sheetTiles = pageRangeToNumbers(sheet.pages).flatMap((n) => tilesByPage.get(n) ?? []);
+
+    const imageNote =
+      `The FIRST image is the whole sheet -- use it to see where the run goes and what sits where. ` +
+      (sheetTiles.length
+        ? `The REMAINING ${sheetTiles.length} images are overlapping close-up tiles of that same sheet, in reading order (row 1 left to right, then row 2), each covering about a ${sheetTiles[0]?.cols ?? 3}x${sheetTiles[0]?.rows ?? 2} slice of it at far higher resolution. Small annotation detail -- weld marks, item balloons, the flanges either side of a valve -- is only legible in the TILES. Adjacent tiles OVERLAP, so a symbol appearing in two tiles is ONE symbol; never count it twice. `
+        : "");
+    const sheetImageSet = [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)];
+
+    // PASS 1 -- where the spools break, asked on its own before anything else.
+    // Finding the valves is a sweep of the drawing; it does not survive being
+    // one field among forty of a full sheet extraction, which is how a busy
+    // sheet ended up cut at evenly spaced weld numbers instead of at its
+    // valves. Nothing else is asked for here.
+    const boundaries = await callWithRetry(() =>
+      callTool<IsoBoundariesResult>(client, {
+        tool: ISO_SPOOL_BOUNDARIES_TOOL,
+        systemPrompt: SYSTEM_PROMPT,
+        userText:
+          `This is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only. ${imageNote}\n\n` +
+          `YOUR ONLY JOB HERE is to find where this sheet's pipe spools break. Ignore the title block, the materials table and the weld list except where they help you answer that.\n\n` +
+          `A spool is one shop-welded assembly: welded up in the shop, trucked to site, bolted into place. So it can only end in two places.\n` +
+          `(1) AT A VALVE that is flanged on both sides and sits on the MAIN RUN -- the bolted joints either side are what let the pipe come apart there. Drawn as a bowtie/hourglass symbol with a heavy flange bar each side, an item balloon leadered to it, and usually an operator (handwheel, lever, a "VALVE_WRENCH" callout) alongside.\n` +
+          `(2) AT A FIELD WELD -- the forced cut once a continuous welded run passes the ~6000mm that fits on a truck. Drawn as a hatched "FW" tick at that weld's own point.\n` +
+          `Nothing else breaks a spool. Not an elbow, not a reducer, not a branch takeoff, and NOT a valve on a branch: a branch (a smaller-bore drain, vent or instrument tap that leaves the run and dead-ends at its own blind flange) stays inside whichever spool its takeoff belongs to, however far it runs and whatever is on it.\n\n` +
+          `Work in this order:\n` +
+          `1. Read line_size from the title block / line number -- the main run's own size. Everything below depends on it.\n` +
+          `2. Read the "PIPE SPOOLS" schedule near the title block into spool_tags. N tags means this sheet is cut into N spools, so you are looking for exactly N-1 boundaries. Use that as your check at the end, not as a way to place them.\n` +
+          `3. Sweep the WHOLE drawing on the tiles and list EVERY valve you can see in valves -- main run and branches alike. Cross-check the count against the BOM's valve rows before you answer: if the BOM shows four 200mm ball valves and you found three, you have missed one, so go back and find it. Listing a valve and marking it not-a-boundary is right and expected; missing one is not.\n` +
+          `4. For each valve answer the three local questions -- is it on the main run (at line_size, not a smaller branch), is it flanged on both sides, does the run carry on past it -- and set is_boundary true only when all three are true. A valve at the very end of the run has nothing after it, so it is not a boundary.\n` +
+          `5. Give nearest_upstream_weld for each valve by reading the weld label printed at the mark just before it ("BW12" gives "12"). This is what ties your answer to the weld list.\n` +
+          `6. List every hatched FW tick in field_welds, read off the DRAWING -- the weld list table is often grouped by category, so its row order does not tell you which weld is the field weld.\n\n` +
+          `Do not place boundaries by spacing them through the weld numbering. Spools are very uneven -- one may hold a single weld and the next a dozen. If you cannot point at a drawn valve or FW tick, it is not a boundary.`,
+        maxTokens: 16000,
+        useThinking: true,
+        images: sheetImageSet,
+      })
+    );
+
+    // Pass 1's answer, reduced to what the spool walk needs: the weld each
+    // boundary sits just after.
+    const locatedBoundaries: NonNullable<IsoSheetResult["spool_boundaries"]> = [
+      ...asArray(boundaries.valves)
+        .filter((v) => v.is_boundary && String(v.nearest_upstream_weld ?? "").trim() !== "")
+        .map((v) => ({
+          after_weld: String(v.nearest_upstream_weld).trim(),
+          boundary_type: "valve",
+          evidence: [v.item_no ? `PT NO ${v.item_no}` : "", v.size, v.description, v.location_note].filter(Boolean).join(", "),
+        })),
+      ...asArray(boundaries.field_welds)
+        .filter((f) => String(f.weld_no ?? "").trim() !== "")
+        .map((f) => ({
+          after_weld: String(f.weld_no).trim(),
+          boundary_type: "field_weld",
+          evidence: f.evidence ?? "hatched FW tick on the isometric",
+        })),
+    ];
+
+    const boundaryNote = locatedBoundaries.length
+      ? `\n\nSPOOL BOUNDARIES ALREADY FOUND on this sheet, by a pass that did nothing but look for them:\n` +
+        locatedBoundaries.map((b) => `  - after weld ${b.after_weld} (${b.boundary_type}): ${b.evidence}`).join("\n") +
+        `\nTake these as given. Record them in spool_boundaries as they stand, and set closes_spool true on exactly those welds. Your job for spools is the WELDS -- get every weld and its comes_after_weld right, so these boundaries land in the right places. Only contradict the list above if the drawing plainly shows a weld number here is wrong.`
+      : "";
+
     const buildUserText = (retryNote: string) =>
       `${sheetText}\n\nThis is isometric drawing "${sheet.drawing_number}"${sheet.sheet ? `, sheet ${sheet.sheet}` : ""} -- page ${sheet.pages.start} of the document. The attached images are THIS sheet only, so extract only what is printed on it. ` +
       `The FIRST image is the whole sheet -- use it for the title block, the materials table, and for tracing where the run goes. ` +
@@ -365,18 +448,29 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       `MATERIALS BLOCKS: a fabrication-issued sheet prints TWO materials tables -- FABRICATION MATERIALS (pipe, fittings, flanges, valves) and ERECTION MATERIALS (gaskets, bolts, spectacle blinds, instruments). Each restarts its own PT NO sequence, so the same PT NO can appear in both and they are different items; record the rows of BOTH and set material_section on every row. ` +
       `Rows added by a revision are printed WITHOUT a PT NO and WITHOUT an ITEM CODE, appended under the category they belong to and often in a different colour -- an extra PIPE row, an extra 150# blind flange, a small-bore gate valve, extra stud bolts. These are real material: record them with item_no and item_code left blank, taking description, size and quantity exactly as printed. Do not skip a row because it has no number, and do not renumber the table. ` +
       `Do NOT record a sheet's "PIPE SPOOLS" list as BOM rows -- that list belongs in spool_tags instead.` +
+      boundaryNote +
       retryNote;
 
-    const result = await callWithRetry(() =>
+    const sheetRead = await callWithRetry(() =>
       callTool<IsoSheetResult>(client, {
         tool: ISO_SHEET_TOOL,
         systemPrompt: SYSTEM_PROMPT,
         userText: buildUserText(""),
         maxTokens: 32000,
         useThinking: true,
-        images: [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)],
+        images: sheetImageSet,
       })
     );
+
+    // Pass 1 looked for the boundaries and nothing else, so its answer stands
+    // over whatever the sheet pass reported alongside forty other fields --
+    // but only where it actually found any. Same for the printed spool tags,
+    // which both passes read.
+    const result: IsoSheetResult = {
+      ...sheetRead,
+      spool_boundaries: locatedBoundaries.length > 0 ? locatedBoundaries : sheetRead.spool_boundaries,
+      spool_tags: readSpoolTags(sheetRead.spool_tags).length > 0 ? sheetRead.spool_tags : boundaries.spool_tags,
+    };
 
     // Retry the sheet once when its own printed schedule contradicts the read.
     // Welds are re-taken from the retry as a set (never merged with the first
@@ -408,18 +502,18 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
           ),
           maxTokens: 32000,
           useThinking: true,
-          images: [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)],
+          images: sheetImageSet,
         })
       );
-      // Keep the retry only if it is actually a cleaner read.
-      if (spoolProblems(retryResult).length < problems.length) {
-        finalResult = {
-          ...result,
-          spool_tags: retryResult.spool_tags,
-          spool_boundaries: retryResult.spool_boundaries,
-          welds: retryResult.welds,
-        };
-      }
+      // Judge the retry as it would actually be used -- pass 1's boundaries
+      // still standing over it -- and keep it only if it is a cleaner read.
+      const retryCandidate: IsoSheetResult = {
+        ...result,
+        spool_tags: readSpoolTags(retryResult.spool_tags).length > 0 ? retryResult.spool_tags : result.spool_tags,
+        spool_boundaries: locatedBoundaries.length > 0 ? locatedBoundaries : retryResult.spool_boundaries,
+        welds: retryResult.welds,
+      };
+      if (spoolProblems(retryCandidate).length < problems.length) finalResult = retryCandidate;
     }
 
     allSheets.push({ drawing_number: sheet.drawing_number, pageNumber: sheet.pages.start, result: finalResult });

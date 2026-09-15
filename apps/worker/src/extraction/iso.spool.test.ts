@@ -99,6 +99,34 @@ test("an unsized weld list still resolves on subtree size alone", () => {
   assert.deepEqual(resolve(welds, at(2), ["A", "B"]), { A: [1, 2, 3], B: [4, 5] });
 });
 
+test("sheet 2 in full: the dense sheet resolves once the valves are actually found", () => {
+  // The sheet the old pipeline did worst on -- 26 welds, 6 spools, three
+  // branches. Topology and bores read off the drawing; the five boundaries are
+  // its five main-run valves (four 200mm ball valves and the 150mm gate valve
+  // in the reduced section), which is exactly the count its PIPE SPOOLS
+  // schedule implies. Every branch takes off AT a closing weld, which is the
+  // arrangement that used to scatter them into the following spool.
+  const welds = [
+    w(1, "BW", null), w(2, "BW", 1), w(3, "BW", 2), w(4, "BW", 3),
+    w(5, "BW", 4, "15"), w(6, "TH", 5, "15"), //        15mm drain branch off weld 4
+    w(7, "BW", 4), w(8, "BW", 7), w(9, "TW", 8),
+    w(10, "BW", 9, "80"), w(11, "BW", 10, "80"), //     80mm branch off the weldolet at weld 9
+    w(12, "BW", 9), w(13, "BW", 12), w(14, "BW", 13, "150"),
+    w(15, "BW", 14, "150"), w(16, "BW", 15), w(17, "BW", 16),
+    w(18, "BW", 17), w(19, "BW", 18), w(20, "TW", 19),
+    w(21, "BW", 20, "80"), w(22, "BW", 21, "80"), //    80mm branch off the weldolet at weld 20
+    w(23, "BW", 20), w(24, "BW", 23), w(25, "BW", 24), w(26, "BW", 25),
+  ];
+  assert.deepEqual(resolve(welds, at(4, 9, 14, 17, 20), ["N-04", "N-05", "N-06", "N-07", "N-08", "N-09"]), {
+    "N-04": [1, 2, 3, 4, 5, 6],
+    "N-05": [7, 8, 9, 10, 11],
+    "N-06": [12, 13, 14],
+    "N-07": [15, 16, 17],
+    "N-08": [18, 19, 20, 21, 22],
+    "N-09": [23, 24, 25, 26],
+  });
+});
+
 test("sheet 4: back-to-back field welds leave a one-weld spool between them", () => {
   const welds = [
     w(1, "BW", null), w(2, "BW", 1), w(3, "BW", 2), w(4, "BW", 3), w(5, "BW", 4),

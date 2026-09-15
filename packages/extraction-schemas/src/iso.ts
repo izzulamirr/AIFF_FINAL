@@ -34,6 +34,102 @@ export const LOCATE_ISO_SECTIONS_TOOL: ClaudeTool = {
   },
 };
 
+// Spool boundaries get their own pass, run before the sheet is read, because
+// asking for them as one field among forty of a full sheet extraction did not
+// work: on a busy sheet the model stopped looking for valves and divided the
+// weld numbering into even pieces instead (26 welds and 6 spools came back cut
+// at welds 4, 8, 12, 16, 20). Alone, with nothing else to record, finding the
+// valves is a small task that a sweep of the drawing actually answers.
+//
+// It asks for EVERY valve rather than only the boundaries -- enumerating what
+// is drawn is a far more reliable request than picking out a subset, the BOM
+// gives a count to check the enumeration against, and whether each one is a
+// boundary is then a local yes/no about that one valve instead of a judgement
+// about the sheet as a whole.
+export const ISO_SPOOL_BOUNDARIES_TOOL: ClaudeTool = {
+  name: "locate_iso_spool_boundaries",
+  description:
+    "Finds where one pipe spool ends and the next begins on a single isometric sheet, by locating every valve and every field weld drawn on it. " +
+    "A spool is one shop-welded assembly: it is fabricated in the shop and trucked to site, so it can only end where the pipe can actually be taken apart or where it must be cut to fit. " +
+    "Record what is drawn on the sheet -- do not infer boundaries from the weld numbering.",
+  input_schema: {
+    type: "object",
+    properties: {
+      line_size: {
+        type: "string",
+        description:
+          'The nominal size of the MAIN RUN itself, from the title block / line number (e.g. "8\\"" or "200"). This is what separates a main-run valve from a small-bore branch valve, so read it first.',
+      },
+      spool_tags: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          'The spool tags from this sheet\'s own "PIPE SPOOLS" schedule (a short list near the title block), in the order printed. This SETS THE COUNT: N tags means the sheet is cut into N spools, so N-1 boundaries must be found below. Leave empty only if the sheet prints no such list.',
+      },
+      valves: {
+        type: "array",
+        description:
+          "EVERY valve drawn anywhere on this sheet -- main run and branches alike, boundary or not. Sweep the whole drawing and list them all; the BOM's valve rows tell you how many there should be, so cross-check your count against it before answering. " +
+          "A valve is drawn as a bowtie/hourglass symbol on the pipe, usually with its BOM item balloon leadered to it and often an operator (handwheel, lever, VALVE_WRENCH callout) drawn alongside. " +
+          "Listing a valve and marking it not-a-boundary is correct and expected; missing one entirely is not.",
+        items: {
+          type: "object",
+          properties: {
+            item_no: { type: "string", description: "The BOM item number in the balloon leadered to this valve, as printed. Blank if no balloon is legible." },
+            description: { type: "string", description: 'What this valve is, from its BOM row, e.g. "200mm BALL VALVE, RB, 150# RF, TRUNNION". Enough to tell it from the sheet\'s other valves.' },
+            size: { type: "string", description: 'This valve\'s nominal size as printed in its BOM row or beside the symbol, e.g. "200" or "8\\"".' },
+            on_main_run: {
+              type: "boolean",
+              description:
+                "true if this valve sits on the MAIN RUN -- the through-line the sheet is drawing, at line_size. false if it sits on a BRANCH: a smaller-bore takeoff (drain, vent, instrument tap) that leaves the main run and dead-ends at its own blind flange or cap. Size is the giveaway -- a valve smaller than line_size is nearly always on a branch.",
+            },
+            flanged_both_sides: {
+              type: "boolean",
+              description:
+                "true if a flange is drawn on BOTH sides of this valve -- a heavy bar across the pipe either side of the bowtie, with the BOM carrying a matching pair of flanges and a stud-bolt/gasket set. That bolted pair is what lets the pipe come apart here. A valve welded straight into the line is not a boundary.",
+            },
+            pipe_continues_past: {
+              type: "boolean",
+              description:
+                "true if the main run carries on past this valve to more pipe on this sheet. false if the run ends here (the sheet's last item, a blind flange, a cap, or the far side of a \"CONT'D ON ...\" box). A valve with nothing after it does not start a new spool, because there is nothing left to put in one.",
+            },
+            is_boundary: {
+              type: "boolean",
+              description:
+                "true only when all three of on_main_run, flanged_both_sides and pipe_continues_past are true. This is the valve the spool is broken at.",
+            },
+            nearest_upstream_weld: {
+              type: "string",
+              description:
+                'The ID number of the weld immediately BEFORE this valve along the main run -- read the weld label printed at that mark (a small flag like "BW12" gives "12") and give the bare number. This is what ties the boundary to the weld list. Blank if no weld mark is legible upstream of it.',
+            },
+            location_note: {
+              type: "string",
+              description: 'Where this valve sits, in words, so the reading can be checked, e.g. "on the 200mm run just downstream of the 200x150 reducer, between BW12 and BW13".',
+            },
+          },
+          required: ["is_boundary"],
+        },
+      },
+      field_welds: {
+        type: "array",
+        description:
+          'Every FIELD WELD drawn on this sheet. A field weld is the forced cut made once a continuous welded run passes the 6000mm that will fit on a truck, and it is drawn as a distinct hatched "FW" tick at that weld\'s own point on the isometric (sometimes beside the weld\'s number label rather than replacing it). Every field weld ends a spool. ' +
+          "Read these off the DRAWING, not off the weld list table's row order -- that table is often grouped by category (all FABRICATION-ITEM rows, then all ERECTION-ITEM/FIELDWELD rows), which does not match physical position along the pipe.",
+        items: {
+          type: "object",
+          properties: {
+            weld_no: { type: "string", description: "The weld's ID number, bare, as printed at the hatched FW mark." },
+            evidence: { type: "string", description: 'What identifies it, e.g. "hatched FW tick at BW6; the 6200mm dimension runs from the start of the sheet to this point".' },
+          },
+          required: ["weld_no"],
+        },
+      },
+    },
+    required: ["valves", "field_welds"],
+  },
+};
+
 // Measured values carry their unit inline, read from the title block's own
 // column header (e.g. a "PRESS. kPag" column of 5 becomes "5 kPag", a
 // "TEMP. °C" column of 90 becomes "90 °C"). Units on ISOs and line lists
