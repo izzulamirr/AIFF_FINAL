@@ -90,6 +90,76 @@ function normalizeKey(value: unknown): string {
 const missingLinkCount = (welds: IsoSheetResult["welds"]) =>
   asArray(welds).filter((w) => w.comes_after_weld == null || String(w.comes_after_weld).trim() === "").length;
 
+type IsoWeld = NonNullable<IsoSheetResult["welds"]>[number];
+
+// Which welds a spool ends at. spool_boundaries is the evidence-bearing answer
+// (each entry names the valve or FW tick it was read from) and is checked
+// against the sheet's own printed spool count, so it wins where it exists; the
+// per-weld closes_spool flags are the fallback for a sheet that returned no
+// boundary list at all. Either way a field weld is added: that one is not a
+// judgement call, since a field weld IS the forced cut past 6000mm and so
+// always closes the spool it ends, whatever the model said about it.
+export function resolveBoundaryWelds(welds: IsoWeld[], boundaries: IsoSheetResult["spool_boundaries"]): Set<number> {
+  const boundaryWelds = new Set<number>();
+  for (const b of asArray(boundaries)) {
+    const no = Number(String(b.after_weld ?? "").trim());
+    if (Number.isFinite(no)) boundaryWelds.add(no);
+  }
+  if (boundaryWelds.size === 0) {
+    for (const w of welds) if (w.closes_spool) boundaryWelds.add(Number(w.weld_no));
+  }
+  for (const w of welds) {
+    if (normalizeKey(w.weld_type) === "FW") boundaryWelds.add(Number(w.weld_no));
+  }
+  return boundaryWelds;
+}
+
+// The size most of the sheet's welds are at IS the main run -- a branch is
+// smaller-bore, and there are always fewer branch welds than run welds. Taken
+// as the mode rather than from the title block so no inch/mm conversion is
+// needed: the WELD LIST's own ND column is compared against itself.
+function mainRunWeldSize(welds: IsoWeld[]): string | undefined {
+  const counts = new Map<string, number>();
+  for (const w of welds) {
+    const size = normalizeKey(w.size);
+    if (size) counts.set(size, (counts.get(size) ?? 0) + 1);
+  }
+  let best: string | undefined;
+  let bestCount = 0;
+  for (const [size, count] of counts) {
+    if (count > bestCount) {
+      bestCount = count;
+      best = size;
+    }
+  }
+  return best;
+}
+
+export function buildWeldTopology(welds: IsoWeld[], boundaryWelds: Set<number>): WeldTopology[] {
+  const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
+  const runSize = mainRunWeldSize(welds);
+  return [...weldByNo.entries()].map(([weldNo, w]) => {
+    const size = normalizeKey(w.size);
+    return {
+      weldNo,
+      comesAfterWeld: w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
+      closesSpool: boundaryWelds.has(weldNo),
+      // Left undefined where either size is unknown, so an unsized weld list
+      // simply falls back to the subtree-size rule.
+      onMainSize: runSize && size ? size === runSize : undefined,
+    };
+  });
+}
+
+// The sheet's own printed "PIPE SPOOLS" tags, tolerating the object shape real
+// runs have drifted to ({spool_tag, ...}) instead of the declared strings.
+export function readSpoolTags(spoolTags: IsoSheetResult["spool_tags"]): string[] {
+  return asArray(spoolTags)
+    .map((t) => (typeof t === "string" ? t : ((t as { spool_tag?: string } | null)?.spool_tag ?? undefined)))
+    .map((t) => (t != null ? (normalizeCellValue(t) ?? t) : undefined))
+    .filter((t): t is string => Boolean(t));
+}
+
 // What a correct spool read of a sheet has to satisfy, checked against what
 // that same sheet prints -- so a bad read is caught from the drawing's own
 // evidence rather than from a fixed expectation about any one drawing.
@@ -154,11 +224,18 @@ export function spoolProblems(r: IsoSheetResult): string[] {
   }
 
   // Evenly spaced boundaries are the signature of dividing the weld numbering
-  // up rather than finding the valves: real spools are uneven.
-  if (boundaryNos.length >= 3) {
-    const sorted = [...boundaryNos].sort((a, b) => a - b);
+  // up rather than finding the valves: real spools are uneven. Judged over
+  // VALVE boundaries only -- field welds are forced cuts at a fixed run
+  // length, so several of them falling at a regular spacing is exactly what
+  // the rule that places them would produce, and is not evidence of guessing.
+  const valveBoundaryNos = boundaries
+    .filter((b) => normalizeKey(b.boundary_type) !== "FIELD_WELD")
+    .map((b) => Number(String(b.after_weld ?? "").trim()))
+    .filter(Number.isFinite);
+  if (valveBoundaryNos.length >= 3) {
+    const sorted = [...valveBoundaryNos].sort((a, b) => a - b);
     const gaps = sorted.slice(1).map((no, i) => no - sorted[i]);
-    if (gaps.every((g) => g === gaps[0])) {
+    if (gaps.every((g) => g === gaps[0]) && gaps[0] > 1) {
       problems.push(
         `your boundaries are at welds ${sorted.join(", ")} -- exactly ${gaps[0]} apart every time. That even spacing is what dividing the weld numbering looks like, not what reading the drawing looks like; real spools are uneven. Go back to the tiles, find each valve symbol (bowtie with a flange bar either side) and each hatched FW tick by eye, and read off the main-run weld immediately before each one.`
       );
@@ -371,39 +448,9 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     // the walk here assembles those answers into spools, mapped onto the
     // sheet's own printed "PIPE SPOOLS" tags (spool_tags) in order.
     const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
-
-    // Which welds a spool ends at. spool_boundaries is the evidence-bearing
-    // answer (each entry names the valve or FW tick it was read from) and is
-    // checked against the sheet's own spool count above, so it wins where it
-    // exists; the per-weld closes_spool flags are the fallback for a sheet
-    // that returned no boundary list at all.
-    const boundaryWelds = new Set<number>();
-    for (const b of asArray(result.spool_boundaries)) {
-      const no = Number(String(b.after_weld ?? "").trim());
-      if (Number.isFinite(no)) boundaryWelds.add(no);
-    }
-    if (boundaryWelds.size === 0) {
-      for (const w of welds) if (w.closes_spool) boundaryWelds.add(Number(w.weld_no));
-    }
-    // Not a judgement call: a field weld IS the forced cut past 6000mm, so it
-    // always closes the spool it ends, whatever the model said about it.
-    for (const w of welds) {
-      if (normalizeKey(w.weld_type) === "FW") boundaryWelds.add(Number(w.weld_no));
-    }
-
-    const weldTopology: WeldTopology[] = [...weldByNo.entries()].map(([weldNo, w]) => ({
-      weldNo,
-      comesAfterWeld: w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
-      closesSpool: boundaryWelds.has(weldNo),
-    }));
-    // Tool-call JSON is not strictly validated against input_schema, and this
-    // field in particular has come back as objects ({spool_tag, ...}) rather
-    // than the plain strings the schema asks for. Unwrap that shape instead of
-    // letting a drifted payload throw and fail the whole sheet.
-    const spoolTags = asArray(result.spool_tags)
-      .map((t) => (typeof t === "string" ? t : ((t as { spool_tag?: string } | null)?.spool_tag ?? undefined)))
-      .map((t) => (t != null ? (n(t) ?? t) : undefined))
-      .filter((t): t is string => Boolean(t));
+    const boundaryWelds = resolveBoundaryWelds(welds, result.spool_boundaries);
+    const weldTopology = buildWeldTopology(welds, boundaryWelds);
+    const spoolTags = readSpoolTags(result.spool_tags);
     const { spools: resolvedSpools, weldToSpoolTag } = buildSpoolsFromWeldTopology(weldTopology, spoolTags);
 
     // Deterministic, not asked of the model: a spool's closing weld tells a

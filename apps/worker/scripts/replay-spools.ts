@@ -12,8 +12,8 @@
 // then                  pnpm --filter @easy/worker exec tsx scripts/replay-spools.ts raw.json
 
 import { readFileSync } from "node:fs";
-import { buildSpoolsFromWeldTopology, type WeldTopology } from "@easy/shared";
-import { spoolProblems } from "../src/extraction/iso";
+import { buildSpoolsFromWeldTopology } from "@easy/shared";
+import { spoolProblems, resolveBoundaryWelds, buildWeldTopology, readSpoolTags } from "../src/extraction/iso";
 
 const REFERENCE: Record<number, Record<string, number[]>> = {
   1: {
@@ -69,36 +69,12 @@ for (const entry of raw.sheets ?? []) {
   const want = REFERENCE[sheetNo];
   if (!want) continue;
 
+  // Exactly the chain the worker runs -- imported, not reimplemented, so this
+  // cannot drift away from what production does.
   const welds: RawWeld[] = sheet.welds ?? [];
-  const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
-
-  // Mirrors the worker: the evidence-bearing boundary list wins where the
-  // sheet returned one, per-weld closes_spool is the fallback, and a field
-  // weld always closes the spool it ends.
-  const boundaryWelds = new Set<number>();
-  for (const b of sheet.spool_boundaries ?? []) {
-    const no = Number(String(b?.after_weld ?? "").trim());
-    if (Number.isFinite(no)) boundaryWelds.add(no);
-  }
-  if (boundaryWelds.size === 0) {
-    for (const w of welds) if (w.closes_spool) boundaryWelds.add(Number(w.weld_no));
-  }
-  for (const w of welds) {
-    if (String(w.weld_type ?? "").trim().toUpperCase() === "FW") boundaryWelds.add(Number(w.weld_no));
-  }
-
-  const topology: WeldTopology[] = [...weldByNo.entries()].map(([weldNo, w]) => ({
-    weldNo,
-    comesAfterWeld:
-      w.comes_after_weld != null && String(w.comes_after_weld).trim() !== "" ? Number(w.comes_after_weld) : null,
-    closesSpool: boundaryWelds.has(weldNo),
-  }));
-
-  const spoolTags: string[] = (sheet.spool_tags ?? [])
-    .map((t: unknown) => (typeof t === "string" ? t : (t as { spool_tag?: string } | null)?.spool_tag))
-    .filter(Boolean);
-
-  const { spools } = buildSpoolsFromWeldTopology(topology, spoolTags);
+  const boundaryWelds = resolveBoundaryWelds(welds, sheet.spool_boundaries);
+  const topology = buildWeldTopology(welds, boundaryWelds);
+  const { spools } = buildSpoolsFromWeldTopology(topology, readSpoolTags(sheet.spool_tags));
   const got = new Map(spools.map((s) => [shortTag(s.spoolTag), s.weldNumbers]));
 
   console.log(`\nSheet ${sheetNo}`);

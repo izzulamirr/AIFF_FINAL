@@ -58,35 +58,65 @@ out-of-sequence groupings, e.g. `[5,6,13]`):
   two welds sharing one `comes_after_weld` parent)
 - `closes_spool` — does a spool end right at this weld
 
+It also asks for the boundaries directly, as `spool_boundaries` — one entry per cut,
+each naming its type and the **evidence** for it (the valve's BOM item and the welds
+either side, or the weld carrying the hatched FW tick). This exists because on dense
+sheets the model was not finding the valves at all: it was dividing the weld
+numbering into even pieces (sheet 2 came back with cuts at welds 4, 8, 12, 16, 20 for
+26 welds and 6 spools). Requiring evidence makes a guess visible instead of plausible.
+
 `buildSpoolsFromWeldTopology` in `packages/shared/src/spoolRules.ts` walks those
-per-weld answers into spools deterministically, then maps them onto the sheet's own
-printed `spool_tags` in order. Where a weld closes a spool, only the **main run**
-starts the next one — any branch taking off at that same weld keeps the closing
-spool's index (the main run is told apart from a branch by subtree size, since a
-branch dead-ends after a few welds while the main run carries on).
+answers into spools deterministically, then maps them onto the sheet's printed
+`spool_tags` in order. Where a weld closes a spool, only the **main run** starts the
+next one — any branch taking off at that same weld keeps the closing spool's index.
+The main run is told apart from a branch by, in order: the child's own bore (a branch
+is smaller-bore; the run size is taken as the *mode* of the sheet's own weld sizes, so
+no unit conversion and no hard-coded sizes), whether its whole subtree stays at that
+bore (a weldolet tap is made at full bore but drops smaller just after), and finally
+subtree size (the run carries on to the end of the sheet, a branch dead-ends).
 
-### Regression-checking this without paying for a vision run
+Two things are decided in code rather than asked of the model: a **field weld always
+closes** the spool it ends, and the evidence-backed boundary list **wins over** the
+per-weld `closes_spool` flags where both are present.
 
-Scoring the walk against the hand-verified reading of the reference ISO:
+### Checks that gate a read, and the retry
+
+`spoolProblems` in `apps/worker/src/extraction/iso.ts` judges a sheet against what
+that same sheet prints, and a failure triggers one retry that quotes the specific
+defect back (plus the sheet's own valve rows from the BOM just read, which turns
+"find the valves" into "find these valves"):
+- the PIPE SPOOLS schedule fixes the count — N tags means exactly N-1 cuts
+- a weld typed FW must be a boundary, since a field weld *is* the forced cut
+- a boundary typed `valve` must name the valve it saw
+- **valve** boundaries at exactly equal intervals are rejected as arithmetic rather
+  than reading (field welds are exempt — regular forced cuts are exactly what the
+  6000mm rule produces)
+
+The retry is only accepted if it has strictly fewer problems than the first attempt.
+
+### Checking this without paying for a vision run
 
 ```
-cd packages/db   && node scripts/check-spools.mjs [documentId]      # what's in the DB now
-cd packages/db   && node scripts/dump-iso-welds.mjs <documentId> --out raw.json
-cd apps/worker   && tsx scripts/replay-spools.ts raw.json           # what the CURRENT code would produce
+pnpm --filter @easy/worker test                                     # 25 offline cases
+cd packages/db && node scripts/check-spools.mjs [documentId]        # what's in the DB now
+cd packages/db && node scripts/dump-iso-welds.mjs <docId> --out raw.json
+pnpm --filter @easy/worker replay:spools raw.json                   # what the code would produce
 ```
 
-`check-spools.mjs` scores the rows actually stored; `replay-spools.ts` re-runs the
-current code over a stored payload, so the two disagreeing means the DB rows are
-stale relative to the code. Both carry the same hand-verified reference table.
+The test suite pins the rules against drawings deliberately unlike the reference one
+(imperial bores, other tag conventions, no field welds, nested branches,
+non-contiguous weld numbering) so the logic can't quietly become fitted to one ISO.
+`check-spools.mjs` scores the rows actually stored and `replay:spools` re-runs the
+current code over a stored payload — the two disagreeing means the DB rows are stale
+relative to the code.
 
-**Known gap:** the *ordering* failure mode is fixed (spools are always internally
-sequential) and so is branch handling, but valve-detection *recall* on dense sheets
-is still the limit — the model sometimes sets `closes_spool: true` at the wrong weld,
-or misses it. On the reference ISO the current code scores **12/18**: sheets 1, 3 and
-4 are perfect, sheets 2 and 5 (the dense ones) lose 6 spools purely to misplaced
-`closes_spool` answers. If picking this up again, the lever to try is per-valve
-close-up tiles rather than the current fixed 3×2 whole-sheet tile grid — the
-remaining gap is a *reading* problem, not a grouping one.
+**Known gap:** the deterministic half is settled and tested. What is *not* verified is
+whether the evidence requirement and the retry actually make the model find the valves
+on a dense sheet — that needs a real vision run, and the reference ISO's stored payload
+predates these fields. On that stored payload the code scores **12/18**, with all six
+misses being boundaries the model put at the wrong weld; sheets 1, 3 and 4 are exact.
+If the gap persists on a fresh run, the next lever is per-valve close-up tiles rather
+than the fixed 3×2 whole-sheet grid in `renderPdfPageTiles`.
 
 Also note: tool-call JSON is **not** strictly validated against `input_schema`. Real
 runs have returned `spool_tags` as objects (`{spool_tag, ends_at_mainline_weld}`)

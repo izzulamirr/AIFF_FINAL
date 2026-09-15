@@ -23,6 +23,13 @@ export interface WeldTopology {
   comesAfterWeld: number | null;
   /** true if a spool ends AT this weld (a valve sits right after it, or this weld is itself the field weld closing a forced 6000mm cut). */
   closesSpool: boolean;
+  /**
+   * false when this weld is known to sit on a BRANCH rather than the main run,
+   * told by its size differing from the run's own (a 15mm or 80mm weld hanging
+   * off a 200mm line). Undefined where the weld list gave no size. Only
+   * consulted to pick which child of a closing weld starts the next spool.
+   */
+  onMainSize?: boolean;
 }
 
 export interface ResolvedSpool {
@@ -79,6 +86,30 @@ export function buildSpoolsFromWeldTopology(welds: WeldTopology[], spoolTags: st
     return size;
   }
 
+  // Whether a subtree stays at the run's bore the whole way down. A branch
+  // gives itself away by dropping to smaller pipe somewhere along it, even
+  // where its own takeoff weld is made at the run's size.
+  const staysAtRunSizeCache = new Map<number, boolean>();
+  const checkingRunSize = new Set<number>();
+  function subtreeStaysAtRunSize(weldNo: number): boolean {
+    const cached = staysAtRunSizeCache.get(weldNo);
+    if (cached != null) return cached;
+    if (checkingRunSize.has(weldNo)) return true; // guards a cyclic comes_after_weld
+    checkingRunSize.add(weldNo);
+    let stays = byNo.get(weldNo)?.onMainSize !== false;
+    if (stays) {
+      for (const child of childrenOf.get(weldNo) ?? []) {
+        if (!subtreeStaysAtRunSize(child)) {
+          stays = false;
+          break;
+        }
+      }
+    }
+    checkingRunSize.delete(weldNo);
+    staysAtRunSizeCache.set(weldNo, stays);
+    return stays;
+  }
+
   const weldSpoolIndex = new Map<number, number>();
   let spoolCounter = 0;
 
@@ -98,9 +129,28 @@ export function buildSpoolsFromWeldTopology(welds: WeldTopology[], spoolTags: st
     // end is the last thing before the valve. Walking the branches first, then
     // bumping the counter for the main run, keeps spool indexes in the same
     // order the sheet reads.
+    //
+    // Which child is the main run, in order of how much the drawing actually
+    // tells us. A branch is nearly always smaller-bore, so: first drop any
+    // child that is itself off-size; then prefer one whose whole subtree stays
+    // at the run's size, since a branch drops to smaller bore somewhere along
+    // it even when its takeoff weld is full-size (a weldolet tap is made at
+    // the run's own bore); then fall back to the largest subtree, the main run
+    // carrying on to the end of the sheet while a branch dead-ends after a few
+    // welds. At each step, a filter that would reject every child is telling
+    // us nothing useful and is skipped rather than allowed to pick arbitrarily.
+    const narrow = (from: number[], keep: (child: number) => boolean) => {
+      const kept = from.filter(keep);
+      return kept.length > 0 ? kept : from;
+    };
+    const candidates = narrow(
+      narrow(children, (child) => byNo.get(child)?.onMainSize !== false),
+      (child) => subtreeStaysAtRunSize(child)
+    );
+
     let mainlineChild: number | undefined;
     let largestSubtree = -1;
-    for (const child of children) {
+    for (const child of candidates) {
       const size = subtreeSize(child);
       if (size > largestSubtree) {
         largestSubtree = size;
