@@ -17,11 +17,6 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
               <p className="mb-1 text-sm font-medium">
                 Pipe spools <span className="font-normal text-gray-500">({spools.length})</span>
               </p>
-              <p className="mb-2 text-xs text-gray-500">
-                Read off the sheet&rsquo;s own &ldquo;PIPE SPOOLS&rdquo; schedule. A spool ends only at a bolted joint -- the point the line
-                comes apart with a spanner -- or at a field weld forced by the 6000mm rule. A branch rides along inside whichever spool
-                holds its takeoff.
-              </p>
               <table className="w-full text-left text-sm">
                 <thead className="border-b text-gray-500">
                   <tr>
@@ -48,43 +43,6 @@ export function SpoolSheets({ sheets }: { sheets: SpoolSheet[] }) {
               <p className="mb-1 text-sm font-medium">
                 Weld list <span className="font-normal text-gray-500">({weldsBySpool.reduce((sum, g) => sum + g.welds.length, 0)})</span>
               </p>
-              {(() => {
-                const all = weldsBySpool.flatMap((g) => g.welds);
-                const fromDrawing = all.filter((w) => w.drawingSpool);
-                if (fromDrawing.length === 0) {
-                  return (
-                    <p className="mb-2 text-xs text-gray-500">
-                      This sheet&rsquo;s spool boundaries could not be established from the drawing, so the grouping below is the one the
-                      extraction produced and has not been checked against it.
-                    </p>
-                  );
-                }
-                const moved = fromDrawing.filter((w) => w.drawingSpool !== w.spoolOf);
-                const corrected = fromDrawing.filter((w) => w.spoolWas && w.spoolWas !== w.spoolOf);
-                return (
-                  <p className="mb-2 text-xs text-gray-500">
-                    The spool boundaries on this sheet were read off the drawing itself -- from the bolted joints on the run and the field
-                    welds in the weld list -- and they account for every spool its PIPE SPOOLS schedule prints.{" "}
-                    {moved.length > 0 ? (
-                      <span className="text-amber-700">
-                        {moved.length} of {fromDrawing.length} welds belong to a different spool than the one stored -- shown as a mismatch
-                        below.
-                      </span>
-                    ) : corrected.length === 0 ? (
-                      <span className="text-green-700">
-                        All {fromDrawing.length} welds sit in the spool the drawing puts them in, and none had to be corrected.
-                      </span>
-                    ) : (
-                      <span className="text-green-700">
-                        All {fromDrawing.length} welds now sit in the spool the drawing puts them in.{" "}
-                        <span className="text-amber-700">
-                          {corrected.length} of them were corrected from what the extraction had originally recorded.
-                        </span>
-                      </span>
-                    )}
-                  </p>
-                );
-              })()}
 
               {weldsBySpool.map(({ spoolNo, welds }) => (
                 <div key={spoolNo} className="mb-3">

@@ -87,11 +87,6 @@ export default async function SpoolingPage({
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold">Spooling</h1>
-      <p className="max-w-3xl text-sm text-gray-600">
-        A spool is one shop-welded assembly -- the piece fabricated, stamped and shipped as a unit. Which welds fall in which spool is read
-        off the isometric itself: its printed PIPE SPOOLS schedule, the bolted joints along the run, and the field welds in its weld list.
-      </p>
-
       <SpoolingSelectors
         projects={myProjects.map((p) => ({
           id: p.id,
@@ -124,21 +119,18 @@ export default async function SpoolingPage({
       )}
 
       {perDoc.length > 0 && (
+        // Counts only. Anything that needs attention is called out; a clean
+        // sheet says nothing, because the per-weld column already does.
         <p className="text-sm">
           <span className="font-medium">{totals.spools}</span> spools and <span className="font-medium">{totals.welds}</span> welds across{" "}
-          {totals.sheets} sheet{totals.sheets === 1 ? "" : "s"}.{" "}
-          {totals.disagreeing > 0 ? (
+          {totals.sheets} sheet{totals.sheets === 1 ? "" : "s"}.
+          {totals.disagreeing > 0 && (
             <span className="text-amber-700">
-              {totals.disagreeing} weld{totals.disagreeing === 1 ? "" : "s"} sit in a different spool than the drawing puts them in.
-            </span>
-          ) : totals.fromDrawing === totals.welds ? (
-            <span className="text-green-700">Every weld&rsquo;s spool has been confirmed against the drawing.</span>
-          ) : (
-            <span className="text-gray-500">
-              {totals.fromDrawing} of {totals.welds} confirmed against the drawing; the rest are as the extraction recorded them.
+              {" "}
+              {totals.disagreeing} mismatch{totals.disagreeing === 1 ? "" : "es"} against the drawing.
             </span>
           )}
-          {totals.unassigned > 0 && <span className="text-amber-700"> {totals.unassigned} have no spool at all.</span>}
+          {totals.unassigned > 0 && <span className="text-amber-700"> {totals.unassigned} with no spool.</span>}
         </p>
       )}
 
