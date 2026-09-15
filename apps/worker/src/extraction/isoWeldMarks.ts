@@ -79,7 +79,7 @@ const ARRIVED_PT = 6;
 const POINTING_PT = 40;
 const POINTING_COS = 0.88; // ~28 degrees either side
 const MAX_HOPS = 5;
-const MIN_LEADER_PT = 8;
+const MIN_LEADER_PT = 5;
 
 function findFlags(paths: GeomPath[]): GeomPath[] {
   return paths.filter(
@@ -186,7 +186,7 @@ export async function readWeldMarks(filePathOrBuffer: string | Buffer, pageNumbe
         [a, b],
         [b, a],
       ] as Array<[Pt, Pt]>) {
-        if (gapTo(flag.bbox, near) > 3) continue;
+        if (gapTo(flag.bbox, near) > 5) continue;
         if (!isOutside(flag.bbox, far, 3)) continue;
         if (dist(near, far) < MIN_LEADER_PT) continue;
         starts.push({ at: far, from: near, hops: 1, length: dist(near, far), used: new Set([seg]) });

@@ -330,9 +330,9 @@ free to run):
 | 1 | 25 | 25 | 23 |
 | 2 | 26 | 26 | 25 |
 | 3 | 11 | 11 | **11** |
-| 4 | 16 | 16 | 14 |
+| 4 | 16 | 16 | **16** |
 | 5 | 14 | 14 | **14** |
-| **total** | **92** | **92** | **87 (95%)** |
+| **total** | **92** | **92** | **89 (97%)** |
 
 **Weld detection is exact on every sheet** — 92 flags against 92 hand-verified welds,
 no miscounts and no duplicates, which vision never managed (it once reported weld 1
@@ -352,8 +352,10 @@ Two things took the trace from 75 to 87:
   check stays clean at every threshold tried, which is the main evidence the pointing
   matches are not grabbing each other's marks.
 
-The 5 remaining are flags whose leader the walk does not reach at all. Sheets 3 and 5
-are complete.
+Two smaller thresholds account for the last few: a real leader can be as short as 7pt
+(`MIN_LEADER_PT`), and a leader can start up to ~5pt off the flag's box rather than
+touching it. Sheets 3, 4 and 5 are complete; 3 flags on sheets 1 and 2 have no segment
+leaving the flag at all and are still outstanding.
 
 #### Reading the numbers: a contact sheet of flags
 
@@ -415,11 +417,26 @@ weight, and the heaviest weight does not carry the whole run:
 | 4 | 7/14 |
 | 5 | 5/14 |
 
-So the pipe is drawn at MIXED weights and cannot be isolated by weight alone. Finding it
-by weight was the shortcut; the real fix is to grow the run outward from the weld marks
-along connected segments, preferring collinear continuation — the marks are known
-exactly, and every one of them is on the run by definition. That is the next piece, and
-it needs no API credit.
+So the pipe is drawn at MIXED weights and cannot be isolated by weight alone.
+
+**The obvious next idea was tried and does not work — do not repeat it.** Grow the run
+outward from the weld marks (which are on the pipe by definition) along segments lying
+on an isometric axis. The axis part is sound: measured against the known-run segments,
+every one of them is at 30, 90 or 150 degrees. Splitting drawn segments at the marks is
+also necessary and right, since CAD does not break a line for a weld, so a mark sits
+partway along a segment rather than at a vertex.
+
+But it produced WRONG adjacency. Sheet 3, which the line-weight version orders exactly,
+came back `1, 2, 11, 10, 8, 7, 5, 4, 3, 9` — because **dimension lines run parallel to
+the pipe they measure**, so they share its three axes, and the walk hops onto one and
+bridges two welds that are nowhere near each other. Reaching more welds while getting
+their order wrong is worse than reaching fewer, so it was reverted.
+
+What is actually needed is a discriminator between the pipe and a dimension line at the
+same angle and the same weight. Things not yet tried: dimension lines carry tick or
+arrow marks at both ends and a dimension text along them; they sit offset outside the
+piping envelope; and they never have a weld mark, a fitting or a flange bar on them.
+That last one looks most promising, since all three are already identified.
 
 #### Geometry spike — the raw numbers behind the above
 
