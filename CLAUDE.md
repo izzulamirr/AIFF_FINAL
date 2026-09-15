@@ -428,24 +428,40 @@ weight, and the heaviest weight does not carry the whole run:
 
 So the pipe is drawn at MIXED weights and cannot be isolated by weight alone.
 
-**The obvious next idea was tried and does not work — do not repeat it.** Grow the run
-outward from the weld marks (which are on the pipe by definition) along segments lying
-on an isometric axis. The axis part is sound: measured against the known-run segments,
-every one of them is at 30, 90 or 150 degrees. Splitting drawn segments at the marks is
-also necessary and right, since CAD does not break a line for a weld, so a mark sits
-partway along a segment rather than at a vertex.
+**Four ways of finding the run have now been tried. Read this before trying a fifth.**
+Each one after the first reached MORE welds and ordered them WRONG, and each was
+reverted, because a wrong `comes_after_weld` puts welds in the wrong spool — worse than
+leaving them unplaced. Sheet 3 is the yardstick: the shipped version orders it exactly.
 
-But it produced WRONG adjacency. Sheet 3, which the line-weight version orders exactly,
-came back `1, 2, 11, 10, 8, 7, 5, 4, 3, 9` — because **dimension lines run parallel to
-the pipe they measure**, so they share its three axes, and the walk hops onto one and
-bridges two welds that are nowhere near each other. Reaching more welds while getting
-their order wrong is worse than reaching fewer, so it was reverted.
+| approach | placed | sheet 3 order |
+|---|---|---|
+| heaviest line weight *(shipped)* | 55/89 | `1,2,3,4,5,7,8,9,10,11` ✅ |
+| isometric axis, segments split at marks | 87/89 | `1,2,11,10,8,7,5,4,3,9` ✗ |
+| grow from weld-carrying segments | 89/89 | `1,11,10,9,8,7,4,5,3,2` ✗ |
+| …plus axis filter, tight vertices, collinear bridges | 87/89 | `5,7,4,11,9,8,1,3,2,10` ✗ |
 
-What is actually needed is a discriminator between the pipe and a dimension line at the
-same angle and the same weight. Things not yet tried: dimension lines carry tick or
-arrow marks at both ends and a dimension text along them; they sit offset outside the
-piping envelope; and they never have a weld mark, a fitting or a flange bar on them.
-That last one looks most promising, since all three are already identified.
+What was learned, and is worth keeping:
+
+- **The axis rule is real.** Measured against known-run segments, every one lies at 30,
+  90 or 150 degrees. But so does every DIMENSION line, since a dimension is drawn
+  parallel to what it measures — so the axis alone selects both.
+- **Segments must be split at the marks.** CAD does not break a line for a weld, so a
+  mark sits partway along a segment rather than at a vertex; without splitting, almost
+  nothing connects.
+- **Leaders poison a weld-seeded grow.** A leader ENDS at a weld mark, so "carries a
+  mark" selects every leader too and the run grows out into the annotation. The axis
+  test excludes them, which is the one thing that must not be dropped.
+- **Loose node merging tangles a dense graph.** Merging ends within the fitting gap
+  (26pt) pulls distinct points into one node and the walk hops between unrelated
+  stretches. Tight vertices plus explicit collinear bridges is the right shape — but on
+  its own it did not fix the ordering either.
+
+So coverage is not the hard part; **adjacency is**. Every attempt that widened the graph
+also introduced a route between welds that are not neighbours. The next attempt should
+probably stop trying to classify the run at all and instead verify each candidate
+adjacency — two welds are neighbours only if the path between them is short, stays on
+one axis or turns at a single elbow, and passes no third weld — rejecting a link that
+does not look like a real piece of pipe rather than curating the segment set up front.
 
 #### Geometry spike — the raw numbers behind the above
 
