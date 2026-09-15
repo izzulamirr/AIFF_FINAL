@@ -376,17 +376,42 @@ them. The model never has to find anything — it reads short labels that are al
 isolated and blown up.
 
 On sheet 2 of the reference ISO: **26/26 labels read exactly**, complete and unique
-1..26, `TH6` correctly distinguished from the buttwelds. 2,844 input tokens for the
-whole sheet's welds (~$0.08) against ~16k for the tile set, and the weld TYPE comes free
-in the prefix. Run it with `scripts/probe-flag-labels.ts`, which also checks the numbers
-read form a complete unduplicated set — a strong self-check, since a misread almost
-always shows up as a gap or a repeat.
+1..26. 2,844 input tokens for the whole sheet's welds (~$0.08) against ~16k for the tile
+set. Run it with `scripts/probe-flag-labels.ts`, which also checks the numbers read form
+a complete unduplicated set — a strong self-check, since a misread almost always shows
+up as a gap or a repeat.
+
+**The flag's prefix is NOT the weld type — do not use it as one.** Loading the geometry
+against the existing weld rows put this beyond doubt: the prefix disagreed with the weld
+list on 3 of 36 welds, and in every case the weld list is right. Sheet 3's weld 6 is a
+FIELD weld (hand-verified: it closes N-10) yet its flag reads `BW6`; sheet 2's welds 9
+and 20 are TAPWELDs yet read `BW9` and `BW20`. The flag numbers the weld; the WELD LIST
+table types it, and a field weld is marked separately by its hatched "FW" tick on the
+drawing. Take the NUMBER and the POSITION from geometry, and the TYPE from the table.
 
 Thinking is deliberately off for that call: it is reading, not reasoning.
 
 So the weld half is done: **detection exact (92/92 by geometry), numbering exact (26/26
 by contact sheet), position for 87/92** — sheets 3 and 5 complete, 5 leaders outstanding
 across sheets 1, 2 and 4.
+
+#### Seeing it in the database
+
+```
+pnpm --filter @easy/worker exec tsx scripts/export-weld-geometry.ts <file.pdf> out.json [--read-labels 2,3]
+cd packages/db && node scripts/import-weld-geometry.mjs out.json [documentId]
+```
+
+The export is free except for `--read-labels`, which sends one contact sheet per named
+page to put a weld number against each position. The import adds a `geometry` block to
+each matching weld row's attributes — position as a page fraction, the fit in points,
+run order, `comes_after`, `on_branch` — **without deleting or creating any row**, so the
+drawing-derived answer sits next to what the vision extraction recorded and the two can
+be compared in place.
+
+On the reference ISO that is 36 weld rows enriched (sheets 2 and 3, the ones whose flags
+were read), with fits of 2.9–3.4pt for a leader that lands on its mark. A weld the
+geometry located but could not name is reported, never guessed at.
 
 #### Ordering the welds along the run — works, does not yet generalize
 
