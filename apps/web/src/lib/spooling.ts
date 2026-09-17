@@ -40,11 +40,45 @@ export interface SpoolWeld {
   spoolWas: string | null;
 }
 
+/**
+ * The overall size worked out from the sheet's dimensions, with the lengths
+ * that produced it. `derived` means nobody has confirmed it yet -- show the
+ * workings beside it rather than the figure alone.
+ */
+export interface SpoolEnvelopeAttr {
+  upDownMm: number;
+  nsMm: number;
+  ewMm: number;
+  parts: Record<
+    string,
+    Array<{
+      cell: string;
+      mm: number;
+      drawnAs: string;
+      weldNo?: number;
+      printedMm?: number;
+      correctionWhy?: string;
+      /** Set where this length runs past the weld that ends its spool. */
+      overshootPt?: number;
+      overshootWeldNo?: number;
+    }>
+  >;
+  /**
+   * Lengths printed on this sheet that went into no spool, with the reason.
+   * Mostly valve assemblies, which are bolted in and ship separately -- worth
+   * showing, so a reviewer who can see a length on the drawing is not left
+   * wondering where it went.
+   */
+  unplaced?: Array<{ cell: string; mm: number; why: string }>;
+  derived: boolean;
+}
+
 export interface SpoolRow {
   id: number;
   spoolNo: string;
   weldCount: number;
   note: string;
+  envelope: SpoolEnvelopeAttr | null;
 }
 
 export interface SpoolSheet {
@@ -86,6 +120,7 @@ export function buildSpoolSheets(tags: SpoolingTag[]): SpoolSheet[] {
             spoolIndex: Number(a.spool_index ?? 0),
             weldCount: weldNumbers.length,
             note: String(a.note ?? ""),
+            envelope: (a.envelope as SpoolEnvelopeAttr | undefined) ?? null,
           };
         })
         // Read in the sheet's own printed schedule order.

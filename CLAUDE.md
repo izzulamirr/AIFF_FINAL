@@ -523,12 +523,12 @@ One bug worth remembering: an unread flag label parsed to weld number **0**, not
 satisfied the "right number of cuts" check on sheet 1. Guard for `> 0`, not just
 non-null.
 
-#### Scored against a real re-extraction — the pipeline does NOT reproduce this
+#### Scored against a real re-extraction — why the wiring below exists
 
-The geometry answer is stored in the database by scripts, and the worker's own
-extraction is untouched by any of it: `apps/worker/src/extraction/iso.ts` still
-drives spools through the two vision passes and `buildSpoolsFromWeldTopology`.
-So a re-extraction overwrites the lot — and one did, on 15 Sep 2026. Every
+This is the measurement that justified wiring the cut finder into the worker;
+it describes the pipeline BEFORE that was done. The geometry answer was stored
+in the database by scripts and the worker's own extraction was untouched by any
+of it, so a re-extraction overwrote the lot — and one did, on 15 Sep 2026. Every
 `extracted_tags` row for the document was deleted and recreated, taking
 `attributes.geometry_spool` and `attributes.spool_no_vision` with it.
 
@@ -575,10 +575,68 @@ field weld has its own hatched "FW" tick at its point on the isometric — so
 corroborating a claimed FW against that tick is the obvious next geometric
 check, and would take sheet 2 to 6 of 6 without touching anything else.
 
-**The durable fix is to wire the cut finder into the worker** so extraction
-produces this answer itself instead of a script correcting it afterwards. Until
-that happens, treat any re-extraction as destroying the corrections, and
-re-apply them with:
+#### The cut finder is now IN the worker — a re-extraction produces this itself
+
+`apps/worker/src/extraction/isoGeometrySpools.ts`, called from
+`extractIsoDocument`. The scripts below still work and are still the way to
+re-apply an answer by hand, but they are no longer the only way to get one: an
+extraction now returns the drawing's spools as its own result.
+
+How a sheet is read, in order:
+
+1. **The flag pre-pass, free.** `locateWeldFlags` finds every weld mark and its
+   number flag off the vector paths.
+2. **One contact sheet for the whole document** puts a NUMBER against each
+   flag. Accepted only where a page's labels come back a complete,
+   unduplicated 1..N (`numberingComplete`) — a misread shows up as a gap or a
+   repeat, so this is a real check and not a formality.
+3. **The sheet pass, unchanged**, reads the title block, the BOM and the WELD
+   LIST. That is what the model is good at, and it is the only source of a
+   weld's TYPE.
+4. **One more contact sheet** reads the spool TAG strings, so each tag's own
+   leader says which block it names rather than sorted order guessing.
+5. **`readGeometrySpools`, free**, finds the cuts and assigns every weld.
+
+**Pass 1 — the boundary pass — only runs where step 2 failed.** It costs about
+$0.89 a sheet and places 6 of 12 boundaries; the geometry places 18 of 18 on
+both revisions of the reference ISO. Paying for the worse answer and discarding
+it is pure cost. It is kept, not deleted, because it is still the whole answer
+on a sheet whose flags could not be read.
+
+So the wiring is CHEAPER than what it replaces: about $4.45 of boundary passes
+off a five-sheet ISO, against roughly $0.15 of contact sheets.
+
+Two things follow from having an exact weld set, both new:
+
+- **The retry is judged on the WELD LIST, not the boundaries** (`weldListProblems`).
+  Where geometry has the sheet, every complaint `spoolProblems` makes is about a
+  boundary read nothing uses any more, and a retry is a second 32k-token sheet
+  pass. What is worth re-reading is the weld list, and the geometry gives a
+  known-exact set of IDs to check it against — which catches the duplicate-weld
+  and 17-rows-for-16 failures vision has actually produced.
+- **A spool row can no longer be invented.** Blocks come from the tags the sheet
+  prints, so every row has a printed name and every printed tag with welds gets
+  one. `buildSpoolsFromWeldTopology` mints `spool-<n>` when the walk finds more
+  spools than tags, which used to put a row in the database claiming welds a
+  real spool also claimed.
+
+A sheet the geometry REFUSES falls through to the vision path untouched, and
+`rawJson` carries the geometry so `rebuild-iso-tags.ts` replays the whole answer
+for nothing.
+
+**Check the wiring without paying**, replaying a saved flag read:
+
+```
+pnpm --filter @easy/worker exec tsx scripts/probe-iso-geometry.ts \
+  <file.pdf> raw.json flag-labels.json [out-raw.json] [--tag-labels tags.json]
+```
+
+It runs the exact code path the worker runs. On the revised reference ISO all
+five sheets resolve — 93 of 93 welds placed, 19 rows for the 18 printed spools
+(N-15 spans sheets 4 and 5), none invented. On the original, sheets 1, 3, 4 and
+5 reproduce the hand-verified table exactly, sheet 4's N-13/N-14 included.
+
+To re-apply an answer to a document by hand, the script route is unchanged:
 
 ```
 cd packages/db && node scripts/dump-weld-list.mjs welds.json
@@ -590,6 +648,36 @@ cd packages/db && node scripts/apply-drawing-spools.mjs cuts.json --write
 
 `geometry.json` survives a re-extraction untouched: it is read from the PDF, not
 the database.
+
+#### A VALVE SYMBOL IS NOT A BOUNDARY — only the flanges are
+
+The cut finder used to take three kinds of candidate: a flange pair, a
+self-crossing quad (the hourglass a gate valve is drawn as), and a pair of
+matching triangles. The two symbol fallbacks are **gone**, and this is worth not
+re-adding.
+
+Measured across both revisions of the reference ISO, every one of the 18
+verified cuts is found by the FLANGE PAIRS. The fallbacks contributed not one
+cut of their own — every hit they produced duplicated a flange pair already
+found.
+
+What they did produce is a false positive that cost a whole sheet. **The revised
+drawing added FLOW ARROWS.** An arrowhead is outlined as a four-point path that
+crosses itself — the same signature as a valve hourglass — and it sits, by
+definition, on the pipe between two welds. On sheet 2 one arrow invented a sixth
+cut where the sheet prints six spools and needs five, the count check threw the
+sheet out, and all 27 of its welds went unassigned.
+
+An arrowhead also passes the flange bar's own shape test (the one on page 2
+measures 15.3 long by 5.4 short, a ratio of 2.8 against a threshold of 2.5), so
+two arrows on one straight run could pair into a joint that is not there.
+`findFlanges` therefore rejects a **self-crossing** path: a flange bar is a
+simple quad and does not cross itself. Both facts are pinned as tests against
+the real arrow's geometry.
+
+The general rule, which the fallbacks quietly worked against: a spool ends where
+the line comes apart with a spanner, and that is ALWAYS a pair of flange bars,
+whatever symbol happens to sit between them.
 
 #### The WELD LIST has a Type column AND a Category column — they are not the same
 
@@ -644,14 +732,599 @@ hand correction, and would confirm sheet 4 against its own table. Everything
 needed is already there: the tick is a small hatched mark sitting on the pipe at
 a known weld position.
 
-**An open question on sheet 4, not resolved.** Following the spool tag leaders
-the way sheet 5 was checked, N-12 lands on the run below the lower FW, **N-14
-lands on the 6000mm piece between the two FW ticks**, and N-13 lands on the run
-between welds 13 and 14 — which would make the middle spool N-14, not N-13. The
-reference and `assignSpools` both map tags onto blocks in sorted order, giving
-N-13 the middle. The weld GROUPING is identical either way (1-6 / 7 / 8-16); only
-which tag names the middle piece is in doubt. Worth confirming against the
-drawing before relying on sheet 4 tag names.
+#### Which tag names which spool — follow the LEADER, not the number
+
+**Sheet 4's open question is settled: the middle 6000mm piece is N-14.** It was
+confirmed twice, by rendering the sheet and by tracing the leaders, and the
+user confirmed it independently. `assignSpools` maps tags onto blocks in
+SORTED ORDER, which gave that block to N-13 and was simply wrong: the tag
+numbers on sheet 4 are not in run order.
+
+```
+N-12 -> welds 1-6      (below the lower FW)
+N-14 -> weld 7         (the 6000mm piece BETWEEN the two FW ticks)
+N-13 -> welds 8-16     (the top run)
+```
+
+`src/extraction/isoSpoolTags.ts` reads this off the drawing. A spool tag is a
+boxed tag string with a leader to the run, so find the box, walk the leader,
+and see which piece it lands on:
+
+```
+pnpm --filter @easy/worker exec tsx scripts/export-spool-tags.ts     <file.pdf> geometry.json cuts.json spool-tags.json [--preview tags.png] [--labels-from labels.json]
+pnpm --filter @easy/worker exec tsx scripts/spool-cuts.ts     <file.pdf> welds.json geometry.json cuts.json --tags spool-tags.json
+```
+
+Tracing is free. Reading the tag STRING in each box is the only part needing
+eyes, and `--preview` lays the boxes out as one contact sheet — all 17 of the
+reference ISO's tags were read off it at no cost and replayed through
+`--labels-from`, the same arrangement as the weld flags.
+
+Three things this needed that the cut finder did not:
+
+- **A leader POINTS at the run, it need not touch it.** Two of sheet 4's three
+  are broken where the 15109mm overall dimension crosses them, leaving the tip
+  ~65pt short. Put the tip on the nearest pipe segment before asking anything
+  of it.
+- **A far longer flanking reach: 240pt against the cut finder's 90.** That one
+  looks for the welds either side of a VALVE, which are close together; this
+  looks for the welds at either END OF A SPOOL. Sheet 4's 6000mm piece has its
+  welds 144pt apart, so a 90pt reach finds one of them and reports no pair.
+- **A tag landing between welds in different blocks names the LATER block**,
+  because a field weld closes the spool it ends — the same rule the dimension
+  placer uses.
+
+**Why this is trustworthy: it reproduces the old answer everywhere it should.**
+Of the 15 tags whose leaders resolve, **13 agree with sorted order and the two
+that disagree are sheet 4's N-13 and N-14** — the exact pair already suspected.
+A re-ordering is accepted only if it is a PERMUTATION of the tags the sheet
+prints: every tag used once, none invented, none dropped. Anything else keeps
+sorted order, which at least uses each tag once.
+
+#### Reading the DIMENSIONS -- built, run for real, 78 of 80 right
+
+Needed because **an isometric is NOT drawn to scale**: on the reference ISO one
+run gives 202mm over 70pt and another 464mm over 91pt, so a length can only be
+READ, never measured off the page.
+
+But only the NUMBER has to be read. `src/extraction/isoDimensions.ts` gets
+everything else from the geometry, free: a dimension is a light-weight line on
+a drawing axis with an ARROWHEAD AT EACH END, and its arrowheads sit exactly at
+the extent measured. Across the five sheets that finds **83 dimensions**.
+
+```
+pnpm --filter @easy/worker exec tsx scripts/export-dimensions.ts <file.pdf> out.json     [--read-labels 1,2,3] [--preview sheet.png] [--labels-from labels.json]
+```
+
+**A dimension comes in TWO drawn shapes and both must be looked for.** The
+second is a line BROKEN to make room for its own number, so each half carries
+an arrowhead at only its OUTER end -- looking for a head at both ends of one
+segment misses them entirely. Two halves pair when they are collinear with
+their **arrowheads outermost** and a number printed in the gap. "Outermost" is
+what does the work: it separates a split dimension from the JUNCTION of two
+chained dimensions, where the facing halves are collinear too but meet head to
+head at the extension line they share.
+
+**Measure TIP to TIP, not centre to centre.** The arrows point INWARD with
+their apexes on the line: the 184's tips are at 380.6 and 420.1 (39.5pt) while
+its arrowhead CENTRES are at 377.0 and 423.6 (46.6pt). The centre figure
+matches no witness line and no piece of pipe, and over-reports every span by
+one arrowhead length.
+
+**A glyph is small and STROKED -- point count is NOT the test.** A digit can be
+very few points (a `7` is 3, a `4` is 4 on this drawing), so a minimum of 6
+made the whole of `474` invisible and the label finder settled on the
+`WOL 200X80` callout beside it, on four labels. What that minimum was really
+trying to exclude is arrowheads, and those are excluded by being FILLED.
+
+**Grow the label ALONG the text's own direction.** A dimension's number is
+rotated to read along its dimension line, so its glyphs lie in a narrow band
+parallel to it while other nearby text sits across that band. Distance alone
+does not separate them -- widening the search to catch a long number's outer
+digits also chained `WOL 200X80` onto it. Direction does.
+
+**"Connected to the pipes" = a WITNESS line crosses the tip.** Both ends need
+not have one (where an end lands straight on the object none is drawn), but
+where both do they must be PARALLEL -- that is exactly the condition making the
+drawn length equal the measured length. The witness runs on ANOTHER isometric
+axis, not perpendicular: the 184's pair both run at 30 degrees while it is
+vertical. Two ways to get this wrong, both found by checking the rejects
+against the drawing rather than trusting the count:
+
+- requiring a witness at BOTH ends threw out sheet 1's two 385 branch dimensions
+- taking each end's LONGEST candidate independently threw out sheet 3's 721
+  main-run dimension, whose tips each have a leader crossing them as well --
+  look for a parallel PAIR across the two ends instead
+
+With those fixed, **all 83 measure pipe**. So the filter excludes nothing: the
+detector's own constraints already admit only run dimensions. The small
+"arrows-outside" details (a 24mm gasket gap) never enter -- that shape is
+indistinguishable from a chain junction and is reported, never taken.
+
+##### The real run: $0.150, and the preview caught both errors
+
+One call, 83 labels from all five sheets on one contact sheet: **2,308 in /
+1,544 out, ~$0.150**. 80 values returned, 3 correctly left blank (one of them a
+`BW` weld flag -- it refused rather than inventing a length, which is the
+"a blank beats a guess" instruction working).
+
+**Of the 80, two were wrong, and reading the free preview by hand found exactly
+those two:**
+
+| cell | returned | drawing | |
+|---|---|---|---|
+| 4-6 | 8000 | **6000** | leading 6 read as 8 -- and 6000 is the forced-cut length |
+| 5-10 | 289 | **299** | middle 9 read as 8 |
+
+Both are digit confusions on rotated text. The other 78 agreed character for
+character with the hand read. **So `--preview` is not only a cost-saver, it is
+a second opinion**: read the preview yourself, run the call, and the cells the
+two disagree on are the cells to go and look at. Correct them by writing the
+full set to a JSON file and replaying with `--labels-from`, which costs nothing
+and re-runs the checks.
+
+The mm-per-point check printed per axis is weak by design -- the sheet is not
+to scale, so it flags real variation as often as a misread. It says where to
+look, it does not decide.
+
+#### Will it ship? The container check
+
+`packages/shared/src/containerFit.ts`, free to run, no API call:
+
+```
+pnpm --filter @easy/worker exec tsx scripts/check-container-fit.ts <spools.json>
+pnpm --filter @easy/worker exec tsx scripts/check-container-fit.ts --size 6000x400x400 --field-welds 1
+```
+
+It takes an ENVELOPE rather than deriving one, so a hand-measured spool and an
+extracted one are checked the same way. Three things a naive "is it shorter
+than the container" test gets wrong, each pinned as a test:
+
+- **A spool can be turned, angled, and TILTED.** All six orientations are
+  tried, then free rotation, in three stages of rising difficulty:
+  `straight`, `angled` (swung flat across the floor) and `tilted` (turned in
+  all three axes). A 20ft is 5,898mm end to end, 6,350mm across the floor and
+  6,786mm corner to corner, so a 6,000mm spool of small section goes in swung
+  about 13 degrees and a 6,500mm one goes in tilted. Length alone decides
+  nothing -- **cross-section does**, because a fatter spool sweeps a wider
+  path as it turns: at 6,150mm a 219mm spool can be swung flat, a 404mm one
+  has to come off the floor as well, and a 900mm one fits no attitude at all.
+  The EASIEST attitude that works is the one reported.
+- **Free rotation uses the OBB-to-AABB extent** (`sum_j |R_ij| * s_j`),
+  searched coarse-then-fine over yaw/pitch/roll. That test is CONSERVATIVE --
+  the bounding box fitting is sufficient for the spool to fit, never the
+  other way round -- which is the safe direction for a shipping answer, and
+  for a long thin run of pipe the two are nearly the same thing.
+- **The angle reported is the one with the MOST room, not the least swing.**
+  The shallowest angle that works is by definition the one touching the end
+  wall -- it came out at 1mm of clearance on a 6,150mm spool, which is not a
+  loading instruction. A few degrees further over turns that into 43mm.
+- **Angling is a decision, not a default.** It costs usable floor and needs
+  blocking against the pipe working back square, so `smallest` and
+  `smallestStraight` are both reported: "a 40ft square, or a 20ft if you are
+  willing to swing it" is the actual choice, and it is not the code's to
+  make.
+- **It has to get THROUGH THE DOOR.** The opening is smaller than the section
+  behind it -- 2,340 x 2,280 against 2,352 x 2,393 on a 20ft -- so a spool can
+  fit the space and still not go in end-first. That is what open-top and flat
+  rack are for, and they carry `special: true` so a plain dry box always wins
+  where one works: ranking on internal VOLUME alone answered "20ft open top"
+  for a spool an ordinary 20ft takes, because the open top's roof rails cost
+  it 46mm of height.
+- **A field weld needs slack.** NOTE 4 on the reference ISO: "WHENEVER FIELD
+  ADJUSTED JOINT (FAJ) IS INDICATED, AN EXCESS OF 150mm TO BE PROVIDED". That
+  excess is extra pipe left on the spool, so it ships. Give `axis` if the
+  joint's direction is known; otherwise it goes on the LONGEST side, which is
+  the worst case and the one that decides a container.
+
+Container internals VARY by operator and build year by a few tens of mm, which
+is the same order as a tight clearance -- so a fit under `MARGINAL_MM` (50mm)
+is reported as marginal, meaning "confirm against the actual container", not
+"yes". Pass your own specs to override the nominal list.
+
+**A 20ft is often quoted as 5.89 x 2.33 x 2.4m, and the list here says
+5898 x 2352 x 2393. Do not "correct" it to the quoted figures.** The 2.33 is
+a rule of thumb for the cross-section, not the internal width: the ISO
+internal width is 2352 and the DOOR is 2340, so setting the internal width to
+2330 makes the door wider than the box it opens into and breaks the
+door-is-smaller-than-the-section invariant (7 tests catch this). The practical
+limit the 2.33 rule is reaching for is already enforced, and more tightly --
+the door is 2340 x 2280, so 2280 binds before 2330 ever does.
+
+**Two numbers worth knowing for this refinery.** A 20ft's usable length is
+5,898mm, so:
+
+- the **6,000mm forced cut** that the spool rules produce overruns a 20ft by
+  102mm, so every 6000mm piece is a 40ft job **loaded square** -- but a bare
+  200NB run (219mm OD) still goes in a 20ft angled, and so does the same
+  piece carrying its 150mm field-weld allowance, at 20 degrees with 43mm to
+  spare. Tight enough to confirm against the actual container
+- loaded square and with a field weld, the longest spool that still makes a
+  20ft is **5,748mm**
+
+**The page.** `/containers` (`apps/web/src/app/(app)/containers/`) lists every
+spool with its weld and FIELD WELD counts read from the extraction. The size
+is filled in from the derived envelope, marked `derived` and shown with the
+lengths that produced it, and any box can be typed over -- which drops the
+badge and the workings. The
+field-weld count is the input most easily forgotten and the one that decides a
+borderline load, so it shows whether or not a size has been typed yet. A
+checkbox switches free turning off, to answer "and what if we load it square".
+`isFieldWeld` moved to `@easy/shared` for this page: two copies of "what counts
+as a field weld" is exactly the split that let Type and Category be confused in
+the first place.
+
+#### The plant axes behind the drawn ones
+
+`packages/shared/src/isoAxes.ts`. An isometric draws three axes 120 degrees
+apart, and each is a real direction in the plant:
+
+```
+page 270 (straight up)  ->  UP / DOWN     -- elevation, always
+the other two           ->  N / S and E / W, fixed by the NORTH ARROW
+```
+
+- **Vertical needs no arrow.** An isometric never tilts the elevation axis, so
+  a dimension drawn at 90 degrees on the page is a rise or a drop and nothing
+  else. A spool's HEIGHT is the one extent nameable with no reference to the
+  sheet at all.
+- **Bearings are reported with NORTH AS ZERO** (`plantBearing`): north 0, east
+  90, south 180, west 270, measured in the plant, not on the page. Two
+  drawings of the same run with different north arrows give different page
+  angles and the same bearing -- which is the point of reading the arrow.
+- **There is no fixed offset from north to east.** An isometric has six rays:
+  two horizontal axes (30/210 and 150/330) and the vertical (90/270). Given
+  north, the E-W axis is already decided -- it is the other horizontal pair --
+  and exactly one of north+120 / north+240 lands on it while the other lands
+  on the VERTICAL, where no horizontal run can go. Handedness only chooses
+  which END of that axis is east. Getting this wrong is what a first pass at
+  `directionAngles` did, and it silently put EAST straight up for half the
+  possible frames.
+- **Getting the arrow wrong costs naming, not answers.** A shipping envelope
+  is three extents; swapping which is called N-S and which E-W leaves the set
+  of three unchanged, so a container result is unaffected. Only the REPORTING
+  needs the arrow right.
+
+- **There are SIX directions, not three axes**: N, S, E, W, UP, DOWN. A
+  SEGMENT has a direction, so it gets one of the six. A DIMENSION does not --
+  it brackets an extent without saying which way the pipe runs -- so it only
+  ever gets an axis. That is why the per-spool table groups by axis while
+  the run walk works in directions.
+
+**Fix the frame from a RUN WHOSE DIRECTION IS KNOWN, not from the arrow.**
+Sheet 1's 80mm weldolet branch -- the one its 404mm dimension spans -- is
+drawn at page 150 (down-left) and runs WEST. That fixes the whole frame:
+
+```
+N  210  up-left      bearing 0      E  330  up-right    bearing 90
+S   30  down-right   bearing 180    W  150  down-left   bearing 270
+UP 270  up           (no bearing)   DOWN 90 down        (no bearing)
+```
+
+Two wrong guesses got there, both worth not repeating:
+
+- **`NS` is NEAR SIDE, not "north side".** It says which side of the pipe an
+  olet sits on in the view; `FS` is the other one. Neither is compass
+  evidence, and `WOL 200X80 NS` sits right beside the weldolet that actually
+  runs WEST, so reading it as north is not a harmless slip.
+- **"Down-left" reasoning cuts both ways.** Page y runs DOWN so down-left is
+  150, but which drawn axis north lies on still has to come from the drawing.
+  Guessing north onto the branch's own axis put N where W belongs.
+
+The independent check that agrees: sheet 1's valve carries a
+`VALVE_WRENCH SOUTH` note with its wrench drawn toward page 30, giving south
+at 30 and north at 210 by a different route. **The arrow symbol itself is
+still not auto-detected** -- three geometric searches returned callout
+balloons, BOM boxes and the company logo. Three geometric searches failed to find it on the reference sheet --
+isolated filled shapes, small boxes containing a filled shape, and large
+filled triangles all returned callout balloons, BOM boxes and the company
+logo. Worth another attempt before relying on the axis NAMES for a drawing
+whose orientation is not known.
+
+#### Per-spool envelopes -- derived, and now verified on one spool
+
+```
+pnpm --filter @easy/worker exec tsx scripts/export-spool-envelopes.ts     dims.json geometry.json cuts.json envelopes.json
+cd packages/db && node scripts/import-spool-envelopes.mjs envelopes.json --write
+```
+
+A printed length is tied to a spool by WHERE IT ATTACHES TO THE PIPE.
+`pipeAttachment` in `isoDimensions.ts` does the geometry, `placeDimension` in
+`packages/shared/src/spoolEnvelope.ts` decides what it means.
+
+**Slide the dimension back onto the run.** A dimension is drawn PARALLEL to
+what it measures and offset from it, and both ends are offset by the SAME
+amount along the witness direction -- that equal offset is exactly what makes
+the drawn length equal the measured one. So a single distance slides the whole
+dimension onto its subject, and each pipe segment parallel to it proposes one
+such distance. Take the one with the most pipe under it.
+
+**The coverage is the answer, not the offset.** A spool is what is WELDED
+together; a valve is bolted in between two flanges and ships on its own, so a
+dimension spanning one brackets no pipe at all. That is what separates a
+length that belongs to a spool from one that does not, and on this document
+the separation is absolute:
+
+| | coverage |
+|---|---|
+| every length drawn over a run | **46% -- 100%** |
+| every length spanning a bolted-in valve | **exactly 0%** |
+| in between | nothing |
+
+All eight of the 464mm valve assemblies are rejected, on four different
+sheets, and so are the five 210mm ones. Anything from 5% to 40% gives the same
+answer, so `MIN_PIPE_COVERAGE = 0.2` is reading a gap in the drawing rather
+than being fitted to it. Three of the rejects were checked by rendering them:
+sheet 5's 502mm spans a wafer check valve between two flanges, sheet 3's 659mm
+spans a valve and ends on a DASHED tie-in with a break symbol, and sheet 1's
+210mm spans the branch's own valve below BW1. All three are right to drop.
+
+**Then both ends must agree on a spool.** Where they name different ones the
+length crosses a boundary and belongs wholly to neither -- except when the two
+welds are CONSECUTIVE, which puts them either side of the cut itself, and the
+pipe between them is the first piece of the later spool (a field weld closes
+the spool it ends). That is sheet 4's 6000mm piece between its two FW ticks.
+Sheet 4's 15109mm overall and sheet 3's 6761mm span further than one spool and
+are reported, not placed.
+
+**One firm end is enough when the other reaches no weld at all.** An end can
+legitimately land on something that is not a weld: the start of a run, an
+elbow, a tie-in continuing onto another sheet, or a weld whose leader could
+not be traced. Sheet 1 has two of those last, and one of them is what its
+202mm from weld 5 lands on -- without this rule N-01 comes out 386 instead of
+588. The match must be within 30pt when it is deciding alone, and the other
+end must reach NO weld: an end reaching a DIFFERENT spool is a crossing.
+
+**Verified against the drawing.** N-01 of the reference ISO is **588mm down
+and 404mm west** (hand-checked), and that is what comes out:
+
+```
+N-01   DOWN  1-2 202   1-4 202   1-8 184     = 588
+       W     1-3 404                         = 404
+       rejected: 1-1 464, 1-6 464 (valve assemblies), 1-11 210 (its own valve)
+```
+
+Reading the branch settles why each rejection is right: the weldolet taps the
+main run at BW4, runs west 404 to the elbow at BW2, then drops 184 to BW1
+where it welds to a flange -- and the 210 spans the VALVE bolted below that
+flange, which ships separately. The other seventeen envelopes are unverified.
+
+**An earlier note in this file said N-01 was "404 up and 404 west". It is
+588 down.** The 404 was the main run's drop alone; it missed the branch's own
+184mm fall below the takeoff.
+
+**Match the weld GENEROUSLY; the guard is that both ends agree.** The radius
+is 150pt, not something tight. Weld tracing leaves real holes -- sheet 1's
+welds 5 and 9 both have untraced leaders -- and a tight radius turns every
+hole into a dropped length: its 1000mm run sits between welds 8 and 10 with
+weld 9 missing, about 100pt from either, and a 60pt radius lost it. What
+actually protects the answer is the two ends naming the same spool, not how
+near the nearest weld happens to be.
+
+**A printed length can measure more pipe than the spool owns.** Sheet 1's
+1186 runs from the elbow PAST the field weld at weld 12, and the sheet prints
+the 305mm overshoot as its OWN dimension, labelled FW. The spool ends at the
+field weld, so its share is 881, and N-02's south extent is 1500 + 881 =
+2381, not 2686.
+
+**That 305 cannot be worked out by scaling — it has to be read.** It spans
+21pt for 305mm while the 1186 beside it on the SAME run spans 108pt: 14.3
+against 11.0 mm/pt. The page is not linear even along one piece of pipe,
+which is the "never measure off the page" rule biting at the smallest scale.
+
+##### Why it was missed, and the fix: MEASURE APEX TO APEX
+
+The reader missed it for a reason worth keeping, because it was wrong about
+something general. **An arrowhead can point either way, and the drawn line
+is not the span.**
+
+```
+INWARD   sheet 1's 184: base at 373.5, apex at 380.6 -- the apex IS the
+         line's end, so line length == span
+OUTWARD  sheet 1's 305: a 10.1pt line between apexes 24.3pt apart, the
+         arrows sitting beyond each end pointing out at the witnesses
+```
+
+CAD draws them outward when the extent is too small to fit the arrows
+inside. The line branch measured the SEGMENT, so the 305 came out 10.1pt,
+under `MIN_DIMENSION_PT`, and was thrown away. Taking `ha.apex`/`hb.apex`
+covers both shapes at once, because for an inward arrow the apex and the
+line's end are the same point. In every case the apex lands exactly on the
+witness line -- that is what makes it the measured point.
+
+One guard is needed with it. An arrowhead can be matched to an end it does
+not belong to, and the apexes then drag the span off the drawing axis; that
+showed up immediately as dimensions reported at 21 and 41 degrees. So the
+apex span is used only where it stays on-axis and within `APEX_DRIFT_DEG`
+of the drawn line, and otherwise the drawn line wins.
+
+Result: **83 -> 85 dimensions**, no off-axis ones, and the 305 detected as a
+24.3pt span at 30 degrees from (760.7,443.6) to (781.8,455.7), both apexes
+on their witness lines. Its attach then ends at (781.8,498.0) -- the SAME
+point the 1186's attach ends at -- which is the geometry confirming it is
+exactly the 1186's tail.
+
+Ruled out along the way, do not spend on these again:
+
+| tried | result |
+|---|---|
+| `MIN_HALF_PT` 4 -> 2.5 | no change at all |
+| `MIN_DIMENSION_PT` 20 -> 14 | one extra dimension, on sheet 2, not the 305 |
+| both together | still nothing, and no rejection RECORDED -- the halves never form |
+| a terminator rule for slender filled triangles | **175 candidate pairs**, nearly all title-block glyphs |
+
+The two big filled triangles beside the 305 look like a terminator pair and
+are not: they share the edge (761.1,441.5)-(781.4,442.1) exactly with apexes
+on OPPOSITE sides, so together they are a filled parallelogram 17.9 x 9.6,
+not two arrows.
+
+**Renumbering.** Adding dimensions renumbers every `cell` and invalidates
+the read labels. Carry them across by matching each span's MIDPOINT and
+angle rather than its endpoints -- the endpoints move when a span grows by
+an arrowhead at each end, the midpoint does not. That carried 80 of 85
+automatically; of the five left, three had never been read anyway, so only
+two needed eyes.
+
+##### And then SUBTRACT it
+
+Detecting the 305 is not enough on its own: added, it inflates the spool;
+dropped as "contained", it leaves the 1186 overstating it. The spool's share
+is the DIFFERENCE, and `subtractOvershoots` takes it.
+
+A tail is told from an ordinary nested part by two things: the length it sits
+in is FLAGGED as overshooting its spool's boundary weld, and it SHARES AN END
+with that length. An overall dimension's parts sit in the middle and share no
+end, so `outermost` still drops those (sheet 4's 15109 over its 6000).
+
+**Containment has to be judged on the PIPE, not on the drawn lines.** This is
+what made the rule miss at first. A dimension is drawn at whatever offset
+suits the sheet, and two at different offsets project onto the axis at
+different places even when one brackets the other -- sheet 1's 305 sits
+inside the 1186 on the run and OUTSIDE it on paper. So the held span is the
+ATTACH, and both ends of the 305 and the 1186 then coincide at (781.8,498).
+
+With that, both hand-verified spools come out of the drawing alone, no
+corrections:
+
+```
+N-01   DOWN 202+202+184 = 588      WEST 404
+N-02   DOWN 1412   SOUTH 1500+881 = 2381   EAST 937+1000+1500 = 3437
+```
+
+where the 881 is the printed 1186 less the printed 305, and the part keeps
+`printedMm: 1186` with the reason, so the page shows "881 (of 1186 printed)".
+
+**The rule that catches this class, without needing the 305 read.** A spool
+ends at its boundary weld; a dimension does not have to. So project the
+spool's own boundary weld onto the length's line, and if it lands strictly
+INSIDE the span, the pipe beyond it belongs to the next spool and the total
+is an over-estimate. Positional, so it needs no scale.
+
+What separates a real overshoot from nothing is measured, not guessed. A
+dimension normally ends at the FITTING -- the flange face, the pipe end --
+not at the weld dot a few points inside it, so a small run-past is ordinary.
+Across the reference ISO the two groups do not overlap:
+
+```
+ordinary:  6.8  7.0  7.1  7.2  8.9  10.2  10.2  10.5  11.9  11.9  11.9
+real:                          18.2  18.2  19.1  20.0  20.7  21.3
+```
+
+N-01's verified 588 pins the bottom of that -- its 202 runs 7pt past weld 6
+and must NOT be docked -- and the 1186 that genuinely runs past the field
+weld is 20. `MIN_OVERSHOOT_PT` is 15, in the gap. Six lengths are flagged
+across the document; N-02's is the one confirmed against the drawing, the
+other five are unchecked and the page marks them.
+
+The flag is a REVIEW PROMPT, not a correction: it says "this runs past the
+weld that ends the spool, go and read the overshoot the sheet prints". It
+would have caught the 1186 before a human did, which is the whole point.
+
+Until the reader finds the 305 itself, `--corrections` carries the number,
+and REQUIRES a reason:
+
+```
+pnpm --filter @easy/worker exec tsx scripts/export-spool-envelopes.ts     dims.json geometry.json cuts.json envelopes.json --corrections fix-lengths.json
+```
+
+```json
+{ "1-7": { "mm": 881, "why": "the printed 1186 runs past the field weld at weld 12; the sheet prints the 305mm overshoot separately" } }
+```
+
+The part keeps `printedMm`, and the page shows "881 (of 1186 printed)" with
+the reason on hover. A figure that silently disagrees with the drawing is
+unreviewable, which is the whole point of the workings.
+
+**Put the field weld's 150mm on the axis the field weld is ON.** The check
+falls back to the longest side when the direction is unknown, and that is the
+WORST CASE rather than the answer — it is deliberately conservative about
+which container, but it puts the slack in the wrong place. N-02's field weld
+is on its N-S leg, not its 3437mm east one:
+
+| 150mm placed on | ships as | result |
+|---|---|---|
+| the N-S leg, where the FW is | 1412 x **2531** x 3437 | 40ft HC, **54mm** clearance |
+| the longest side | 1412 x 2381 x 3587 | 40ft HC, 204mm — too optimistic |
+
+The page works the axis out itself: the envelope part whose `weldNo` is a
+field weld names it. This is what `axis` on `checkSpoolFit` was always for.
+
+**Nothing is guessed, and nothing is silently dropped.** A length that reaches
+no weld, spans a bolted joint, or crosses more than one spool comes back in
+`unplaced` with the reason, is stored on the sheet's spool rows, and is shown
+on the page under "on this sheet, in no spool". A length a reviewer can see
+printed but cannot find in the workings is worse than a wrong total.
+
+**Containment is still applied.** A sheet prints both the whole and its parts,
+so `outermost` drops any span nested inside a longer one on the same axis.
+
+**The page names each extent by its DIRECTION, and shows only the axes that
+have one.** "DOWN 588, WEST 404", not "588 x 0 x 404" under a fixed
+UP-DOWN x N-S x E-W heading: a spool occupies at most three axes and usually
+fewer, so the fixed triple spends most of its width on zeroes and still
+leaves the reader working out which way round it is. Where an axis holds
+lengths drawn BOTH ways it is named by the axis instead, since neither
+direction is then the honest answer (N-03 reads "UP-DOWN 3368").
+
+**There is nothing to type on that page.** The sizes are read off the
+drawing; the job is to VERIFY them, which is what the per-direction lengths
+under each one are for.
+
+**It is stored marked `derived:true` and carrying `parts`.** Each part keeps
+its `cell` and the direction it is DRAWN in, and the page lists them ONE BY
+ONE under all six directions -- never rolled into a sum:
+
+```
+N-01   UP   0  -           N-02   UP   0  -
+       DOWN 3  1-2 202            DOWN 1  1-12 1412
+               1-4 202            N    0  -
+               1-8 184            S    2  1-5 1500   1-7 1186
+       N 0  S 0  E 0              E    2  1-15 937   1-22 1500
+       W    1  1-3 404            W    0  -
+
+sheet 1 -- printed, in no spool:
+  1-1 464 (no pipe)    1-6 464 (no pipe)    1-9 18 (no pipe)
+  1-10 18 (no pipe)    1-11 210 (no pipe)   1-24 108 (no pipe)
+  1-26 15 (no pipe)    1-18 1000 (no weld)
+```
+
+The unplaced list is shown once per SHEET, not once per spool: every spool on
+a sheet carries the same list, and repeating it on each row buries it.
+
+Three deliberate choices there, each one someone asked for after the version
+before it could not be checked:
+
+- **Six directions, not three axes.** At axis level N-02's stray 404 was
+  just another number in the E-W pile; on its own under W it was obviously
+  N-01's branch. That is how this bug was found.
+- **Never summed.** A total is a number to agree with; a list is something to
+  go through.
+- **All six shown, empty ones included.** An empty direction is evidence:
+  N-01 having nothing sideways is how its missing branch announced itself.
+
+The `cell` is what makes it checkable -- it names the box on the dimension
+contact sheet the length was read from. Editing a size drops the badge and
+the workings; it is yours from then on.
+
+**A total is a SUM along an axis, not a bounding extent.** For N-01 the two
+are the same, because the run only ever goes down. Where a run doubles back
+they are not, and resolving that needs the run's topology, which is not
+solved. Do not let a derived envelope reach a shipping decision unreviewed.
+
+Free probes, all geometry-only, for working on this:
+
+```
+pnpm --filter @easy/worker exec tsx scripts/probe-dim-pipe.ts   <pdf> <page> dims.json geometry.json cuts.json
+pnpm --filter @easy/worker exec tsx scripts/probe-witness.ts    <pdf> <page> <x> <y> [radius]
+pnpm --filter @easy/worker exec tsx scripts/probe-box.ts        <pdf> <page> <x0> <y0> <x1> <y1> [minLen]
+pnpm --filter @easy/worker exec tsx scripts/probe-lw.ts         <pdf> <page> [minLw]
+pnpm --filter @easy/worker exec tsx scripts/dump-region.ts      <pdf> <page> <x0> <y0> <x1> <y1> <out.png>
+```
+
+**`readPageGeometry` returns y-DOWN despite what its comment says.** Larger y
+is lower on the page, which is what `pageAngleOf` and the whole dimension
+reader assume. A probe that flips y lands in the title block and finds table
+rules where it expected witness lines -- an hour went into that.
 
 #### Ordering the welds along the run — works, does not yet generalize
 

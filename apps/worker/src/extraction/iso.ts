@@ -3,6 +3,8 @@ import {
   LOCATE_ISO_SECTIONS_TOOL,
   ISO_SPOOL_BOUNDARIES_TOOL,
   ISO_SHEET_TOOL,
+  ISO_WELD_FLAGS_TOOL,
+  ISO_SPOOL_TAGS_TOOL,
   FLOW_DIRECTION_RULE,
   buildSystemPrompt,
   buildNumberedText,
@@ -11,7 +13,8 @@ import {
 } from "@easy/extraction-schemas";
 import { enrichIsoLineAttrs, normalizeSlope, assignItemSpec, parsePressureRating, buildSpoolsFromWeldTopology, type WeldTopology } from "@easy/shared";
 import { callTool, callWithRetry } from "./claudeClient";
-import { renderPdfPages, renderPdfPageTiles } from "../pdfImages";
+import { renderPdfPages, renderPdfPageTiles, renderMultiPageContactSheet } from "../pdfImages";
+import { flagRegions, locateWeldFlags, numberingComplete, readGeometrySpools, spoolTagRegions, type FlagRegion } from "./isoGeometrySpools";
 import { normalizeCellValue } from "./pll";
 import type { DocTypeExtractor, TagDraft } from "./types";
 import { isFieldWeld } from "./weldTypes";
@@ -88,6 +91,50 @@ interface IsoSheetResult {
 }
 
 const SYSTEM_PROMPT = buildSystemPrompt("piping isometric drawing");
+
+/**
+ * What the DRAWING says about one sheet's spools, as stored in rawJson.
+ *
+ * Kept plain and serialisable so a re-import replays it for nothing -- the
+ * geometry costs only the flag contact sheet, but re-reading the PDF to get it
+ * back would be silly when the answer is already saved beside the vision half.
+ */
+export interface SheetGeometrySpools {
+  page: number;
+  cuts: number[];
+  trusted: boolean;
+  why?: string;
+  evidence: Array<{ cut: number; why: string }>;
+  /** Weld number -> the printed spool tag it belongs to. */
+  assignment: Record<string, string>;
+  tagOrder: string[];
+  tagChanges: Array<{ block: number; from: string; to: string }>;
+}
+
+/**
+ * The geometry's spools in the same shape the topology walk returns, so the
+ * two are interchangeable at the point of use.
+ *
+ * Note what this CANNOT produce, and the vision walk can: an invented tag. The
+ * blocks come from the tags the sheet itself prints, so every spool row has a
+ * printed name and every printed tag with welds gets a row. The walk mints
+ * `spool-<n>` whenever it finds more spools than tags, which put an invented
+ * row in the database claiming welds a real spool also claimed.
+ */
+function spoolsFromGeometry(
+  geo: SheetGeometrySpools
+): { spools: Array<{ index: number; spoolTag: string; weldNumbers: number[] }>; weldToSpoolTag: Map<number, string> } {
+  const weldToSpoolTag = new Map<number, string>();
+  for (const [no, tag] of Object.entries(geo.assignment)) weldToSpoolTag.set(Number(no), tag);
+  const spools = geo.tagOrder
+    .map((spoolTag, i) => ({
+      index: i + 1,
+      spoolTag,
+      weldNumbers: [...weldToSpoolTag.entries()].filter(([, t]) => t === spoolTag).map(([no]) => no).sort((a, b) => a - b),
+    }))
+    .filter((s) => s.weldNumbers.length > 0);
+  return { spools, weldToSpoolTag };
+}
 
 function pageRangeToNumbers(range: PageRange): number[] {
   const numbers: number[] = [];
@@ -461,6 +508,50 @@ export function spoolProblems(r: IsoSheetResult): string[] {
   return problems;
 }
 
+/**
+ * What the sheet pass got wrong about the WELD LIST, judged against the flags
+ * the geometry found on the drawing.
+ *
+ * This check only became possible once the geometry was wired in, and it is
+ * worth more than every boundary check it replaces. Weld DETECTION off the
+ * drawing is exact -- 92 flags against 92 hand-verified welds across the
+ * reference ISO, no miscounts and no duplicates -- and the contact sheet's
+ * numbers are accepted only when they come back a complete, unduplicated 1..N.
+ * So on a geometry-numbered sheet there is a KNOWN right answer for which weld
+ * IDs exist, and the read can be checked against it rather than against itself.
+ *
+ * Vision has got this wrong in exactly the ways this catches: it once reported
+ * weld 1 twice on sheet 4 and returned 17 rows for 16 welds. A weld invented or
+ * dropped here is not a cosmetic error -- the weld list is where the TYPE comes
+ * from, and the type is what tells the cut finder about field welds.
+ */
+export function weldListProblems(r: IsoSheetResult, drawnWeldNos: number[]): string[] {
+  const problems: string[] = [];
+  const read = asArray(r.welds).map((w) => Number(w.weld_no)).filter(Number.isFinite);
+  if (read.length === 0 || drawnWeldNos.length === 0) return problems;
+
+  const drawn = new Set(drawnWeldNos);
+  const repeated = [...new Set(read.filter((no, i) => read.indexOf(no) !== i))];
+  if (repeated.length > 0) {
+    problems.push(
+      `you recorded weld ${repeated.join(", ")} more than once. Each weld appears exactly once in the WELD LIST table; a repeat means one mark was read twice from two overlapping tiles.`
+    );
+  }
+  const invented = [...new Set(read.filter((no) => !drawn.has(no)))];
+  if (invented.length > 0) {
+    problems.push(
+      `you recorded weld ${invented.join(", ")}, but this sheet's weld marks are numbered ${drawnWeldNos[0]}..${drawnWeldNos[drawnWeldNos.length - 1]} and those are not among them. A square BOM item balloon is not a weld flag -- weld flags are HEXAGONAL.`
+    );
+  }
+  const missed = drawnWeldNos.filter((no) => !read.includes(no));
+  if (missed.length > 0) {
+    problems.push(
+      `this sheet has ${drawnWeldNos.length} welds and you recorded ${new Set(read).size}: weld ${missed.join(", ")} is missing. Every row of the WELD LIST table is a weld on this sheet -- record one entry per row, taking its Type from the TYPE column.`
+    );
+  }
+  return problems;
+}
+
 // Keeps the FIRST occurrence, so a weld read from a tile that also carries
 // its NDE codes is not replaced by a barer duplicate from the next tile.
 function dedupeBy<T>(rows: T[], key: (row: T) => string): T[] {
@@ -481,187 +572,24 @@ function dedupeBy<T>(rows: T[], key: (row: T) => string): T[] {
 // yielded only a footer watermark, nothing else). Page images are sent to
 // Claude alongside whatever text does exist, rather than relying on text
 // extraction alone like the other document types.
-export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProgress, pdfBuffer) => {
-  const client = new Anthropic({ apiKey });
-  const pageList = pages.map((p) => ({ pageNumber: p.pageNumber, pageText: p.pageText }));
-  const fullText = buildNumberedText(pageList);
-
-  const allPageNumbers = pages.map((p) => p.pageNumber);
-  const renderedPages = pdfBuffer ? await renderPdfPages(pdfBuffer, allPageNumbers) : [];
-  const imageByPage = new Map(renderedPages.map((r) => [r.pageNumber, r.pngBase64]));
-  // Weld marks are ~10 px diamonds on a whole A1 sheet once the API has
-  // downsampled it to 1568 px on the long edge, which is far too small to
-  // read "SW" over "01" out of -- item-number balloons are just as small.
-  // Same problem, and same fix, as the P&ID's valve symbols: send
-  // overlapping close-up tiles alongside the full sheet so small annotation
-  // arrives at a legible size. See pdfImages.ts.
-  const renderedTiles = pdfBuffer ? await renderPdfPageTiles(pdfBuffer, allPageNumbers) : [];
-  const tilesByPage = new Map<number, typeof renderedTiles>();
-  for (const tile of renderedTiles) {
-    const list = tilesByPage.get(tile.pageNumber) ?? [];
-    list.push(tile);
-    tilesByPage.set(tile.pageNumber, list);
-  }
-
-  const locate = await callWithRetry(() =>
-    callTool<LocateIsoResult>(client, {
-      tool: LOCATE_ISO_SECTIONS_TOOL,
-      systemPrompt: SYSTEM_PROMPT,
-      userText:
-        `${fullText}\n\nThe attached page image(s) are the actual drawing content -- use them as the primary source, the text above (if any) is often just a footer/watermark. ` +
-        `Identify every isometric SHEET via the locate_iso_sheets tool call: one entry per sheet, each with its own single-page range. ` +
-        `Sheets of a multi-sheet drawing repeat the same drawing number and differ only by the title block's "SHEET n OF m" -- read that field on each page and return a separate entry per page, never one entry spanning them.`,
-      maxTokens: 8000,
-      useThinking: true,
-      images: renderedPages.map((r) => r.pngBase64),
-    })
-  );
-
-  if (!locate.sheets || locate.sheets.length === 0) {
-    throw new Error("locate_iso_sheets found no drawings in this document.");
-  }
-
-  // Guard: sheets of a multi-sheet drawing share one drawing number and
-  // differ only by "SHEET n OF m", so locate can collapse them into a single
-  // multi-page entry -- which then extracts only the first sheet's BOM and
-  // silently loses the rest (seen on a real 3-sheet drawing: 11 of 45 rows).
-  // Any entry spanning several pages is split into one entry per page, so
-  // every sheet is always read on its own.
-  const locatedSheets = locate.sheets.flatMap((sheet) => {
-    const numbers = pageRangeToNumbers(sheet.pages).filter((n) => imageByPage.has(n) || pageList.some((p) => p.pageNumber === n));
-    if (numbers.length <= 1) return [sheet];
-    return numbers.map((n) => ({ ...sheet, pages: { start: n, end: n } as PageRange }));
-  });
-  onProgress?.({ phase: "locate", current: 1, total: 1 });
-
-  const allSheets: Array<{ drawing_number: string; pageNumber: number; result: IsoSheetResult }> = [];
-  for (let i = 0; i < locatedSheets.length; i++) {
-    const sheet = locatedSheets[i];
-    const sheetText = sliceText(pageList, sheet.pages);
-    const sheetImages = pageRangeToNumbers(sheet.pages)
-      .map((n) => imageByPage.get(n))
-      .filter((img): img is string => Boolean(img));
-    const sheetTiles = pageRangeToNumbers(sheet.pages).flatMap((n) => tilesByPage.get(n) ?? []);
-
-    const imageNote = buildSheetImageNote(sheetTiles.length, sheetTiles[0]?.cols, sheetTiles[0]?.rows);
-    const sheetImageSet = [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)];
-
-    // PASS 1 -- where the spools break, asked on its own before anything else.
-    // Finding the valves is a sweep of the drawing; it does not survive being
-    // one field among forty of a full sheet extraction, which is how a busy
-    // sheet ended up cut at evenly spaced weld numbers instead of at its
-    // valves. Nothing else is asked for here.
-    const boundaries = await callWithRetry(() =>
-      callTool<IsoBoundariesResult>(client, {
-        tool: ISO_SPOOL_BOUNDARIES_TOOL,
-        systemPrompt: SYSTEM_PROMPT,
-        userText: buildSpoolBoundaryPrompt({
-          drawingNumber: sheet.drawing_number,
-          sheetLabel: sheet.sheet,
-          pageNumber: sheet.pages.start,
-          imageNote,
-        }),
-        maxTokens: 16000,
-        useThinking: true,
-        images: sheetImageSet,
-      })
-    );
-
-    const boundaryValves = boundaryValvesOf(boundaries);
-    const { located: locatedBoundaries, weldNumbersUsable } = locatedBoundariesOf(boundaries);
-
-    // What pass 1 is good at is saying WHICH valves break the sheet; tying each
-    // to a weld number is a different job, done against the weld list that pass
-    // 2 is reading anyway. So pass 2 is always given the valves by name and
-    // asked to place them -- and pass 1's own weld numbers are passed on only
-    // when they survive `locatedBoundariesOf`'s checks.
-    const boundaryNote = buildBoundaryNote(boundaries, locatedBoundaries, weldNumbersUsable);
-
-    const buildUserText = (retryNote: string) =>
-      buildIsoSheetPrompt({
-        sheetText,
-        drawingNumber: sheet.drawing_number,
-        sheetLabel: sheet.sheet,
-        pageNumber: sheet.pages.start,
-        tileCount: sheetTiles.length,
-        tileCols: sheetTiles[0]?.cols,
-        tileRows: sheetTiles[0]?.rows,
-        boundaryNote,
-        retryNote,
-      });
-
-    const sheetRead = await callWithRetry(() =>
-      callTool<IsoSheetResult>(client, {
-        tool: ISO_SHEET_TOOL,
-        systemPrompt: SYSTEM_PROMPT,
-        userText: buildUserText(""),
-        maxTokens: 32000,
-        useThinking: true,
-        images: sheetImageSet,
-      })
-    );
-
-    // Pass 1 looked for the boundaries and nothing else, so its answer stands
-    // over whatever the sheet pass reported alongside forty other fields --
-    // but only where it actually found any. Same for the printed spool tags,
-    // which both passes read.
-    const result: IsoSheetResult = {
-      ...sheetRead,
-      // Pass 1 places the cuts only where it placed every one of them at a
-      // distinct weld; otherwise pass 2's placement stands, since pass 2 was
-      // told which valves to place and read the weld list to do it.
-      spool_boundaries: weldNumbersUsable ? locatedBoundaries : sheetRead.spool_boundaries,
-      spool_tags: readSpoolTags(sheetRead.spool_tags).length > 0 ? sheetRead.spool_tags : boundaries.spool_tags,
-    };
-
-    // Retry the sheet once when its own printed schedule contradicts the read.
-    // Welds are re-taken from the retry as a set (never merged with the first
-    // attempt's), since comes_after_weld and after_weld only mean anything
-    // against the same weld IDs they were read against.
-    let finalResult = result;
-    const problems = spoolProblems(result);
-    if (problems.length > 0) {
-      // The sheet's own BOM already says which valves exist on it. Quoting
-      // those rows back turns "find the valves" into "find these specific
-      // valves", and the line size separates main-run valves (a boundary
-      // each, where flanged both sides) from small-bore branch ones (never).
-      const valveRows = asArray(result.bom_items).filter((i) => /valve/i.test(`${i.description ?? ""} ${i.component_type ?? ""}`));
-      const valveNote = valveRows.length
-        ? `\n\nThe BOM you just read from this sheet lists these valves${result.size ? ` (the line itself is ${result.size})` : ""}:\n` +
-          valveRows.map((v) => `  - ${v.quantity ? `${v.quantity}x ` : ""}${v.size ?? "?"} ${v.description ?? ""}${v.item_no ? ` (PT NO ${v.item_no})` : ""}`).join("\n") +
-          `\nEvery one of these is drawn somewhere on this sheet. The ones at the LINE's own size sit on the main run -- each of those, where it is flanged on both sides and has pipe continuing past it, is a boundary. Smaller ones are branch/small-bore valves and are not.`
-        : "";
-
-      const retryResult = await callWithRetry(() =>
-        callTool<IsoSheetResult>(client, {
-          tool: ISO_SHEET_TOOL,
-          systemPrompt: SYSTEM_PROMPT,
-          userText: buildUserText(
-            `\n\nRETRY -- READ CAREFULLY. Your previous attempt on this exact sheet has ${problems.length === 1 ? "a problem" : `${problems.length} problems`} that the sheet itself contradicts:\n` +
-              problems.map((p, i) => `(${i + 1}) ${p}`).join("\n") +
-              valveNote +
-              `\n\nRe-read the drawing and fix these. Work from the valve symbols and FW ticks you can actually see on the tiles -- name each one in evidence -- rather than inferring boundaries from the weld numbering.`
-          ),
-          maxTokens: 32000,
-          useThinking: true,
-          images: sheetImageSet,
-        })
-      );
-      // Judge the retry as it would actually be used -- pass 1's boundaries
-      // still standing over it -- and keep it only if it is a cleaner read.
-      const retryCandidate: IsoSheetResult = {
-        ...result,
-        spool_tags: readSpoolTags(retryResult.spool_tags).length > 0 ? retryResult.spool_tags : result.spool_tags,
-        spool_boundaries: weldNumbersUsable ? locatedBoundaries : retryResult.spool_boundaries,
-        welds: retryResult.welds,
-      };
-      if (spoolProblems(retryCandidate).length < problems.length) finalResult = retryCandidate;
-    }
-
-    allSheets.push({ drawing_number: sheet.drawing_number, pageNumber: sheet.pages.start, result: finalResult });
-    onProgress?.({ phase: "sheet", current: i + 1, total: locatedSheets.length, detail: `${sheet.drawing_number}${sheet.sheet ? ` sheet ${sheet.sheet}` : ""}` });
-  }
-
+/**
+ * Turn the per-sheet vision results into tag rows.
+ *
+ * Pure, and exported, so the expensive half can be replayed. A full ISO
+ * extraction is the costliest thing here -- 14 vision calls, ~$9 on the
+ * reference drawing -- and its output is saved as `rawJson`. Without this
+ * split, re-importing those rows meant paying for the vision again.
+ */
+export function buildIsoTags(
+  allSheets: Array<{ drawing_number: string; pageNumber: number; result: IsoSheetResult }>,
+  /**
+   * What the drawing's own geometry made of each sheet's spools, where it
+   * resolved. It WINS over the vision walk on a sheet it resolved, and is
+   * absent everywhere else, so a document extracted before this existed still
+   * rebuilds exactly as it did.
+   */
+  geometry?: SheetGeometrySpools[]
+): TagDraft[] {
   const tags: TagDraft[] = [];
   const n = normalizeCellValue; // collapse any embedded newlines to " / "
   for (const { drawing_number, pageNumber, result } of allSheets) {
@@ -684,10 +612,18 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     // the walk here assembles those answers into spools, mapped onto the
     // sheet's own printed "PIPE SPOOLS" tags (spool_tags) in order.
     const weldByNo = new Map(welds.map((w) => [Number(w.weld_no), w]));
-    const boundaryWelds = resolveBoundaryWelds(welds, result.spool_boundaries);
-    const weldTopology = buildWeldTopology(welds, boundaryWelds);
     const spoolTags = readSpoolTags(result.spool_tags);
-    const { spools: resolvedSpools, weldToSpoolTag } = buildSpoolsFromWeldTopology(weldTopology, spoolTags);
+
+    // The drawing's answer where it has one. Measured on two revisions of the
+    // reference ISO: the geometry places all 18 spools on both, the vision walk
+    // places 2. A sheet the geometry REFUSED (its cut count disagreeing with
+    // the printed spool count) falls through to the walk rather than being
+    // guessed at, which is why both paths are still here.
+    const geo = geometry?.find((g) => g.page === pageNumber && g.trusted);
+    const boundaryWelds = geo ? new Set(geo.cuts) : resolveBoundaryWelds(welds, result.spool_boundaries);
+    const { spools: resolvedSpools, weldToSpoolTag } = geo
+      ? spoolsFromGeometry(geo)
+      : buildSpoolsFromWeldTopology(buildWeldTopology(welds, resolveBoundaryWelds(welds, result.spool_boundaries)), spoolTags);
 
     // Deterministic, not asked of the model: a spool's closing weld tells a
     // reviewer why it ends there without needing separate free-text from a
@@ -695,8 +631,13 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     // else closing a spool is a valve.
     function closingNote(spool: (typeof resolvedSpools)[number], isLastSpool: boolean): string | undefined {
       const lastWeldNo = spool.weldNumbers[spool.weldNumbers.length - 1];
+      // Read off the drawing, so say what was seen there -- the flange pair and
+      // the welds either side of it, or the field weld. That is what lets a
+      // reviewer check the cut without reopening the sheet.
+      const fromDrawing = geo?.evidence.find((e) => e.cut === lastWeldNo)?.why;
+      if (fromDrawing) return fromDrawing;
       const lastWeld = lastWeldNo != null ? weldByNo.get(lastWeldNo) : undefined;
-      if (!lastWeld) return undefined;
+      if (!lastWeld) return isLastSpool && geo ? "runs to the end of the sheet" : undefined;
       if (isFieldWeld(lastWeld.weld_type)) return `forced 6000mm cut, closes at field weld FW-${lastWeld.weld_no}`;
       if (boundaryWelds.has(Number(lastWeld.weld_no))) {
         // The model's own evidence for this boundary, where it gave any --
@@ -766,6 +707,10 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
             spool_index: spool.index,
             weld_numbers: spool.weldNumbers,
             note: closingNote(spool, spool.index === resolvedSpools.length),
+            // Which half of the pipeline decided this row's membership. A
+            // reviewer checking a spool needs to know whether to go and look at
+            // the drawing or at the model's evidence string.
+            from_drawing: geo ? true : undefined,
           },
         });
       }
@@ -846,5 +791,360 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
     }
   }
 
-  return { rawJson: { sheets: allSheets }, tags };
+  return tags;
+}
+
+export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProgress, pdfBuffer) => {
+  const client = new Anthropic({ apiKey });
+  const pageList = pages.map((p) => ({ pageNumber: p.pageNumber, pageText: p.pageText }));
+  const fullText = buildNumberedText(pageList);
+
+  const allPageNumbers = pages.map((p) => p.pageNumber);
+  const renderedPages = pdfBuffer ? await renderPdfPages(pdfBuffer, allPageNumbers) : [];
+  const imageByPage = new Map(renderedPages.map((r) => [r.pageNumber, r.pngBase64]));
+  // Weld marks are ~10 px diamonds on a whole A1 sheet once the API has
+  // downsampled it to 1568 px on the long edge, which is far too small to
+  // read "SW" over "01" out of -- item-number balloons are just as small.
+  // Same problem, and same fix, as the P&ID's valve symbols: send
+  // overlapping close-up tiles alongside the full sheet so small annotation
+  // arrives at a legible size. See pdfImages.ts.
+  const renderedTiles = pdfBuffer ? await renderPdfPageTiles(pdfBuffer, allPageNumbers) : [];
+  const tilesByPage = new Map<number, typeof renderedTiles>();
+  for (const tile of renderedTiles) {
+    const list = tilesByPage.get(tile.pageNumber) ?? [];
+    list.push(tile);
+    tilesByPage.set(tile.pageNumber, list);
+  }
+
+  const locate = await callWithRetry(() =>
+    callTool<LocateIsoResult>(client, {
+      tool: LOCATE_ISO_SECTIONS_TOOL,
+      systemPrompt: SYSTEM_PROMPT,
+      userText:
+        `${fullText}\n\nThe attached page image(s) are the actual drawing content -- use them as the primary source, the text above (if any) is often just a footer/watermark. ` +
+        `Identify every isometric SHEET via the locate_iso_sheets tool call: one entry per sheet, each with its own single-page range. ` +
+        `Sheets of a multi-sheet drawing repeat the same drawing number and differ only by the title block's "SHEET n OF m" -- read that field on each page and return a separate entry per page, never one entry spanning them.`,
+      maxTokens: 8000,
+      useThinking: true,
+      images: renderedPages.map((r) => r.pngBase64),
+    })
+  );
+
+  if (!locate.sheets || locate.sheets.length === 0) {
+    throw new Error("locate_iso_sheets found no drawings in this document.");
+  }
+
+  // Guard: sheets of a multi-sheet drawing share one drawing number and
+  // differ only by "SHEET n OF m", so locate can collapse them into a single
+  // multi-page entry -- which then extracts only the first sheet's BOM and
+  // silently loses the rest (seen on a real 3-sheet drawing: 11 of 45 rows).
+  // Any entry spanning several pages is split into one entry per page, so
+  // every sheet is always read on its own.
+  const locatedSheets = locate.sheets.flatMap((sheet) => {
+    const numbers = pageRangeToNumbers(sheet.pages).filter((n) => imageByPage.has(n) || pageList.some((p) => p.pageNumber === n));
+    if (numbers.length <= 1) return [sheet];
+    return numbers.map((n) => ({ ...sheet, pages: { start: n, end: n } as PageRange }));
+  });
+  onProgress?.({ phase: "locate", current: 1, total: 1 });
+
+  // THE FLAG PRE-PASS. Every weld mark and its number flag comes off the
+  // drawing's own vector paths -- exact on all five sheets of the reference
+  // ISO, 92 flags against 92 hand-verified welds, which vision never managed
+  // (it once reported one weld twice and produced 17 rows for 16). Free.
+  const sheetPages = locatedSheets.map((s) => s.pages.start);
+  const marksByPage = pdfBuffer ? await locateWeldFlags(pdfBuffer, sheetPages) : new Map();
+
+  // The number INSIDE each flag is the one thing geometry cannot get: the CAD
+  // export outlines its text, so the label is vector paths and getTextContent
+  // returns nothing. One contact sheet for the whole document answers it --
+  // every flag cut out and blown up, nothing to find, just short labels to
+  // read. Thinking is off deliberately: this is reading, not reasoning.
+  const flagLabels = new Map<string, string>();
+  const regionsByPage: Array<{ pageNumber: number; regions: FlagRegion[] }> = [];
+  for (const page of sheetPages) {
+    const marks = marksByPage.get(page);
+    if (marks && marks.hits.length + marks.untraced.length > 0) regionsByPage.push({ pageNumber: page, regions: flagRegions(page, marks) });
+  }
+  if (pdfBuffer && regionsByPage.length > 0) {
+    const cellCount = regionsByPage.reduce((n, p) => n + p.regions.length, 0);
+    try {
+      const png = await renderMultiPageContactSheet(pdfBuffer, regionsByPage);
+      if (png) {
+        const read = await callTool<{ flags?: Array<{ cell: string | number; label: string }> }>(client, {
+          tool: ISO_WELD_FLAGS_TOOL,
+          systemPrompt: SYSTEM_PROMPT,
+          userText:
+            `Each box is one weld's number flag cut from an isometric drawing. The cell label is printed under each box as "#2-1", "#2-7", "#5-3", "#1-u1" and so on -- the first part is the drawing sheet it came from, the rest its position in this grid.\n` +
+            `Read the label inside every hexagon exactly as printed, keeping the letter prefix (BW buttweld, FW field weld, TW tapweld, TH threaded, SW socketweld).\n` +
+            `There are ${cellCount} cells; return ${cellCount} entries, giving each cell's printed label in the "cell" field exactly as shown (e.g. "2-1"). Stray line fragments clipping into a box are not part of the weld label.`,
+          maxTokens: 8000,
+          useThinking: false,
+          images: [png],
+        });
+        for (const f of asArray(read.flags)) flagLabels.set(String(f.cell).trim(), f.label);
+      }
+    } catch {
+      // Losing the numbering costs the geometric spools and nothing else --
+      // the vision passes below still run and still answer. Never fatal.
+    }
+    onProgress?.({ phase: "weld flags", current: 1, total: 1, detail: `${flagLabels.size}/${cellCount} labels` });
+  }
+
+  // A page whose labels came back as a complete, unduplicated 1..N has a
+  // numbering the geometry can work from. Anything else -- a gap, a repeat, a
+  // blank -- means the read is not safe to build on, and that page keeps the
+  // vision pipeline in full, boundary pass included.
+  const weldNumberOf = (page: number) => (i: number) => {
+    const n = Number(String(flagLabels.get(`${page}-${i + 1}`) ?? "").replace(/^[A-Za-z\s]+/, ""));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const geometryNumbered = new Set<number>();
+  /** The weld IDs the drawing itself carries on a page, where they were read. */
+  const drawnWeldNos = new Map<number, number[]>();
+  for (const { pageNumber, regions } of regionsByPage) {
+    if (!numberingComplete(regions.map((r) => flagLabels.get(r.label)), regions.length)) continue;
+    geometryNumbered.add(pageNumber);
+    drawnWeldNos.set(
+      pageNumber,
+      regions
+        .map((r) => Number(String(flagLabels.get(r.label) ?? "").replace(/^[A-Za-z\s]+/, "")))
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b)
+    );
+  }
+
+  // WHICH TAG NAMES WHICH PIECE. The cuts say where a sheet breaks; they do
+  // not say what each piece is CALLED. Mapping the printed tags onto the blocks
+  // in sorted order is right on 13 of the reference ISO's 15 resolvable tags
+  // and wrong on sheet 4, whose tag numbers are not in run order -- its middle
+  // 6000mm piece is N-14, and sorted order calls it N-13. A spool named N-13
+  // when the drawing calls it N-14 is the wrong piece of steel on the truck.
+  //
+  // The tag's own LEADER settles it, and tracing is free; only the string in
+  // the box needs reading. One more small contact sheet, and it can only run
+  // after the flags, since a leader is placed by the welds either side of where
+  // it lands.
+  const tagLabels = new Map<string, string>();
+  if (pdfBuffer && geometryNumbered.size > 0) {
+    const tagRegionsByPage: Array<{ pageNumber: number; regions: FlagRegion[] }> = [];
+    for (const page of sheetPages) {
+      const marks = marksByPage.get(page);
+      if (!marks || !geometryNumbered.has(page)) continue;
+      const regions = await spoolTagRegions(pdfBuffer, page, marks, weldNumberOf(page));
+      if (regions.length > 0) tagRegionsByPage.push({ pageNumber: page, regions });
+    }
+    if (tagRegionsByPage.length > 0) {
+      const cellCount = tagRegionsByPage.reduce((n, p) => n + p.regions.length, 0);
+      try {
+        const png = await renderMultiPageContactSheet(pdfBuffer, tagRegionsByPage);
+        if (png) {
+          const read = await callTool<{ tags?: Array<{ cell: string | number; label: string }> }>(client, {
+            tool: ISO_SPOOL_TAGS_TOOL,
+            systemPrompt: SYSTEM_PROMPT,
+            userText:
+              `Each box is one PIPE SPOOL tag cut from an isometric drawing -- the boxed tag printed on the drawing with a leader pointing at the piece of pipe it names. The cell label is printed under each box as "#s4-1", "#s4-2" and so on; the number after the "s" is the drawing sheet it came from.\n` +
+              `Read the tag inside every box exactly as printed. There are ${cellCount} cells; return ${cellCount} entries, giving each cell's printed label in the "cell" field exactly as shown (e.g. "s4-2").`,
+            maxTokens: 8000,
+            useThinking: false,
+            images: [png],
+          });
+          for (const t of asArray(read.tags)) tagLabels.set(String(t.cell).trim(), t.label);
+        }
+      } catch {
+        // Losing this costs the tag NAMES on a sheet whose tags are out of run
+        // order, and nothing else: sorted order still names every block once.
+      }
+      onProgress?.({ phase: "spool tags", current: 1, total: 1, detail: `${tagLabels.size}/${cellCount} tags` });
+    }
+  }
+
+  const geometry: SheetGeometrySpools[] = [];
+  const allSheets: Array<{ drawing_number: string; pageNumber: number; result: IsoSheetResult }> = [];
+  for (let i = 0; i < locatedSheets.length; i++) {
+    const sheet = locatedSheets[i];
+    const sheetText = sliceText(pageList, sheet.pages);
+    const sheetImages = pageRangeToNumbers(sheet.pages)
+      .map((n) => imageByPage.get(n))
+      .filter((img): img is string => Boolean(img));
+    const sheetTiles = pageRangeToNumbers(sheet.pages).flatMap((n) => tilesByPage.get(n) ?? []);
+
+    const imageNote = buildSheetImageNote(sheetTiles.length, sheetTiles[0]?.cols, sheetTiles[0]?.rows);
+    const sheetImageSet = [...sheetImages, ...sheetTiles.map((t) => t.pngBase64)];
+
+    // PASS 1 -- where the spools break, asked on its own before anything else.
+    // Finding the valves is a sweep of the drawing; it does not survive being
+    // one field among forty of a full sheet extraction, which is how a busy
+    // sheet ended up cut at evenly spaced weld numbers instead of at its
+    // valves. Nothing else is asked for here.
+    //
+    // IT ONLY RUNS WHERE THE GEOMETRY CANNOT ANSWER. Where the flag pre-pass
+    // produced a complete weld numbering, the cut finder places the boundaries
+    // off the drawing's own flange pairs and field welds -- 18 of 18 on two
+    // revisions of the reference ISO, against this pass's 6 of 12 -- so paying
+    // for a worse answer and then discarding it is pure cost. This pass is
+    // still the fallback, and still the whole answer on a sheet whose flags
+    // could not be read, which is why it is kept rather than deleted.
+    const useGeometry = geometryNumbered.has(sheet.pages.start);
+    const boundaries: IsoBoundariesResult = useGeometry
+      ? {}
+      : await callWithRetry(() =>
+          callTool<IsoBoundariesResult>(client, {
+            tool: ISO_SPOOL_BOUNDARIES_TOOL,
+            systemPrompt: SYSTEM_PROMPT,
+            userText: buildSpoolBoundaryPrompt({
+              drawingNumber: sheet.drawing_number,
+              sheetLabel: sheet.sheet,
+              pageNumber: sheet.pages.start,
+              imageNote,
+            }),
+            maxTokens: 16000,
+            useThinking: true,
+            images: sheetImageSet,
+          })
+        );
+
+    const boundaryValves = boundaryValvesOf(boundaries);
+    const { located: locatedBoundaries, weldNumbersUsable } = locatedBoundariesOf(boundaries);
+
+    // What pass 1 is good at is saying WHICH valves break the sheet; tying each
+    // to a weld number is a different job, done against the weld list that pass
+    // 2 is reading anyway. So pass 2 is always given the valves by name and
+    // asked to place them -- and pass 1's own weld numbers are passed on only
+    // when they survive `locatedBoundariesOf`'s checks.
+    const boundaryNote = buildBoundaryNote(boundaries, locatedBoundaries, weldNumbersUsable);
+
+    const buildUserText = (retryNote: string) =>
+      buildIsoSheetPrompt({
+        sheetText,
+        drawingNumber: sheet.drawing_number,
+        sheetLabel: sheet.sheet,
+        pageNumber: sheet.pages.start,
+        tileCount: sheetTiles.length,
+        tileCols: sheetTiles[0]?.cols,
+        tileRows: sheetTiles[0]?.rows,
+        boundaryNote,
+        retryNote,
+      });
+
+    const sheetRead = await callWithRetry(() =>
+      callTool<IsoSheetResult>(client, {
+        tool: ISO_SHEET_TOOL,
+        systemPrompt: SYSTEM_PROMPT,
+        userText: buildUserText(""),
+        maxTokens: 32000,
+        useThinking: true,
+        images: sheetImageSet,
+      })
+    );
+
+    // Pass 1 looked for the boundaries and nothing else, so its answer stands
+    // over whatever the sheet pass reported alongside forty other fields --
+    // but only where it actually found any. Same for the printed spool tags,
+    // which both passes read.
+    const result: IsoSheetResult = {
+      ...sheetRead,
+      // Pass 1 places the cuts only where it placed every one of them at a
+      // distinct weld; otherwise pass 2's placement stands, since pass 2 was
+      // told which valves to place and read the weld list to do it.
+      spool_boundaries: weldNumbersUsable ? locatedBoundaries : sheetRead.spool_boundaries,
+      spool_tags: readSpoolTags(sheetRead.spool_tags).length > 0 ? sheetRead.spool_tags : boundaries.spool_tags,
+    };
+
+    // Retry the sheet once when its own printed schedule contradicts the read.
+    // Welds are re-taken from the retry as a set (never merged with the first
+    // attempt's), since comes_after_weld and after_weld only mean anything
+    // against the same weld IDs they were read against.
+    let finalResult = result;
+    // WHAT IS WORTH A RETRY DEPENDS ON WHO ANSWERS THE SPOOL QUESTION.
+    // Where the geometry has this sheet, every one of spoolProblems'
+    // complaints is about a boundary read that is no longer used -- and a
+    // retry is a second whole sheet pass at 32k tokens with the full image
+    // set. Paying that to improve an answer that gets discarded is waste.
+    // What still matters from this pass is the WELD LIST, and the geometry
+    // supplies a known-exact set of weld IDs to check it against, which
+    // nothing could do before.
+    const drawn = drawnWeldNos.get(sheet.pages.start) ?? [];
+    const judge = (r: IsoSheetResult) => (useGeometry ? weldListProblems(r, drawn) : spoolProblems(r));
+    const problems = judge(result);
+    if (problems.length > 0) {
+      // The sheet's own BOM already says which valves exist on it. Quoting
+      // those rows back turns "find the valves" into "find these specific
+      // valves", and the line size separates main-run valves (a boundary
+      // each, where flanged both sides) from small-bore branch ones (never).
+      // Not needed where the geometry placed the boundaries: the retry is
+      // then about the weld list, and the valves have nothing to do with it.
+      const valveRows = useGeometry
+        ? []
+        : asArray(result.bom_items).filter((i) => /valve/i.test(`${i.description ?? ""} ${i.component_type ?? ""}`));
+      const valveNote = valveRows.length
+        ? `\n\nThe BOM you just read from this sheet lists these valves${result.size ? ` (the line itself is ${result.size})` : ""}:\n` +
+          valveRows.map((v) => `  - ${v.quantity ? `${v.quantity}x ` : ""}${v.size ?? "?"} ${v.description ?? ""}${v.item_no ? ` (PT NO ${v.item_no})` : ""}`).join("\n") +
+          `\nEvery one of these is drawn somewhere on this sheet. The ones at the LINE's own size sit on the main run -- each of those, where it is flanged on both sides and has pipe continuing past it, is a boundary. Smaller ones are branch/small-bore valves and are not.`
+        : "";
+
+      const retryResult = await callWithRetry(() =>
+        callTool<IsoSheetResult>(client, {
+          tool: ISO_SHEET_TOOL,
+          systemPrompt: SYSTEM_PROMPT,
+          userText: buildUserText(
+            `\n\nRETRY -- READ CAREFULLY. Your previous attempt on this exact sheet has ${problems.length === 1 ? "a problem" : `${problems.length} problems`} that the sheet itself contradicts:\n` +
+              problems.map((p, i) => `(${i + 1}) ${p}`).join("\n") +
+              valveNote +
+              (useGeometry
+                ? `\n\nThis sheet's weld marks have been located on the drawing itself, and there are ${drawn.length} of them, numbered ${drawn.join(", ")}. That set is exact. Re-read the WELD LIST table and record one entry per row, taking its Type from the TYPE column (never the CATEGORY column) and its size from the ND column.`
+                : `\n\nRe-read the drawing and fix these. Work from the valve symbols and FW ticks you can actually see on the tiles -- name each one in evidence -- rather than inferring boundaries from the weld numbering.`)
+          ),
+          maxTokens: 32000,
+          useThinking: true,
+          images: sheetImageSet,
+        })
+      );
+      // Judge the retry as it would actually be used -- pass 1's boundaries
+      // still standing over it -- and keep it only if it is a cleaner read.
+      const retryCandidate: IsoSheetResult = {
+        ...result,
+        spool_tags: readSpoolTags(retryResult.spool_tags).length > 0 ? retryResult.spool_tags : result.spool_tags,
+        spool_boundaries: weldNumbersUsable ? locatedBoundaries : retryResult.spool_boundaries,
+        welds: retryResult.welds,
+      };
+      if (judge(retryCandidate).length < problems.length) finalResult = retryCandidate;
+    }
+
+    // THE DRAWING'S OWN ANSWER, now that the weld list is in. The cut finder
+    // needs the model's half -- a weld's TYPE says whether it is a field weld,
+    // and its bore says whether two welds are a pair across one joint -- and
+    // supplies everything else itself. Free: no image, no call.
+    const marks = marksByPage.get(sheet.pages.start);
+    if (useGeometry && pdfBuffer && marks) {
+      try {
+        const g = await readGeometrySpools({
+          pdf: pdfBuffer,
+          page: sheet.pages.start,
+          marks,
+          welds: asArray(finalResult.welds).map((w) => ({ weldNo: Number(w.weld_no), weldType: w.weld_type, size: w.size })),
+          spoolTags: readSpoolTags(finalResult.spool_tags),
+          weldNumberOf: weldNumberOf(sheet.pages.start),
+          tagLabels,
+        });
+        geometry.push({ ...g, assignment: Object.fromEntries(g.assignment) });
+        onProgress?.({
+          phase: "spool geometry",
+          current: i + 1,
+          total: locatedSheets.length,
+          detail: g.trusted ? `cuts after ${g.cuts.join(", ") || "(none)"}` : `left to the vision read -- ${g.why}`,
+        });
+      } catch {
+        // The vision answer stands for this sheet. Nothing is lost that was
+        // not already there before the geometry existed.
+      }
+    }
+
+    allSheets.push({ drawing_number: sheet.drawing_number, pageNumber: sheet.pages.start, result: finalResult });
+    onProgress?.({ phase: "sheet", current: i + 1, total: locatedSheets.length, detail: `${sheet.drawing_number}${sheet.sheet ? ` sheet ${sheet.sheet}` : ""}` });
+  }
+
+  const tags = buildIsoTags(allSheets, geometry);
+  // The geometry is saved beside the vision half so a re-import replays the
+  // whole answer for nothing -- which is the point of rebuild-iso-tags.ts.
+  return { rawJson: { sheets: allSheets, geometry }, tags };
 };

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignSpools, boltedJoints, flankingWelds, type Bar, type WeldRow } from "./isoSpoolCuts";
+import { assignSpools, boltedJoints, findFlanges, flankingWelds, type Bar, type WeldRow } from "./isoSpoolCuts";
 import type { Pt } from "./isoWeldMarks";
 import { isFieldWeld, isWeldCategory } from "./weldTypes";
 
@@ -181,4 +181,53 @@ test("the ordinary weld types are not field welds", () => {
   for (const t of ["BW", "BUTTWELD", "TW", "TAPWELD", "TH", "THREADED", "SW", "SOCKETWELD", "", null, undefined]) {
     assert.equal(isFieldWeld(t), false, `${String(t)} should not be a field weld`);
   }
+});
+
+// A FLOW ARROW is not a valve, and a valve is not a boundary anyway.
+//
+// The revised reference ISO added flow arrows to the runs. An arrowhead is
+// outlined as a four-point path that crosses itself -- the same signature as
+// the hourglass a gate valve is drawn as -- and it sits, by definition, on the
+// pipe between two welds. The cut finder used to take a self-crossing quad as a
+// boundary candidate in its own right, so on sheet 2 one arrow invented a sixth
+// cut where the sheet prints six spools and needs five, the count check threw
+// the sheet out, and all 27 of its welds went unassigned.
+//
+// The geometry below is the real arrow, read off page 2 of that drawing at
+// (225.8, 780.8), not an approximation of one.
+const FLOW_ARROW = {
+  paint: "stroke" as const,
+  extent: 14.3,
+  points: [
+    { x: 233.0, y: 776.7 },
+    { x: 218.7, y: 782.2 },
+    { x: 223.4, y: 784.9 },
+    { x: 233.0, y: 776.7 },
+  ],
+  bbox: { x0: 218.7, y0: 776.7, x1: 233.0, y1: 784.9 },
+};
+
+test("a flow arrow drawn on the pipe is not a flange", () => {
+  assert.deepEqual(findFlanges([FLOW_ARROW as never]), []);
+});
+
+test("a flow arrow on its own yields no bolted joint, so no cut", () => {
+  // Two arrows on one run would once have paired into a "valve" between them.
+  const second = {
+    ...FLOW_ARROW,
+    points: FLOW_ARROW.points.map((p) => ({ x: p.x + 40, y: p.y - 23 })),
+    bbox: { x0: 258.7, y0: 753.7, x1: 273.0, y1: 761.9 },
+  };
+  assert.deepEqual(boltedJoints(findFlanges([FLOW_ARROW as never, second as never])), []);
+});
+
+test("a boundary needs the FLANGES -- a valve symbol alone is not one", () => {
+  // The bowtie of a gate valve: two triangles meeting at a point, on the pipe.
+  // Recognising it was the old fallback; it must contribute nothing now, because
+  // what ends a spool is the bolted joint, not whatever sits inside it.
+  const bowtie = [
+    { paint: "stroke" as const, extent: 12.7, points: [{ x: 352.4, y: 707.7 }, { x: 346.0, y: 704.1 }, { x: 339.6, y: 715.1 }], bbox: { x0: 339.6, y0: 704.1, x1: 352.4, y1: 715.1 } },
+    { paint: "stroke" as const, extent: 12.7, points: [{ x: 339.6, y: 715.1 }, { x: 346.0, y: 718.8 }, { x: 352.4, y: 707.7 }], bbox: { x0: 339.6, y0: 707.7, x1: 352.4, y1: 718.8 } },
+  ];
+  assert.deepEqual(boltedJoints(findFlanges(bowtie as never[])), []);
 });

@@ -21,6 +21,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/projects">Projects</Link>
           <Link href="/hookup">Instrument Hookup</Link>
           <Link href="/spooling">Spooling</Link>
+          <Link href="/containers">Container check</Link>
           <Link href="/cutting">Cutting Plan</Link>
         </div>
         <div className="flex items-center gap-3 text-sm">

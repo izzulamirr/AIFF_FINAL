@@ -11,18 +11,21 @@ export function SpoolingSelectors({
   projectId,
   drawings,
   drawingId,
+  basePath = "/spooling",
 }: {
   projects: Array<{ id: string; label: string }>;
   projectId: string;
   drawings: Array<{ id: string; label: string }>;
   drawingId: string;
+  /** Which page to navigate within -- the container page reuses these. */
+  basePath?: string;
 }) {
   const router = useRouter();
 
   const go = (nextProject: string, nextDrawing: string) => {
     const params = new URLSearchParams({ project: nextProject });
     if (nextDrawing) params.set("drawing", nextDrawing);
-    router.push(`/spooling?${params.toString()}`);
+    router.push(`${basePath}?${params.toString()}`);
   };
 
   return (

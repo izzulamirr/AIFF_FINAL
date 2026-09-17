@@ -10,7 +10,9 @@
 // A cut is at one of exactly two things (see CLAUDE.md):
 //   1. a FIELD WELD, which is read straight from the weld list, no drawing
 //      needed, and
-//   2. a BOLTED JOINT on the main run, which is found here.
+//   2. a BOLTED JOINT on the main run, which is found here -- by its FLANGES,
+//      never by a valve symbol (see readSpoolCuts for what looking for the
+//      symbol cost).
 //
 // The thing that ends a spool is the BOLTS, not the valve: a spool is what the
 // shop welds up, so it stops wherever the line comes apart with a spanner. That
@@ -46,8 +48,6 @@ export interface SpoolCutResult {
 
 const centre = (p: GeomPath): Pt => ({ x: (p.bbox.x0 + p.bbox.x1) / 2, y: (p.bbox.y0 + p.bbox.y1) / 2 });
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
-const boxW = (p: GeomPath) => p.bbox.x1 - p.bbox.x0;
-const boxH = (p: GeomPath) => p.bbox.y1 - p.bbox.y0;
 
 // A FLANGE is a short bar drawn across the pipe: a small elongated polyline of
 // four corners, usually with the first point repeated to close it. Every flange
@@ -75,23 +75,12 @@ const FACE_TO_FACE_COS = 0.7;
 /** The welds either side of a joint lie in opposite directions from it. */
 const OPPOSED_COS = -0.5;
 
-// A valve symbol is this big on these sheets; a glyph stroke is smaller.
-const VALVE_MIN_PT = 10;
-const VALVE_MAX_PT = 60;
 // A valve sits ON the pipe. The title block and BOM table are full of glyph
 // strokes that make the same shape -- hundreds of them on one sheet -- and the
 // thing that separates them is that none is anywhere near a weld.
 const ON_PIPE_PT = 60;
 // How far from a valve to look for the welds either side of it.
 const FLANK_PT = 90;
-
-/** Does this 4-point path cross itself? An hourglass does; a flange bar does not. */
-function selfCrossing(p: GeomPath): boolean {
-  if (p.points.length !== 4) return false;
-  const [a, b, c, d] = p.points;
-  const side = (o: Pt, q: Pt, r: Pt) => Math.sign((q.x - o.x) * (r.y - o.y) - (q.y - o.y) * (r.x - o.x));
-  return side(a, b, c) !== side(a, b, d) && side(c, d, a) !== side(c, d, b);
-}
 
 export interface Bar {
   at: Pt;
@@ -122,12 +111,31 @@ function edgesOf(p: GeomPath): { long: number; short: number; dir: Pt } {
   return { long, short: Number.isFinite(short) ? short : 0, dir };
 }
 
-function findFlanges(paths: GeomPath[]): Bar[] {
+/**
+ * Does this 4-point path cross itself? A flange bar is a simple quad and does
+ * not; an ARROWHEAD outline does, and on these drawings an arrowhead is close
+ * enough to a bar in size and slenderness to pass every other test here (the
+ * flow arrow on page 2 measures 15.3 long by 5.4 short, a ratio of 2.8). Two of
+ * them on one run, drawn parallel as arrows on a straight pipe are, would pair
+ * into a joint that does not exist.
+ */
+function selfCrossing(p: GeomPath): boolean {
+  if (p.points.length !== 4) return false;
+  const [a, b, c, d] = p.points;
+  const side = (o: Pt, q: Pt, r: Pt) => Math.sign((q.x - o.x) * (r.y - o.y) - (q.y - o.y) * (r.x - o.x));
+  return side(a, b, c) !== side(a, b, d) && side(c, d, a) !== side(c, d, b);
+}
+
+// Exported so the FLOW ARROW case can be pinned: the shape that used to invent
+// a cut has to come back as "not a flange", which is the whole of why the
+// symbol fallbacks are gone.
+export function findFlanges(paths: GeomPath[]): Bar[] {
   const out: Bar[] = [];
   for (const p of paths) {
     if (p.paint !== "stroke") continue;
     // Four corners, give or take the repeated closing point.
     if (p.points.length < 4 || p.points.length > 6) continue;
+    if (selfCrossing(p)) continue;
     const e = edgesOf(p);
     if (e.long < FLANGE_MIN_PT || e.long > FLANGE_MAX_PT) continue;
     if (e.short < 0.01 || e.long / e.short < FLANGE_RATIO) continue;
@@ -214,33 +222,31 @@ export async function readSpoolCuts(
   }
 
   // (2) Bolted joints: a pair of flange bars facing each other. This is the
-  // general case -- it finds a boundary whatever sits between the flanges, a
-  // valve with no drawn symbol included.
+  // ONLY thing looked for, and it is the general case -- it finds a boundary
+  // whatever sits between the flanges, a valve with no drawn symbol included.
+  //
+  // A VALVE SYMBOL IS NOT A BOUNDARY ON ITS OWN, and looking for one was a
+  // real cost. Two symbol fallbacks used to run alongside this -- a
+  // self-crossing quad (the hourglass a gate valve is drawn as) and a pair of
+  // matching triangles -- on the reasoning that a joint might have its flanges
+  // drawn some other way, and that a duplicate candidate costs nothing.
+  // Measured across both the reference ISO and its revision, every one of the
+  // 18 verified cuts is found by the flange pairs, and the two fallbacks
+  // contributed not a single cut of their own: every hit they produced was a
+  // duplicate of a flange pair already found.
+  //
+  // What they did produce is a false positive that lost a whole sheet. The
+  // revised drawing added FLOW ARROWS, and an outlined arrowhead drawn on the
+  // pipe is a self-crossing quad the size of a valve, sitting (by definition)
+  // right on the run between two welds. On sheet 2 that invented a sixth cut
+  // on a sheet that prints six spools and needs five, so the count check threw
+  // the sheet out and 27 welds went unassigned.
+  //
+  // This is the drawing's own rule, which CLAUDE.md already states and which
+  // the fallbacks quietly worked against: a spool ends where the line comes
+  // apart with a spanner, and that is ALWAYS a pair of flange bars, whatever
+  // symbol happens to sit between them.
   const candidates: Pt[] = boltedJoints(findFlanges(geom.paths));
-
-  // Valve symbols as well, for a joint whose flanges are drawn some other way.
-  // A duplicate costs nothing: two candidates at one boundary yield the same
-  // cut number and the set collapses them.
-  for (const p of geom.paths) {
-    if (p.paint !== "stroke" || p.extent < VALVE_MIN_PT || p.extent > VALVE_MAX_PT) continue;
-    if (selfCrossing(p)) candidates.push(centre(p));
-  }
-  const tri = geom.paths.filter((p) => p.paint === "stroke" && p.points.length === 3 && p.extent >= VALVE_MIN_PT && p.extent < 40);
-  const paired = new Set<number>();
-  for (let i = 0; i < tri.length; i++) {
-    if (paired.has(i)) continue;
-    for (let j = i + 1; j < tri.length; j++) {
-      if (paired.has(j)) continue;
-      const a = tri[i];
-      const b = tri[j];
-      if (Math.abs(boxW(a) - boxW(b)) > 1 || Math.abs(boxH(a) - boxH(b)) > 1) continue;
-      if (dist(centre(a), centre(b)) > a.extent * 0.9) continue;
-      paired.add(i);
-      paired.add(j);
-      candidates.push({ x: (centre(a).x + centre(b).x) / 2, y: (centre(a).y + centre(b).y) / 2 });
-      break;
-    }
-  }
 
   const seen = new Set<string>();
   for (const at of candidates) {

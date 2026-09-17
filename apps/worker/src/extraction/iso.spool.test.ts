@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSpoolsFromWeldTopology } from "@easy/shared";
-import { resolveBoundaryWelds, buildWeldTopology, readSpoolTags, spoolProblems, boundaryValvesOf, locatedBoundariesOf } from "./iso";
+import { resolveBoundaryWelds, buildWeldTopology, readSpoolTags, spoolProblems, weldListProblems, buildIsoTags, boundaryValvesOf, locatedBoundariesOf } from "./iso";
 
 type Weld = { weld_no: string; weld_type?: string; size?: string; comes_after_weld?: string; closes_spool?: boolean };
 
@@ -419,4 +419,154 @@ test("a boundary pointing at a weld the sheet does not have is caught", () => {
     ],
   });
   assert.ok(problems.some((p) => /points at weld 99/.test(p)));
+});
+
+// ---------------------------------------------------------------------------
+// THE WELD LIST, CHECKED AGAINST THE DRAWING
+//
+// Weld detection off the geometry is exact -- 92 flags against 92 hand-verified
+// welds across the reference ISO -- and the contact-sheet numbering is only
+// accepted when it comes back a complete, unduplicated 1..N. That gives a known
+// right answer for which weld IDs a sheet has, so the model's weld list can be
+// checked against the drawing instead of only against itself. This is the check
+// that replaces the boundary complaints on a sheet the geometry resolved: the
+// boundaries are no longer the model's to get wrong, but the weld TYPE still is,
+// and the type is the one input geometry cannot supply.
+
+const drawn = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+const asWelds = (nos: number[]) => ({ welds: nos.map((no) => ({ weld_no: String(no) })) }) as never;
+
+test("a weld list matching the drawn flags raises nothing", () => {
+  assert.deepEqual(weldListProblems(asWelds(drawn(16)), drawn(16)), []);
+});
+
+test("a weld reported twice is caught -- vision has done exactly this", () => {
+  // A real run reported weld 1 twice on sheet 4 and returned 17 rows for 16
+  // welds, reading one mark from each of two overlapping tiles.
+  const problems = weldListProblems(asWelds([1, 1, ...drawn(16).slice(1)]), drawn(16));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /weld 1 more than once/);
+});
+
+test("a weld number that is on no flag is caught as invented", () => {
+  // The square BOM item balloon read as a weld -- the failure per-valve crops
+  // produced repeatedly.
+  const problems = weldListProblems(asWelds([...drawn(16), 42]), drawn(16));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /weld 42/);
+});
+
+test("a weld the drawing has and the read missed is named", () => {
+  const problems = weldListProblems(asWelds(drawn(16).filter((n) => n !== 9)), drawn(16));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /weld 9 is missing/);
+});
+
+test("with no flags read there is nothing to check against, so nothing is claimed", () => {
+  // The geometry is an improvement on a pipeline that already works: where it
+  // has no answer it must not manufacture a complaint.
+  assert.deepEqual(weldListProblems(asWelds(drawn(16)), []), []);
+});
+
+// ---------------------------------------------------------------------------
+// THE DRAWING'S SPOOLS REACH THE TAG ROWS
+//
+// The geometry has been right for a while; what it could not do was survive an
+// extraction. Every re-run deleted the rows a script had corrected, so the good
+// answer lived in the database and never in the pipeline. These pin the wiring:
+// where the drawing resolved a sheet, its answer is what gets stored.
+
+const sheetOf = (
+  welds: Array<[number, string]>,
+  spoolTags: string[],
+  /** What the VISION pass said, for the cases where it still has to answer. */
+  vision?: { comesAfter?: Record<number, number>; boundaries?: Array<{ after_weld: string; boundary_type: string; evidence: string }> }
+) => ({
+  drawing_number: "ISO-1",
+  pageNumber: 1,
+  result: {
+    line_number: '8"-22-214-01-CRD-0002-AC03N-N',
+    spool_tags: spoolTags,
+    spool_boundaries: vision?.boundaries ?? [],
+    welds: welds.map(([no, type]) => ({
+      weld_no: String(no),
+      weld_type: type,
+      size: "200",
+      comes_after_weld: vision?.comesAfter?.[no] != null ? String(vision.comesAfter[no]) : undefined,
+    })),
+    bom_items: [],
+  },
+});
+
+const geoPage = (cuts: number[], assignment: Record<string, string>, tagOrder: string[]) => ({
+  page: 1,
+  cuts,
+  trusted: true,
+  evidence: cuts.map((c) => ({ cut: c, why: `ends after weld ${c}, at the bolted joint` })),
+  assignment,
+  tagOrder,
+  tagChanges: [],
+});
+
+const spoolRows = (tags: ReturnType<typeof buildIsoTags>) =>
+  Object.fromEntries(tags.filter((t) => t.tagType === "spool").map((t) => [t.tagNumber, t.attributes.weld_numbers]));
+
+test("where the drawing resolved a sheet, its spools are what get stored", () => {
+  const sheet = sheetOf([[1, "BW"], [2, "BW"], [3, "BW"], [4, "BW"]], ["N-01", "N-02"]);
+  // The vision walk has no comes_after_weld at all here, so on its own it
+  // would place nothing. The drawing cuts after weld 2.
+  const geo = geoPage([2], { 1: "N-01", 2: "N-01", 3: "N-02", 4: "N-02" }, ["N-01", "N-02"]);
+  assert.deepEqual(spoolRows(buildIsoTags([sheet] as never, [geo] as never)), {
+    "N-01": [1, 2],
+    "N-02": [3, 4],
+  });
+});
+
+test("every weld on a resolved sheet carries its spool, none left blank", () => {
+  const sheet = sheetOf([[1, "BW"], [2, "BW"], [3, "BW"], [4, "BW"]], ["N-01", "N-02"]);
+  const geo = geoPage([2], { 1: "N-01", 2: "N-01", 3: "N-02", 4: "N-02" }, ["N-01", "N-02"]);
+  const welds = buildIsoTags([sheet] as never, [geo] as never).filter((t) => t.tagType === "weld");
+  assert.equal(welds.length, 4);
+  assert.equal(welds.filter((w) => !w.attributes.spool_no).length, 0);
+});
+
+test("a spool row is never invented -- every tag comes off the printed schedule", () => {
+  // buildSpoolsFromWeldTopology mints `spool-<n>` when the walk finds more
+  // spools than the sheet printed tags, which put a row in the database
+  // claiming welds a real spool also claimed. The blocks here come FROM the
+  // printed tags, so there is nothing to invent.
+  const sheet = sheetOf([[1, "BW"], [2, "BW"], [3, "BW"]], ["N-01", "N-02"]);
+  const geo = geoPage([1], { 1: "N-01", 2: "N-02", 3: "N-02" }, ["N-01", "N-02"]);
+  const tags = buildIsoTags([sheet] as never, [geo] as never);
+  assert.equal(tags.filter((t) => t.tagType === "spool" && /^spool-/.test(t.tagNumber)).length, 0);
+});
+
+test("a spool row says it came from the drawing, and why it ends where it does", () => {
+  const sheet = sheetOf([[1, "BW"], [2, "BW"], [3, "BW"]], ["N-01", "N-02"]);
+  const geo = geoPage([1], { 1: "N-01", 2: "N-02", 3: "N-02" }, ["N-01", "N-02"]);
+  const first = buildIsoTags([sheet] as never, [geo] as never).find((t) => t.tagType === "spool");
+  assert.equal(first?.attributes.from_drawing, true);
+  assert.match(String(first?.attributes.note), /bolted joint/);
+});
+
+test("a sheet the drawing REFUSED keeps the vision answer untouched", () => {
+  // The count check refusing is the safe outcome, not a failure: a wrong cut
+  // puts welds in the wrong spool, which is worse than leaving them.
+  const sheet = sheetOf([[1, "BW"], [2, "BW"], [3, "BW"]], ["N-01", "N-02"], {
+    comesAfter: { 2: 1, 3: 2 },
+    boundaries: [{ after_weld: "2", boundary_type: "valve", evidence: "PT NO 7 ball valve" }],
+  });
+  const refused = { ...geoPage([], {}, ["N-01", "N-02"]), trusted: false, why: "0 cuts for 2 printed tags" };
+  assert.deepEqual(spoolRows(buildIsoTags([sheet] as never, [refused] as never)), {
+    "N-01": [1, 2],
+    "N-02": [3],
+  });
+});
+
+test("a payload saved before the geometry existed rebuilds exactly as it did", () => {
+  const sheet = sheetOf([[1, "BW"], [2, "BW"], [3, "BW"]], ["N-01", "N-02"], {
+    comesAfter: { 2: 1, 3: 2 },
+    boundaries: [{ after_weld: "2", boundary_type: "valve", evidence: "PT NO 7 ball valve" }],
+  });
+  assert.deepEqual(spoolRows(buildIsoTags([sheet] as never)), { "N-01": [1, 2], "N-02": [3] });
 });

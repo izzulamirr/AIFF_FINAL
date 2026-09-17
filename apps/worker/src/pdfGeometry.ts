@@ -72,6 +72,13 @@ function scaleOf(m: Matrix): number {
   return (Math.hypot(m[0], m[1]) + Math.hypot(m[2], m[3])) / 2;
 }
 
+/** How many pages the document has -- so a script need not hard-code a count. */
+export async function readPageCount(filePathOrBuffer: string | Buffer): Promise<number> {
+  const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
+  const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true }).promise;
+  return pdf.numPages as number;
+}
+
 export async function readPageGeometry(filePathOrBuffer: string | Buffer, pageNumber: number): Promise<PageGeometry> {
   const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
   const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true }).promise;

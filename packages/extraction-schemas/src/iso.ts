@@ -69,6 +69,91 @@ export const ISO_WELD_FLAGS_TOOL: ClaudeTool = {
   },
 };
 
+// Reading the SPOOL TAG out of each boxed tag on the drawing, from a contact
+// sheet cut the same way the weld flags are.
+//
+// Which piece of pipe a tag names is worked out in code -- the tag's leader is
+// traced to the run and the welds either side of where it lands say which block
+// of weld numbers it points at (isoSpoolTags.ts). Only the STRING inside the box
+// has to be read, and it matters: mapping tags onto blocks in sorted order gave
+// sheet 4 of the reference ISO the wrong way round, because its tag numbers are
+// not in run order. A spool called N-13 when the drawing calls it N-14 is the
+// wrong piece of steel on the truck.
+export const ISO_SPOOL_TAGS_TOOL: ClaudeTool = {
+  name: "read_spool_tags",
+  description: "Reads the spool tag printed inside each numbered cell of a contact sheet of spool tag boxes cut from an isometric drawing.",
+  input_schema: {
+    type: "object",
+    properties: {
+      tags: {
+        type: "array",
+        description: "One entry per numbered cell in the image, in order. Every cell has exactly one tag in it; none may be skipped.",
+        items: {
+          type: "object",
+          properties: {
+            cell: {
+              type: "string",
+              description: 'The cell label printed under the box, without the "#", exactly as shown (e.g. "s4-2"). It is what ties the reading back to a place on a drawing, so copy it rather than renumbering.',
+            },
+            label: {
+              type: "string",
+              description:
+                'The spool tag inside the box, exactly as printed. It is usually the line number with a spool suffix, e.g. "8"-22-214-01-CRD-0002-AC03N-N-13". If only the suffix is legible, give just that ("N-13") rather than guessing the rest.',
+            },
+          },
+          required: ["cell", "label"],
+        },
+      },
+    },
+    required: ["tags"],
+  },
+};
+
+// Reading the NUMBER off each dimension on an isometric.
+//
+// Same division of labour as the weld flags above, and for the same reason: an
+// isometric is NOT drawn to scale (on the reference ISO one run gives 202mm
+// over 70pt and another 464mm over 91pt), so a length can only be READ, never
+// measured. But everything ELSE about a dimension is geometry -- a line with an
+// arrowhead at each end, drawn parallel to and offset from what it measures --
+// so where each dimension is, what it spans and which axis it runs on all come
+// out of the drawing for free (apps/worker/src/extraction/isoDimensions.ts).
+// All that is left is reading a short number out of a box that has already been
+// isolated and blown up.
+export const ISO_DIMENSIONS_TOOL: ClaudeTool = {
+  name: "read_dimension_values",
+  description: "Reads the length printed against each numbered cell of a contact sheet of dimension labels cut from an isometric drawing.",
+  input_schema: {
+    type: "object",
+    properties: {
+      dimensions: {
+        type: "array",
+        description: "One entry per numbered cell in the image, in order. None may be skipped.",
+        items: {
+          type: "object",
+          properties: {
+            cell: {
+              type: "string",
+              description:
+                'The cell label printed under the box, without the "#", exactly as shown. It carries the drawing sheet as well as the position ("1-8"); copy what is printed rather than renumbering, since it is what ties the reading back to a place on the drawing.',
+            },
+            value: {
+              type: "string",
+              description:
+                "The dimension itself: the digits only, with no units and no separators, e.g. \"184\", \"2376\". " +
+                "The number is usually rotated to run along its own dimension line -- read it in whatever orientation it is printed. " +
+                "A cell may also clip a CUT PIECE marker in angle brackets (<6>), a square BOM item balloon ([9]) or a hexagonal weld flag (BW7): none of those is the dimension, and none belongs in this field. " +
+                "If the number is cut off or you cannot read it with confidence, leave this EMPTY -- a blank is far more useful than a guess, because a wrong length silently becomes a wrong spool size.",
+            },
+          },
+          required: ["cell", "value"],
+        },
+      },
+    },
+    required: ["dimensions"],
+  },
+};
+
 // How to walk an isometric's run, which is what fixes the ORDER everything else
 // is expressed in. An isometric is drawn on three 30-degree axes and its welds
 // are not necessarily numbered in the order the pipe reaches them, so "which

@@ -1,6 +1,6 @@
 // Works out which spool each weld belongs to, from the drawing's own geometry.
 //
-//   pnpm --filter @easy/worker exec tsx scripts/spool-cuts.ts <file.pdf> <weld-list.json> <geometry.json> <out.json>
+//   pnpm --filter @easy/worker exec tsx scripts/spool-cuts.ts <file.pdf> <weld-list.json> <geometry.json> <out.json> [--tags spool-tags.json]
 //
 // No API call. The weld list (number, type, bore, stored spool) comes from
 // packages/db/scripts/dump-weld-list.mjs; the geometry JSON supplies each
@@ -10,9 +10,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { readWeldMarks } from "../src/extraction/isoWeldMarks";
 import { readSpoolCuts, assignSpools } from "../src/extraction/isoSpoolCuts";
+import { tagsByBlock } from "../src/extraction/isoSpoolTags";
 
 async function main() {
-  const [, , pdfPath, listPath, geoPath, outPath] = process.argv;
+  const argv = process.argv.slice(2);
+  const tagsPath = argv.includes("--tags") ? argv[argv.indexOf("--tags") + 1] : undefined;
+  const [pdfPath, listPath, geoPath, outPath] = argv.filter((a, i) => !a.startsWith("--") && argv[i - 1] !== "--tags");
   if (!pdfPath || !listPath || !geoPath || !outPath) {
     console.error("usage: tsx scripts/spool-cuts.ts <file.pdf> <weld-list.json> <geometry.json> <out.json>");
     process.exit(1);
@@ -20,6 +23,9 @@ async function main() {
   const buf = readFileSync(pdfPath);
   const list = JSON.parse(readFileSync(listPath, "utf8"));
   const geo = JSON.parse(readFileSync(geoPath, "utf8"));
+  // Which piece of pipe each printed tag actually points at, from
+  // scripts/export-spool-tags.ts. Sorted order is used where this is absent.
+  const tagLeaders = tagsPath ? JSON.parse(readFileSync(tagsPath, "utf8")) : null;
 
   const out: Array<{
     page: number;
@@ -55,7 +61,18 @@ async function main() {
       out.push({ page: p.page, cuts, trusted: false, evidence, assignment: [] });
       continue;
     }
-    const assigned = assignSpools(p.welds, cuts, p.spoolTags);
+    // The drawing's own answer to which tag names which block, where it has
+    // one. On sheet 4 its leaders put N-14 on the 6000mm middle piece, which
+    // sorted order gives to N-13.
+    let spoolTags = p.spoolTags;
+    const leaders = tagLeaders?.pages?.find((t: { page: number }) => t.page === p.page)?.tags;
+    if (leaders) {
+      const byBlock = tagsByBlock(leaders, p.spoolTags);
+      spoolTags = byBlock.tags;
+      for (const c of byBlock.changed) console.log(`   ~ block ${c.block}: ${short(c.from)} -> ${short(c.to)}, per its printed tag's leader`);
+      if (byBlock.why) console.log(`   . tag leaders not used: ${byBlock.why}`);
+    }
+    const assigned = assignSpools(p.welds, cuts, spoolTags);
     const assignment = p.welds
       .map((w) => ({ rowId: w.rowId, weldNo: w.weldNo, spool: assigned.get(w.weldNo) ?? "", stored: w.storedSpool }))
       .filter((a) => a.spool);
@@ -71,4 +88,5 @@ async function main() {
   console.log(`\ntotal across trusted sheets: ${agree} agree, ${differ} differ`);
   console.log(`wrote ${outPath}`);
 }
+const short = (t: string) => t.replace(/^.*-N-/, "N-");
 main();

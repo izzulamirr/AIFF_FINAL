@@ -4,6 +4,29 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ClaudeTool } from "@easy/extraction-schemas";
 
+/**
+ * What the calls have cost so far.
+ *
+ * A full ISO extraction is two vision passes per sheet with the page image
+ * and its tiles attached each time, which is the most expensive thing this
+ * codebase does. Reporting the real figure afterwards -- rather than an
+ * estimate made beforehand -- is the only way anyone can decide whether to
+ * run it again.
+ */
+export const usage = { calls: 0, inputTokens: 0, outputTokens: 0 };
+
+/** Opus pricing, USD per million tokens. */
+const IN_PER_M = 15;
+const OUT_PER_M = 75;
+
+export const usageCostUsd = () => (usage.inputTokens / 1e6) * IN_PER_M + (usage.outputTokens / 1e6) * OUT_PER_M;
+
+export function resetUsage() {
+  usage.calls = 0;
+  usage.inputTokens = 0;
+  usage.outputTokens = 0;
+}
+
 export async function callTool<T = unknown>(
   client: Anthropic,
   opts: {
@@ -35,6 +58,9 @@ export async function callTool<T = unknown>(
   });
 
   const finalMessage = await stream.finalMessage();
+  usage.calls += 1;
+  usage.inputTokens += finalMessage.usage?.input_tokens ?? 0;
+  usage.outputTokens += finalMessage.usage?.output_tokens ?? 0;
   const toolUse = finalMessage.content.find((b) => b.type === "tool_use" && b.name === opts.tool.name);
   if (!toolUse || toolUse.type !== "tool_use") {
     throw new Error(`Claude did not return a ${opts.tool.name} tool call.`);
