@@ -14,6 +14,7 @@ import { callTool, callWithRetry } from "./claudeClient";
 import { renderPdfPages, renderPdfPageTiles } from "../pdfImages";
 import { normalizeCellValue } from "./pll";
 import type { DocTypeExtractor, TagDraft } from "./types";
+import { isFieldWeld } from "./weldTypes";
 
 interface LocateIsoResult {
   sheets: Array<{ drawing_number: string; sheet?: string; pages: PageRange }>;
@@ -130,7 +131,7 @@ export function resolveBoundaryWelds(welds: IsoWeld[], boundaries: IsoSheetResul
     for (const w of welds) if (w.closes_spool) boundaryWelds.add(Number(w.weld_no));
   }
   for (const w of welds) {
-    if (normalizeKey(w.weld_type) === "FW") boundaryWelds.add(Number(w.weld_no));
+    if (isFieldWeld(w.weld_type)) boundaryWelds.add(Number(w.weld_no));
   }
   return boundaryWelds;
 }
@@ -265,7 +266,7 @@ export function buildIsoSheetPrompt(opts: {
       `Never place by rating where the rating comes from the component's own standard either: ASME B16.36 orifice flanges and their gaskets start at 300#, so a 150# line's orifice assembly is 300# with no break involved -- place those by position. ` +
       `A sheet with no "MATL" callouts has no break on it: set item_spec_class to the title-block class for every row on that sheet, basis "sheet has no spec break".\n\n` +
       `WELDS: every weld is drawn as a small mark on the pipe, usually labelled with its WELD LIST ID number -- this sheet's own WELD LIST table (columns ID / ND / Type / Category) gives every weld's size and type by that ID. Record one entry per weld under welds, reading the number from the TILES and looking up its type/size in the table BY THAT ID -- never by assuming the table's row order matches physical position along the pipe (a branch takeoff can carry an ID numbered out of sequence with where it sits, and the table itself can be grouped by category rather than by the walk). Attach any NDE code boxes leadered to that weld (e.g. "F5 G9 B11", "FX GX BX", "X") as nde_codes. Sweep the run end to end rather than sampling -- a missed mark undercounts the sheet. ` +
-      `For weld_type, cross-check the table against the mark itself: a genuine FIELD WELD carries its own distinct hatched "FW" tick at that weld's point on the isometric (sometimes drawn beside the weld's number label, not replacing it) -- if that hatched mark sits at a different weld than the table's row order would suggest, trust the mark on the drawing over the table.\n\n` +
+      `For weld_type, read the WELD LIST's TYPE column, never its CATEGORY column: Type is the kind of weld (BUTTWELD/FIELDWELD/TAPWELD/THREADED/SOCKETWELD) while Category is only where it is made (FABRICATION-ITEM in the shop, ERECTION-ITEM on site), and a plain BUTTWELD is often an ERECTION-ITEM without being a field weld. Then cross-check against the mark itself: a genuine FIELD WELD carries its own distinct hatched "FW" tick at that weld's point on the isometric (sometimes drawn beside the weld's number label, not replacing it) -- if that hatched mark sits at a different weld than the table's row order would suggest, trust the mark on the drawing over the table.\n\n` +
       `SPOOLS: this sheet's own "PIPE SPOOLS" schedule (near the title block) lists this line's spool tags for the sheet -- read just that list of tags, in order, into spool_tags. If the sheet genuinely prints no such schedule, leave spool_tags empty; sequential tags get invented automatically from however many spools the welds below produce.\n` +
       `THAT LIST FIXES THE COUNT. N tags printed means the sheet is cut into exactly N spools, so there are exactly N-1 boundaries between them -- record those in spool_boundaries, one entry each, in order along the run.\n\n` +
       `FINDING THE BOUNDARIES -- LOOK, DO NOT DIVIDE. A boundary is only ever (a) a valve flanged on BOTH sides sitting on the MAIN RUN -- a bowtie/hourglass symbol with a heavy flange bar drawn either side of it and its own BOM item balloon -- or (b) a field weld, the forced cut once a welded run passes 6000mm, drawn as a hatched "FW" tick. Nothing else: not an elbow, not a reducer, not a branch takeoff, and not a valve at the dead end of a BRANCH (a branch stays inside whichever spool its takeoff belongs to). ` +
@@ -420,7 +421,7 @@ export function spoolProblems(r: IsoSheetResult): string[] {
   // A field weld IS a forced cut, so one that closes nothing means either the
   // weld type or the boundary list is misread.
   const uncoveredFw = welds
-    .filter((w) => normalizeKey(w.weld_type) === "FW")
+    .filter((w) => isFieldWeld(w.weld_type))
     .map((w) => Number(w.weld_no))
     .filter((no) => Number.isFinite(no) && !boundaryNos.includes(no));
   if (uncoveredFw.length > 0) {
@@ -696,7 +697,7 @@ export const extractIsoDocument: DocTypeExtractor = async (pages, apiKey, onProg
       const lastWeldNo = spool.weldNumbers[spool.weldNumbers.length - 1];
       const lastWeld = lastWeldNo != null ? weldByNo.get(lastWeldNo) : undefined;
       if (!lastWeld) return undefined;
-      if (normalizeKey(lastWeld.weld_type) === "FW") return `forced 6000mm cut, closes at field weld FW-${lastWeld.weld_no}`;
+      if (isFieldWeld(lastWeld.weld_type)) return `forced 6000mm cut, closes at field weld FW-${lastWeld.weld_no}`;
       if (boundaryWelds.has(Number(lastWeld.weld_no))) {
         // The model's own evidence for this boundary, where it gave any --
         // what a reviewer needs to check the cut without reopening the sheet.

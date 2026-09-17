@@ -163,7 +163,8 @@ export const ISO_SPOOL_BOUNDARIES_TOOL: ClaudeTool = {
         type: "array",
         description:
           'Every FIELD WELD drawn on this sheet. A field weld is the forced cut made once a continuous welded run passes the 6000mm that will fit on a truck, and it is drawn as a distinct hatched "FW" tick at that weld\'s own point on the isometric (sometimes beside the weld\'s number label rather than replacing it). Every field weld ends a spool. ' +
-          "Read these off the DRAWING, not off the weld list table's row order -- that table is often grouped by category (all FABRICATION-ITEM rows, then all ERECTION-ITEM/FIELDWELD rows), which does not match physical position along the pipe.",
+          "Read these off the DRAWING, not off the weld list table's row order -- the table may be grouped rather than run in pipe order, so its row order does not match physical position along the pipe. " +
+          "The WELD LIST table has FOUR columns -- ID, ND, Type, Category -- and the last two are INDEPENDENT. Type is what kind of weld it is (BUTTWELD / FIELDWELD / TAPWELD / THREADED / SOCKETWELD). Category is only where it gets made: FABRICATION-ITEM in the shop, ERECTION-ITEM on site. A plain BUTTWELD is very often an ERECTION-ITEM -- a branch tie-in, for instance -- and that does NOT make it a field weld. Never read a weld type out of the Category column.",
         items: {
           type: "object",
           properties: {
@@ -307,7 +308,7 @@ export const ISO_SHEET_TOOL: ClaudeTool = {
             weld_type: {
               type: "string",
               description:
-                'The short code as commonly marked: BW (buttweld), FW (field weld), TW (tapweld), TH (threaded), SW (socketweld). Cross-check two sources and prefer the drawing when they conflict: (1) the WELD LIST table\'s Type column for this weld\'s ID (BUTTWELD/FIELDWELD/TAPWELD/THREADED/SOCKETWELD -- abbreviate it), and (2) the mark itself on the isometric, where a genuine field weld carries a distinct hatched "FW" tick at its own point (sometimes drawn right next to the weld\'s own number label, not replacing it). If the hatched FW mark sits at a different weld than the table\'s category-sorted position would suggest, trust the mark on the drawing.',
+                'The short code as commonly marked: BW (buttweld), FW (field weld), TW (tapweld), TH (threaded), SW (socketweld). The WELD LIST table has FOUR columns -- ID, ND, Type, Category -- and the last two are INDEPENDENT. Type is what kind of weld it is (BUTTWELD / FIELDWELD / TAPWELD / THREADED / SOCKETWELD). Category is only where it gets made: FABRICATION-ITEM in the shop, ERECTION-ITEM on site. A plain BUTTWELD is very often an ERECTION-ITEM -- a branch tie-in, for instance -- and that does NOT make it a field weld. Never read a weld type out of the Category column. Take the type from the TYPE column for the ID of this weld and abbreviate it. Then cross-check it against the mark itself on the isometric, where a genuine field weld carries a distinct hatched "FW" tick at its own point (sometimes drawn right next to the weld\'s own number label, not replacing it); where the two conflict, trust the mark on the drawing. FW is the one type worth being sure about, because a field weld is a forced cut and ends a spool on sight -- so never answer FW for a weld whose Type column says BUTTWELD, however its Category reads.',
             },
             size: { type: "string", description: "Nominal size of the pipe at this weld, from the WELD LIST table's ND column for this ID. Blank otherwise." },
             nde_codes: {

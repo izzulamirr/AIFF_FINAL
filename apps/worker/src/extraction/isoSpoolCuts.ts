@@ -28,6 +28,7 @@
 // drops both without a special case.
 import { readPageGeometry, type GeomPath } from "../pdfGeometry";
 import type { Pt, WeldMarkResult } from "./isoWeldMarks";
+import { isFieldWeld } from "./weldTypes";
 
 export interface WeldRow {
   weldNo: number;
@@ -207,7 +208,7 @@ export async function readSpoolCuts(
   // (1) Field welds, straight off the weld list. A field weld IS the forced cut,
   // so this needs no drawing at all -- and on some sheets it is the whole answer.
   for (const w of welds) {
-    if (String(w.weldType ?? "").trim().toUpperCase() !== "FW") continue;
+    if (!isFieldWeld(w.weldType)) continue;
     cuts.add(w.weldNo);
     evidence.push({ cut: w.weldNo, why: `closes at field weld ${w.weldNo}, the forced cut` });
   }

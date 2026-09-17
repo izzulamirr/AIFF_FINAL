@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { assignSpools, boltedJoints, flankingWelds, type Bar, type WeldRow } from "./isoSpoolCuts";
 import type { Pt } from "./isoWeldMarks";
+import { isFieldWeld, isWeldCategory } from "./weldTypes";
 
 const welds = (spec: Array<[number, string, string]>): WeldRow[] =>
   spec.map(([weldNo, weldType, size]) => ({ weldNo, weldType, size }));
@@ -154,4 +155,30 @@ test("a joint with a weld on only one side flanks nothing", () => {
 
 test("a weld beyond the flanking radius is not counted as a side", () => {
   assert.equal(flankingWelds({ x: 100, y: 100 }, [{ x: 90, y: 100 }, { x: 400, y: 100 }]), null);
+});
+
+// --- Field weld, and the column it is NOT read from ------------------------
+// The WELD LIST's Type column says what kind of weld it is; its Category column
+// says only where it is made. Conflating them typed sheet 2's weld 5 -- a 15mm
+// BUTTWELD that happens to be an ERECTION-ITEM -- as a field weld, which
+// invented a sixth cut on a sheet that needs five and cost it the whole sheet.
+test("a field weld is recognised by its type, spelled either way", () => {
+  assert.equal(isFieldWeld("FW"), true);
+  assert.equal(isFieldWeld("FIELDWELD"), true);
+  assert.equal(isFieldWeld("field weld"), true);
+  assert.equal(isFieldWeld(" fw "), true);
+});
+
+test("an erection item is not a field weld", () => {
+  assert.equal(isFieldWeld("ERECTION-ITEM"), false);
+  assert.equal(isFieldWeld("ERECTION"), false);
+  assert.equal(isFieldWeld("FABRICATION-ITEM"), false);
+  assert.equal(isWeldCategory("ERECTION-ITEM"), true);
+  assert.equal(isWeldCategory("FIELDWELD"), false);
+});
+
+test("the ordinary weld types are not field welds", () => {
+  for (const t of ["BW", "BUTTWELD", "TW", "TAPWELD", "TH", "THREADED", "SW", "SOCKETWELD", "", null, undefined]) {
+    assert.equal(isFieldWeld(t), false, `${String(t)} should not be a field weld`);
+  }
 });
