@@ -591,6 +591,68 @@ cd packages/db && node scripts/apply-drawing-spools.mjs cuts.json --write
 `geometry.json` survives a re-extraction untouched: it is read from the PDF, not
 the database.
 
+#### The WELD LIST has a Type column AND a Category column — they are not the same
+
+This is the bug that cost sheet 2 its whole assignment, and it is worth knowing
+before reading any weld list. The table has four columns:
+
+```
+ID | ND | Type                                           | Category
+   |    | BUTTWELD FIELDWELD TAPWELD THREADED SOCKETWELD | FABRICATION-ITEM  ERECTION-ITEM
+```
+
+**Type is what kind of weld it is. Category is only where it gets made** — in
+the shop, or on site during erection. They are independent. A plain BUTTWELD is
+very often an ERECTION-ITEM: on sheet 2 of the reference ISO, welds 5, 10 and 21
+are all BUTTWELD / ERECTION-ITEM, being the 15mm vent and the two 80mm drain
+branches that get tied in on site. **None of them is a field weld.**
+
+The extraction prompt described the table as grouped into "all FABRICATION-ITEM
+rows, then all ERECTION-ITEM/FIELDWELD rows", as though those were one category.
+The model duly read the Category column and returned sheet 2's weld 5 as FW. And
+since a field weld IS the forced cut, that one mistyped weld produced a sixth cut
+on a sheet that prints six spools and needs five — so the count check threw the
+whole sheet out. One column confused, one sheet lost.
+
+`src/extraction/weldTypes.ts` now holds the only test for this. It accepts FW,
+FIELDWELD and FIELD WELD, and explicitly refuses the Category values, so a
+Category arriving in the type field answers "not a field weld" rather than
+matching by accident. Every field-weld test in `iso.ts` and `isoSpoolCuts.ts`
+goes through it. Note `normalizeKey(w.weld_type) === "FW"` was ALSO too strict in
+the other direction — a model returning the table word "FIELDWELD" instead of
+the code would have been missed silently.
+
+**Correcting a stored type:** `packages/db/scripts/fix-weld-types.mjs` takes a
+list of `page` / `weldNo` / `weldType` / `why` objects and requires the `why`,
+keeping the replaced value as `weld_type_extracted`. The weld type is the one
+input geometry cannot supply — number and position come off the flags and
+leaders, the type comes off the table — so it is the input most worth being able
+to correct by hand.
+
+#### A field weld is marked on the drawing, and the mark wins
+
+Sheet 4 is the case that proves the existing rule. Its WELD LIST gives Type
+FIELDWELD for IDs **10 and 11**. The drawing carries hatched **FW** ticks at
+welds **6 and 7**, right beside those two weld dots, on the two 6000mm pieces the
+CUT PIECE LIST shows with WS ends. The hand-verified reference agrees with the
+drawing: cuts after 6 and 7.
+
+So the table's own Type column can point at the wrong IDs, and "trust the hatched
+mark over the table" is not a nicety. **Detecting that tick geometrically is the
+obvious next check** — it would have caught sheet 2's phantom FW without any
+hand correction, and would confirm sheet 4 against its own table. Everything
+needed is already there: the tick is a small hatched mark sitting on the pipe at
+a known weld position.
+
+**An open question on sheet 4, not resolved.** Following the spool tag leaders
+the way sheet 5 was checked, N-12 lands on the run below the lower FW, **N-14
+lands on the 6000mm piece between the two FW ticks**, and N-13 lands on the run
+between welds 13 and 14 — which would make the middle spool N-14, not N-13. The
+reference and `assignSpools` both map tags onto blocks in sorted order, giving
+N-13 the middle. The weld GROUPING is identical either way (1-6 / 7 / 8-16); only
+which tag names the middle piece is in doubt. Worth confirming against the
+drawing before relying on sheet 4 tag names.
+
 #### Ordering the welds along the run — works, does not yet generalize
 
 `src/extraction/isoRunOrder.ts` walks the run and emits each weld's `comesAfter` and
