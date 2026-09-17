@@ -119,7 +119,29 @@ try {
         .filter(([, tag]) => tag === s.tag_number)
         .map(([no]) => no)
         .sort((a, b) => a - b);
-      if (mine.length === 0) continue;
+      // A spool the drawing gives no welds to, on a sheet whose cuts ARE
+      // trusted, is one the extraction invented -- buildSpoolsFromWeldTopology
+      // mints a `spool-<n>` tag whenever the topology walks out more spools
+      // than the sheet printed. Leaving it holding the welds it used to claim
+      // duplicates them against the spool that now owns them, so it is emptied
+      // and said to be empty. Not deleted: no row is created or removed here.
+      if (mine.length === 0) {
+        const held = s.attributes?.weld_numbers ?? [];
+        if (held.length === 0) continue;
+        spoolUpdates.push({
+          id: s.id,
+          tag: s.tag_number,
+          before: held,
+          attributes: {
+            ...s.attributes,
+            weld_numbers: [],
+            mainline_weld_numbers: [],
+            branch_weld_numbers: [],
+            note: "not printed on the sheet -- no welds belong to it",
+          },
+        });
+        continue;
+      }
       const idx = ordered.indexOf(s);
       const closesAt = cuts[idx];
       const note =

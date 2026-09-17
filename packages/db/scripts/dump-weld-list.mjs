@@ -51,9 +51,17 @@ try {
     });
     byPage.set(r.source_page, p);
   }
+  // Only PRINTED spool tags count. buildSpoolsFromWeldTopology invents a
+  // `spool-<n>` tag whenever the topology walks out more spools than the sheet
+  // printed, and those synthetic tags must not inflate the count -- the whole
+  // premise of the "N tags means N-1 cuts" check is that the sheet itself
+  // printed N of them. A re-extraction put a fourth spool on sheet 1 of the
+  // reference ISO, which is printed with three, and the invented tag made a
+  // correct 2-cut answer look like it was missing one.
+  const printed = (tag) => Boolean(tag) && !/^spool-\d+$/i.test(tag);
   const pages = [...byPage.values()].sort((a, b) => a.page - b.page).map((p) => ({
     ...p,
-    spoolTags: [...new Set(p.welds.map((w) => w.storedSpool).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    spoolTags: [...new Set(p.welds.map((w) => w.storedSpool).filter(printed))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
   }));
   writeFileSync(outPath, JSON.stringify({ documentId, pages }, null, 2));
   console.log(`wrote ${outPath}: ${pages.length} sheets, ${rows.length} welds`);
