@@ -523,6 +523,74 @@ One bug worth remembering: an unread flag label parsed to weld number **0**, not
 satisfied the "right number of cuts" check on sheet 1. Guard for `> 0`, not just
 non-null.
 
+#### Scored against a real re-extraction — the pipeline does NOT reproduce this
+
+The geometry answer is stored in the database by scripts, and the worker's own
+extraction is untouched by any of it: `apps/worker/src/extraction/iso.ts` still
+drives spools through the two vision passes and `buildSpoolsFromWeldTopology`.
+So a re-extraction overwrites the lot — and one did, on 15 Sep 2026. Every
+`extracted_tags` row for the document was deleted and recreated, taking
+`attributes.geometry_spool` and `attributes.spool_no_vision` with it.
+
+Scored against the hand-verified `REFERENCE` table in `scripts/replay-spools.ts`:
+
+| | spools correct |
+|---|---|
+| the real extraction, as it left the database | **2 of 18** |
+| the same payload replayed through current code (`replay:spools`, free) | **2 of 18** |
+| the geometry cut finder | **18 of 18** |
+
+The replay agreeing with the stored rows is the useful part: it means the 2/18
+is not drift between code and data, it is what this pipeline produces. Use
+`replay:spools` to answer "would a re-run give the same" WITHOUT paying for a
+vision run — it re-runs the deterministic half over the stored payload.
+
+**That REFERENCE table predates the geometry work** (committed in `f1c22d2`,
+long before), and it carries all five sheets. The flange-joint detector
+reproduces it exactly, sheets 4 and 5 included — which is independent
+confirmation of the two sheets that had no other check, arrived at from the
+drawing's geometry with the table never consulted.
+
+**A re-extraction also feeds two bad inputs back into the cut finder**, and both
+are worth recognising because neither looks like a spool problem:
+
+- **An invented spool tag inflates the count.** `buildSpoolsFromWeldTopology`
+  mints `spool-<n>` when the topology walks out more spools than were read, and
+  sheet 1 came back with four where three are printed. The "N tags means N-1
+  cuts" check only means anything over tags the SHEET printed, so
+  `dump-weld-list.mjs` now excludes synthetic ones, and
+  `apply-drawing-spools.mjs` empties an invented row rather than leave it
+  claiming welds the real spool also claims.
+- **A mistyped FW invents a cut.** Sheet 2 weld 5 is a 15mm vent-branch weld;
+  the re-extraction typed it FW, and since a field weld IS a forced cut, that
+  produced 6 cuts where the sheet prints 6 spools and needs 5. The sheet is
+  therefore left alone, which is the count check doing its job — it refuses
+  rather than guessing. Sheet 2 is the only one of the five still wrong, and it
+  is wrong because of a weld-list read, not a boundary.
+
+So the weld TYPE is now the weakest input. Geometry supplies the number and the
+position, the table supplies the type, and when the table is misread there is
+currently nothing to catch it. The drawing does carry the answer — a genuine
+field weld has its own hatched "FW" tick at its point on the isometric — so
+corroborating a claimed FW against that tick is the obvious next geometric
+check, and would take sheet 2 to 6 of 6 without touching anything else.
+
+**The durable fix is to wire the cut finder into the worker** so extraction
+produces this answer itself instead of a script correcting it afterwards. Until
+that happens, treat any re-extraction as destroying the corrections, and
+re-apply them with:
+
+```
+cd packages/db && node scripts/dump-weld-list.mjs welds.json
+pnpm --filter @easy/worker exec tsx scripts/spool-cuts.ts <file.pdf> welds.json geometry.json cuts.json
+cd packages/db && node scripts/import-weld-geometry.mjs geometry.json
+cd packages/db && node scripts/import-spool-cuts.mjs cuts.json --write
+cd packages/db && node scripts/apply-drawing-spools.mjs cuts.json --write
+```
+
+`geometry.json` survives a re-extraction untouched: it is read from the PDF, not
+the database.
+
 #### Ordering the welds along the run — works, does not yet generalize
 
 `src/extraction/isoRunOrder.ts` walks the run and emits each weld's `comesAfter` and
