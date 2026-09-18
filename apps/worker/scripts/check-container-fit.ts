@@ -10,7 +10,7 @@
 // `axis` is the direction the field-adjusted joint lies along; leave it out
 // and the 150mm allowance goes on the longest side, which is the worst case.
 import { readFileSync } from "node:fs";
-import { checkSpoolFit, STANDARD_CONTAINERS, type Envelope } from "@easy/shared";
+import { checkSpoolFit, STANDARD_CONTAINERS, TWENTY_FOOT_CONTAINERS, type Envelope } from "@easy/shared";
 
 interface SpoolInput extends Envelope {
   spool: string;
@@ -54,13 +54,23 @@ function main() {
     spools = JSON.parse(readFileSync(path, "utf8"));
   }
 
-  console.log(`containers checked: ${STANDARD_CONTAINERS.map((c) => c.name).join(", ")}\n`);
+  // TWENTY FOOT ONLY by default, matching the page: this refinery does not
+  // ship anything larger, so answering "40ft HC" for a spool that beats a
+  // 20ft hides the thing worth knowing -- that it has to be cut differently.
+  // --all-sizes puts the full equipment list back for a one-off question.
+  const only20 = !process.argv.includes("--all-sizes");
+  const containers = only20 ? TWENTY_FOOT_CONTAINERS : STANDARD_CONTAINERS;
+  console.log(
+    `containers checked: ${containers.map((c) => c.name).join(", ")}` +
+      (only20 ? "  (20ft only; --all-sizes for the full list)" : "") +
+      "\n"
+  );
 
   let noFit = 0;
   let marginal = 0;
   let angled = 0;
   for (const s of spools) {
-    const r = checkSpoolFit(s.spool, { lengthMm: s.lengthMm, widthMm: s.widthMm, heightMm: s.heightMm }, s);
+    const r = checkSpoolFit(s.spool, { lengthMm: s.lengthMm, widthMm: s.widthMm, heightMm: s.heightMm }, { ...s, containers });
     const fw = r.fieldWelds > 0 ? `  +${r.shipping.lengthMm - r.envelope.lengthMm || 150}mm for ${r.fieldWelds} field weld${r.fieldWelds > 1 ? "s" : ""}` : "";
     console.log(
       `${s.spool.padEnd(8)} ${mm(r.envelope.lengthMm)} x ${mm(r.envelope.widthMm)} x ${mm(r.envelope.heightMm)}${fw}`

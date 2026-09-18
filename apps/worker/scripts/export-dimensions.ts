@@ -30,8 +30,52 @@ function loadApiKey(): string {
 }
 
 /** Every dimension with a readable label, tagged "<page>-<index>". */
+/**
+ * A label box narrower than this across is not a number -- it is one stray
+ * stroke the finder latched onto.
+ *
+ * A three-digit label measures 18-20pt on these sheets. Sheet 2's 178 came
+ * back as 9x10pt holding a single tick, and rendered as an unreadable
+ * fragment: no way to read the number, and no way to tell that was why.
+ */
+const SUSPECT_LABEL_PT = 14;
+/**
+ * What such a box is widened to instead.
+ *
+ * SIZE A CROP BY WHAT MUST BE READABLE, NOT BY WHAT MUST BE VISIBLE -- the
+ * lesson the per-valve crops taught, in a second place. Applied ONLY to the
+ * suspect boxes: widening every cell puts a neighbouring number in frame and
+ * then the cell shows two, with no way to tell which is the dimension.
+ */
+const RESCUE_CROP_PT = 44;
+
+/** A box too small to hold a number, opened out about its own centre. */
+const atLeast = (b: { x0: number; y0: number; x1: number; y1: number }) => {
+  if (Math.max(b.x1 - b.x0, b.y1 - b.y0) >= SUSPECT_LABEL_PT) return b;
+  const cx = (b.x0 + b.x1) / 2;
+  const cy = (b.y0 + b.y1) / 2;
+  const half = RESCUE_CROP_PT / 2;
+  return { x0: cx - half, y0: cy - half, x1: cx + half, y1: cy + half };
+};
+
+// A dimension with NO label box is left out of the contact sheet -- there is
+// nothing to crop -- but every other cell keeps the name it had, because the
+// name is the dimension's own index and not its position in the grid. A cell
+// renamed by a neighbour dropping out would silently invalidate every saved
+// reading, which is the one thing --labels-from cannot survive.
 const regionsFor = (page: number, dims: IsoDimension[]): ContactSheetRegion[] =>
-  dims.map((d, i) => ({ label: `${page}-${i + 1}`, bbox: d.labelBox! })).filter((_, i) => dims[i].labelBox);
+  dims
+    .map((d, i) => ({ d, i }))
+    .filter(({ d }) => d.labelBox)
+    .map(({ d, i }) => ({
+      label: `${page}-${i + 1}`,
+      bbox: atLeast(d.labelBox!),
+      // The number reads ALONG its dimension line, so turn the crop upright.
+      // Folded to the nearest half-turn first: a label at 150 degrees reads
+      // the same way up as one at -30, and rotating it by 150 would stand it
+      // on its head.
+      rotateDeg: ((d.degrees + 90) % 180) - 90,
+    }));
 
 async function readValues(
   buf: Buffer,
@@ -182,6 +226,10 @@ async function main() {
         mm: raw && Number.isFinite(mm) && mm > 0 ? mm : null,
         from: { x: Number(d.from.x.toFixed(1)), y: Number(d.from.y.toFixed(1)) },
         to: { x: Number(d.to.x.toFixed(1)), y: Number(d.to.y.toFixed(1)) },
+        // Where the number was found. Carried so a cell that came back
+        // unreadable can be traced to a box on the wrong glyphs rather than
+        // guessed at.
+        labelBox: d.labelBox ?? null,
         pagePt: d.pagePt,
         degrees: d.degrees,
         drawnAs: d.drawnAs,

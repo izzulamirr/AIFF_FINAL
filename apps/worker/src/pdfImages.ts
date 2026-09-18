@@ -201,6 +201,18 @@ export async function renderPdfPageCrops(
 export interface ContactSheetRegion {
   label: string;
   bbox: { x0: number; y0: number; x1: number; y1: number };
+  /**
+   * Page angle the content reads along, if it is not horizontal. The cell is
+   * turned by MINUS this so the text lands upright.
+   *
+   * A dimension's number is rotated to read along its own dimension line, so
+   * on an isometric most of them arrive at 30 or 150 degrees. Reading rotated
+   * digits is where this pipeline's misreads come from and they are always the
+   * same kind: 6 as 8, 9 as 8, 7 as 1 -- 4-6 came back 8000 for 6000, 5-10 289
+   * for 299, 2-2 251 for 257. Turning each crop upright before it is read
+   * costs nothing and removes the whole class.
+   */
+  rotateDeg?: number;
 }
 
 const CONTACT_SCALE = 5; // page points -> px; a 15pt flag lands ~75px tall
@@ -222,7 +234,7 @@ export async function renderMultiPageContactSheet(
   const data = Buffer.isBuffer(filePathOrBuffer) ? new Uint8Array(filePathOrBuffer) : new Uint8Array(await readFile(filePathOrBuffer));
   const pdf = await pdfjsLib.getDocument({ data, useSystemFonts: true, canvasFactory: new NodeCanvasFactory() }).promise;
 
-  const cells: Array<{ label: string; src: Canvas; sx: number; sy: number; sw: number; sh: number }> = [];
+  const cells: Array<{ label: string; src: Canvas; sx: number; sy: number; sw: number; sh: number; rotateDeg?: number }> = [];
   const pad = CONTACT_PAD_PT * CONTACT_SCALE;
   for (const { pageNumber, regions } of wanted) {
     if (pageNumber < 1 || pageNumber > pdf.numPages) continue;
@@ -238,6 +250,7 @@ export async function renderMultiPageContactSheet(
         sy: Math.max(0, r.bbox.y0 * CONTACT_SCALE - pad),
         sw: (r.bbox.x1 - r.bbox.x0) * CONTACT_SCALE + pad * 2,
         sh: (r.bbox.y1 - r.bbox.y0) * CONTACT_SCALE + pad * 2,
+        rotateDeg: r.rotateDeg,
       });
     }
   }
@@ -247,9 +260,11 @@ export async function renderMultiPageContactSheet(
 
 // Shared by both contact-sheet builders: a grid of boxed cells, each captioned
 // with its own label so an answer maps back without relying on grid order.
-function layOutCells(cells: Array<{ label: string; src: Canvas; sx: number; sy: number; sw: number; sh: number }>): string {
-  const cellW = Math.ceil(Math.max(...cells.map((c) => c.sw)));
-  const cellH = Math.ceil(Math.max(...cells.map((c) => c.sh)));
+function layOutCells(cells: Array<{ label: string; src: Canvas; sx: number; sy: number; sw: number; sh: number; rotateDeg?: number }>): string {
+  // A turned cell needs room for its own diagonal, or the corners are clipped.
+  const boxOf = (c: (typeof cells)[number]) => (c.rotateDeg ? Math.ceil(Math.hypot(c.sw, c.sh)) : 0);
+  const cellW = Math.ceil(Math.max(...cells.map((c) => Math.max(c.sw, boxOf(c)))));
+  const cellH = Math.ceil(Math.max(...cells.map((c) => Math.max(c.sh, boxOf(c)))));
   const cols = Math.min(CONTACT_COLS, cells.length);
   const rows = Math.ceil(cells.length / cols);
   const outW = cols * (cellW + CONTACT_GUTTER) + CONTACT_GUTTER;
@@ -265,7 +280,17 @@ function layOutCells(cells: Array<{ label: string; src: Canvas; sx: number; sy: 
     const row = Math.floor(i / cols);
     const x = CONTACT_GUTTER + col * (cellW + CONTACT_GUTTER);
     const y = CONTACT_GUTTER + row * (cellH + CONTACT_CAPTION + CONTACT_GUTTER);
-    ctx.drawImage(c.src, c.sx, c.sy, c.sw, c.sh, x, y, c.sw, c.sh);
+    if (c.rotateDeg) {
+      // Turn the crop UPRIGHT about the cell's centre. Canvas y runs down, the
+      // same way the page angles are measured, so the angle is simply negated.
+      ctx.save();
+      ctx.translate(x + cellW / 2, y + cellH / 2);
+      ctx.rotate((-c.rotateDeg * Math.PI) / 180);
+      ctx.drawImage(c.src, c.sx, c.sy, c.sw, c.sh, -c.sw / 2, -c.sh / 2, c.sw, c.sh);
+      ctx.restore();
+    } else {
+      ctx.drawImage(c.src, c.sx, c.sy, c.sw, c.sh, x, y, c.sw, c.sh);
+    }
     ctx.strokeStyle = "#999999";
     ctx.lineWidth = 2;
     ctx.strokeRect(x - 2, y - 2, cellW + 4, cellH + 4);

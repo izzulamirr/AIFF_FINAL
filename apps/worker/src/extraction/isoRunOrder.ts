@@ -18,6 +18,7 @@
 // at a branch.
 import { readPageGeometry, type GeomPath } from "../pdfGeometry";
 import { readWeldMarks, type Pt, type WeldMarkResult } from "./isoWeldMarks";
+import { findFlowArrows, type FlowArrow } from "./isoFlowArrows";
 
 export interface RunWeld {
   /** Index into the WeldMarkResult.hits array this came from. */
@@ -39,6 +40,15 @@ export interface RunOrderResult {
   offRun: Pt[];
   runPolylines: number;
   runLength: number;
+  /** What decided which end the run starts from -- reported because it is the
+   *  difference between the drawing saying so and the code assuming. */
+  orientedBy: string;
+  /** The flow arrows found on the sheet, if any. */
+  flowArrows: FlowArrow[];
+  /** Every run segment, pointed the way the pipe TRAVELS -- which is what says
+   *  whether a leg is a rise or a drop. See where it is built for why this does
+   *  not come from the weld walk. */
+  orientedSegments: Array<{ from: Pt; to: Pt }>;
 }
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -49,6 +59,11 @@ const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
 const FITTING_GAP_PT = 26;
 // A weld mark this far or less from a run polyline is on it.
 const ON_RUN_PT = 5;
+// A flow arrow is drawn ON the pipe; isoFlowArrows only accepts one within 4pt
+// of a heavy segment, so this only has to place it on the right EDGE.
+const ON_ARROW_PT = 8;
+// How near a weld must be to an open end to speak for its bore.
+const END_BORE_PT = 60;
 
 function project(p: Pt, a: Pt, b: Pt) {
   const vx = b.x - a.x;
@@ -66,14 +81,67 @@ function polylineLength(p: GeomPath): number {
   return l;
 }
 
+type RunEdge = { path: GeomPath; a: number; b: number; length: number };
+
+/** Which run edge a point sits on, and where along it. */
+function edgeUnder(at: Pt, edges: RunEdge[]): { edge: number; d: number } | null {
+  let best: { edge: number; d: number } | undefined;
+  edges.forEach((e, ei) => {
+    for (let k = 1; k < e.path.points.length; k++) {
+      const pr = project(at, e.path.points[k - 1], e.path.points[k]);
+      if (!best || pr.d < best.d) best = { edge: ei, d: pr.d };
+    }
+  });
+  return best && best.d <= ON_ARROW_PT ? best : null;
+}
+
+/** Does the arrow point the way this edge runs from its `a` end to its `b` end?
+ *  Measured against the edge's own direction at the arrow, not end to end: a
+ *  polyline bends, and the elbow past the arrow must not flip the sign. */
+function dotAlongEdge(arrow: { at: Pt; dir: Pt }, e: RunEdge): number {
+  let best: { d: number; dot: number } | undefined;
+  for (let k = 1; k < e.path.points.length; k++) {
+    const p0 = e.path.points[k - 1];
+    const p1 = e.path.points[k];
+    const L = dist(p0, p1);
+    if (L < 1e-6) continue;
+    const pr = project(arrow.at, p0, p1);
+    const dot = arrow.dir.x * ((p1.x - p0.x) / L) + arrow.dir.y * ((p1.y - p0.y) / L);
+    if (!best || pr.d < best.d) best = { d: pr.d, dot };
+  }
+  return best?.dot ?? 0;
+}
+
+/** The nodes reachable from `from` without using edge `without`. */
+function componentWithout(from: number, without: number, edges: RunEdge[]): Set<number> {
+  const seen = new Set<number>([from]);
+  const queue = [from];
+  while (queue.length > 0) {
+    const n = queue.pop() as number;
+    edges.forEach((e, ei) => {
+      if (ei === without) return;
+      const other = e.a === n ? e.b : e.b === n ? e.a : null;
+      if (other == null || seen.has(other)) return;
+      seen.add(other);
+      queue.push(other);
+    });
+  }
+  return seen;
+}
+
 export async function readRunOrder(
   filePathOrBuffer: string | Buffer,
   pageNumber: number,
   marksIn?: WeldMarkResult,
-  /** Weld number for a mark index, where they have been read. Orients the walk. */
-  numberOf?: (hitIndex: number) => number
+  /** Weld number for a mark index, where they have been read. Orients the walk
+   *  where the drawing prints no flow arrow. */
+  numberOf?: (hitIndex: number) => number,
+  /** The weld's BORE, from the weld list. Geometry cannot supply it, and it is
+   *  what stops a 15mm vent stub being taken for a 200mm line's inlet. */
+  boreOf?: (hitIndex: number) => string | undefined
 ): Promise<RunOrderResult> {
   const geom = await readPageGeometry(filePathOrBuffer, pageNumber);
+  const flowArrows = findFlowArrows(geom.paths);
   const marksResult = marksIn ?? (await readWeldMarks(filePathOrBuffer, pageNumber));
   const marks = marksResult.hits.map((h) => h.mark);
 
@@ -139,12 +207,54 @@ export async function readRunOrder(
     degree.set(e.a, (degree.get(e.a) ?? 0) + 1);
     degree.set(e.b, (degree.get(e.b) ?? 0) + 1);
   }
-  const ends = (() => {
+  const allEnds = (() => {
     const open = [...degree.entries()].filter(([, d]) => d === 1).map(([n]) => n);
     return open.length > 0 ? open : [...degree.keys()];
   })();
 
+  // A BRANCH STUB IS NOT WHERE THE RUN STARTS, AND ITS BORE SAYS SO.
+  //
+  // The run graph is built from the heaviest line weight, which does not carry
+  // the whole run, so a sheet can come back with the main run's inlet MISSING
+  // and a vent stub's dead end the only open end left. Page 2 does exactly
+  // that: its walk started at weld 6, a 15mm THREADED weld at the bottom of a
+  // vent branch ending in a closed valve, which rooted the sheet at a dead end
+  // and read that branch's 506mm drop as a RISE.
+  //
+  // Geometry cannot tell a 15mm leg from a 200mm one -- both are one line at
+  // the pipe weight. The weld list can. The run's size is the MODE of the
+  // sheet's own weld bores, so nothing is hard-coded and the sheet is compared
+  // against itself.
+  const mainBore = (() => {
+    if (!boreOf) return undefined;
+    const counts = new Map<string, number>();
+    for (let i = 0; i < marks.length; i++) {
+      const b = String(boreOf(i) ?? "").trim();
+      if (b) counts.set(b, (counts.get(b) ?? 0) + 1);
+    }
+    let best: string | undefined;
+    let most = 0;
+    for (const [b, n] of counts) if (n > most) [best, most] = [b, n];
+    return best;
+  })();
+  const onMainRun = (node: number): boolean => {
+    if (!boreOf || !mainBore) return true;
+    let near: { bore: string; d: number } | undefined;
+    for (let i = 0; i < marks.length; i++) {
+      const d = dist(marks[i], nodes[node]);
+      const bore = String(boreOf(i) ?? "").trim();
+      if (!bore || d > END_BORE_PT) continue;
+      if (!near || d < near.d) near = { bore, d };
+    }
+    // No weld near enough to judge: leave it in rather than rule out the real
+    // inlet on no evidence.
+    return !near || near.bore === mainBore;
+  };
+  const runEnds = allEnds.filter(onMainRun);
+  const ends = runEnds.length > 0 ? runEnds : allEnds;
+
   let startNode = [...ends].sort((p, q) => nodes[p].y - nodes[q].y)[0];
+  let orientedBy: RunOrderResult["orientedBy"] = "the topmost open end";
   if (numberOf) {
     let lowest: { hitIndex: number; n: number } | undefined;
     for (let i = 0; i < marks.length; i++) {
@@ -155,6 +265,94 @@ export async function readRunOrder(
     if (lowest) {
       const target = marks[lowest.hitIndex];
       startNode = [...ends].sort((p, q) => dist(nodes[p], target) - dist(nodes[q], target))[0];
+      orientedBy = `the end nearest weld ${lowest.n}, the lowest-numbered`;
+    }
+  }
+
+  // A DRAWN FLOW ARROW BEATS BOTH, because it is the drawing saying so rather
+  // than an assumption about how the draughtsman numbered.
+  //
+  // An arrow sits on one edge and points along it, which fixes the direction of
+  // travel on THAT edge; the run's start is then whichever open end lies
+  // upstream of it. Found by removing that edge from the graph and seeing which
+  // side the upstream node falls on -- exact, and it copes with a run that
+  // doubles back, which comparing straight-line directions would not.
+  for (const arrow of flowArrows) {
+    const on = edgeUnder(arrow.at, edges);
+    if (!on) continue;
+    // Which end of that edge the flow is heading for.
+    const downstream = dotAlongEdge(arrow, edges[on.edge]) >= 0 ? edges[on.edge].b : edges[on.edge].a;
+    const upstream = downstream === edges[on.edge].a ? edges[on.edge].b : edges[on.edge].a;
+    const reachable = componentWithout(upstream, on.edge, edges);
+    const upstreamEnds = ends.filter((n) => reachable.has(n));
+    if (upstreamEnds.length === 0) continue;
+    // SEVERAL OPEN ENDS UPSTREAM: take the one FURTHEST along the run.
+    //
+    // Upstream of the arrow lies the run's inlet and also the dead end of every
+    // branch hanging off the stretch between. They are told apart by length --
+    // the main run carries on across the sheet and off it, a vent or drain stub
+    // is a few hundred millimetres. Page 2 is the case: its walk started at
+    // weld 6, a 15mm THREADED weld at the bottom of a vent branch ending in a
+    // closed valve, which rooted the whole sheet at a dead end and reported
+    // that branch's 506mm drop as a RISE.
+    const agrees = upstreamEnds.includes(startNode);
+    startNode = agrees ? startNode : upstreamEnds.sort((p, q) => nodes[p].y - nodes[q].y)[0];
+    // Whether the arrow CONFIRMED the weld numbering or overruled it. Worth
+    // reporting either way: agreement is the evidence that swapping the
+    // orientation rule was safe, and disagreement is the drawing telling you
+    // the numbering does not follow the run on this sheet.
+    orientedBy = agrees ? "a drawn flow arrow, agreeing with the weld numbering" : "a drawn flow arrow, OVERRULING the weld numbering";
+    break;
+  }
+
+  // WHICH WAY THE PIPE TRAVELS AT EVERY POINT, from the same start.
+  //
+  // Not taken from the weld walk below: that one has to decide branch from main
+  // run and which leg to take first, and it is only right on one sheet. This
+  // needs none of that. Flow enters the run at one end and travels outward
+  // through it, so orienting every edge AWAY FROM THE START is the whole
+  // answer -- a breadth-first sweep of the graph, indifferent to weld adjacency,
+  // branch classification and numbering alike.
+  //
+  // What it is for: naming a spool's extents. A DIMENSION has no direction of
+  // its own -- it brackets an extent -- and deriving one from the order CAD
+  // happened to write its two endpoints is meaningless, which is how one spool
+  // came to report five vertical legs as UP, UP, DOWN, UP, UP. The pipe under
+  // the dimension has a direction, and this is it.
+  // Which way the pipe travels, from the sheet's start outward.
+  //
+  // Flow enters the run at one end and travels outward, so orienting every
+  // edge AWAY FROM THE START is the whole answer -- a breadth-first sweep,
+  // indifferent to weld adjacency, branch classification and numbering alike.
+  // Only the start's own connected piece is oriented: the run graph comes from
+  // the heaviest line weight and leaves a sheet in several disconnected
+  // fragments, and a fragment holding no flow arrow has nothing to root it but
+  // a guess at which end comes first. Guessing was measured and it is wrong
+  // more often than right -- see the note on direction in spoolEnvelope.ts.
+  const orientedSegments: Array<{ from: Pt; to: Pt }> = [];
+  // ONLY WHERE A FLOW ARROW SAYS SO. Without one the start comes from the weld
+  // numbering or, failing that, the topmost open end -- a guess, and measured
+  // to be wrong more often than right: orienting arrow-less fragments that way
+  // reversed every horizontal on two sheets. No arrow, no segments, and the
+  // dimension keeps its drawn order.
+  if (orientedBy.startsWith("a drawn flow arrow")) {
+    const seen = new Set<number>([startNode]);
+    const queue: number[] = [startNode];
+    const usedHere = new Set<number>();
+    while (queue.length > 0) {
+      const n = queue.shift() as number;
+      edges.forEach((e, ei) => {
+        if (usedHere.has(ei) || (e.a !== n && e.b !== n)) return;
+        usedHere.add(ei);
+        const forward = e.a === n;
+        const pts = forward ? e.path.points : [...e.path.points].reverse();
+        for (let k = 1; k < pts.length; k++) orientedSegments.push({ from: pts[k - 1], to: pts[k] });
+        const other = forward ? e.b : e.a;
+        if (!seen.has(other)) {
+          seen.add(other);
+          queue.push(other);
+        }
+      });
     }
   }
 
@@ -224,5 +422,8 @@ export async function readRunOrder(
     offRun,
     runPolylines: pipes.length,
     runLength: edges.reduce((s, e) => s + e.length, 0),
+    orientedBy,
+    flowArrows,
+    orientedSegments,
   };
 }

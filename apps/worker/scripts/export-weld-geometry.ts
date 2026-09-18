@@ -2,7 +2,7 @@
 // file, ready to be loaded into the database by
 // packages/db/scripts/import-weld-geometry.mjs.
 //
-//   pnpm --filter @easy/worker exec tsx scripts/export-weld-geometry.ts <file.pdf> <out.json> [--read-labels 2,3] [--preview sheet.png] [--labels-from labels.json]
+//   pnpm --filter @easy/worker exec tsx scripts/export-weld-geometry.ts <file.pdf> <out.json> [--read-labels 2,3] [--preview sheet.png] [--labels-from labels.json] [--bores weld-list.json]
 //
 // --preview renders the exact contact sheet the call WOULD send and writes it to
 // disk instead, so a broken render is found for nothing. --labels-from supplies
@@ -136,6 +136,36 @@ async function main() {
   const previewPath = pi >= 0 ? rest[pi + 1] : undefined;
   const lfi = rest.indexOf("--labels-from");
   const labelsFrom = lfi >= 0 ? rest[lfi + 1] : undefined;
+  // --bores takes the weld list purely for each weld's SIZE, which geometry
+  // cannot supply and which stops the walk rooting at a small-bore vent stub.
+  const bi = rest.indexOf("--bores");
+  const boresPath = bi >= 0 ? rest[bi + 1] : undefined;
+  const boreByPage = new Map<number, Map<number, string>>();
+  if (boresPath) {
+    const list = JSON.parse(readFileSync(boresPath, "utf8")) as { pages: Array<{ page: number; welds: Array<{ weldNo: number; size?: string }> }> };
+    for (const bp of list.pages) boreByPage.set(bp.page, new Map(bp.welds.filter((w) => w.size).map((w) => [w.weldNo, String(w.size)])));
+  }
+  // FORGETTING --bores IS SILENT, AND IT MOVES REAL NUMBERS.
+  //
+  // Without the weld list the bore guard cannot run, so the walk is free to
+  // root at a small-bore vent stub's dead end and orient that whole fragment
+  // backwards. It does not fail, it does not warn, and the file it writes
+  // looks exactly as trustworthy as a correct one -- the only visible trace
+  // is `orientedBy` saying "a drawn flow arrow" on a sheet where the guard
+  // would have said otherwise. That cost page 2 its N-04, flipping a
+  // hand-verified DOWN 506 to UP 506, and it took an envelope diff to find.
+  //
+  // The worker never hits this: `readGeometrySpools` has the weld list in
+  // hand and always passes the bores. Only this script can be run without it.
+  if (!boresPath) {
+    console.log(
+      `NOTE: no --bores given, so weld SIZES are unknown and the small-bore guard is off.
+` +
+        `      A sheet whose only open end is a vent or drain stub can then root the walk at
+` +
+        `      that dead end and report its drop as a rise. Pass --bores <weld-list.json>.`
+    );
+  }
   const buf = readFileSync(pdfPath);
 
   // Locate every sheet's welds first (free), then read all the wanted pages'
@@ -159,7 +189,10 @@ async function main() {
     const labelAt = (i: number) => labels.get(`${page}-${i + 1}`);
     const numberOf = (i: number) => Number(String(labelAt(i) ?? "").replace(/^[A-Za-z]+/, ""));
     const sheetLabelled = marks.hits.some((_, i) => labelAt(i) != null);
-    const run = sheetLabelled ? await readRunOrder(buf, page, marks, numberOf) : await readRunOrder(buf, page, marks);
+    const bores = boreByPage.get(page);
+    const run = sheetLabelled
+      ? await readRunOrder(buf, page, marks, numberOf, bores ? (i: number) => bores.get(numberOf(i)) : undefined)
+      : await readRunOrder(buf, page, marks);
     const orderOf = new Map(run.welds.map((w, i) => [w.hitIndex, i]));
     const afterOf = new Map(run.welds.map((w) => [w.hitIndex, w.comesAfter]));
     const branchOf = new Map(run.welds.map((w) => [w.hitIndex, w.onBranch]));
@@ -170,6 +203,26 @@ async function main() {
       height: marks.height,
       flagCount: marks.flagCount,
       untraced: marks.untraced.length,
+      // What decided which end the run starts from, and the arrows that said
+      // so. Stored because "the drawing says the flow goes this way" and "the
+      // weld numbering was assumed to follow the run" are very different
+      // grounds for an ordering, and a reviewer should be able to tell which
+      // one they are looking at.
+      orientedBy: run.orientedBy,
+      // Every run segment pointed the way the pipe TRAVELS. A dimension has no
+      // direction of its own, so this is what says whether the leg it brackets
+      // is a rise or a drop -- see buildSpoolEnvelopes.
+      orientedSegments: run.orientedSegments.map((sg) => ({
+        from: { x: Number(sg.from.x.toFixed(1)), y: Number(sg.from.y.toFixed(1)) },
+        to: { x: Number(sg.to.x.toFixed(1)), y: Number(sg.to.y.toFixed(1)) },
+      })),
+      flowArrows: run.flowArrows.map((a) => ({
+        at: { x: Number(a.at.x.toFixed(1)), y: Number(a.at.y.toFixed(1)) },
+        apex: { x: Number(a.apex.x.toFixed(1)), y: Number(a.apex.y.toFixed(1)) },
+        pageAngle: Number((((Math.atan2(a.dir.y, a.dir.x) * 180) / Math.PI + 360) % 360).toFixed(1)),
+        onPipePt: Number(a.onPipePt.toFixed(1)),
+        alongDeg: Number(a.alongDeg.toFixed(1)),
+      })),
       welds: marks.hits.map((h, i) => ({
         label: labelAt(i) ?? null,
         weldNo: Number.isFinite(numberOf(i)) && numberOf(i) > 0 ? numberOf(i) : null,
@@ -183,7 +236,10 @@ async function main() {
       })),
     });
     const n = marks.hits.filter((_, i) => labelAt(i) != null).length;
-    console.log(`page ${page}: ${marks.hits.length}/${marks.flagCount} located, ${run.welds.length} ordered${n ? `, ${n} labelled` : ""}`);
+    console.log(
+      `page ${page}: ${marks.hits.length}/${marks.flagCount} located, ${run.welds.length} ordered${n ? `, ${n} labelled` : ""}` +
+        `, oriented by ${run.orientedBy}`
+    );
   }
 
   writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), pages }, null, 2));

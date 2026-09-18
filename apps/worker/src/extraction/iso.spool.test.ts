@@ -570,3 +570,15 @@ test("a payload saved before the geometry existed rebuilds exactly as it did", (
   });
   assert.deepEqual(spoolRows(buildIsoTags([sheet] as never)), { "N-01": [1, 2], "N-02": [3] });
 });
+
+test("spool_tags arriving as one JSON STRING is unwrapped, not read as one tag", () => {
+  // A real run returned the whole list as a string. Read literally it is a
+  // single spool named after five, and the "N tags means N-1 cuts" check then
+  // throws the sheet out.
+  const asString = '["8\\"-22-214-01-CRD-0002-AC03N-N-12", "8\\"-22-214-01-CRD-0002-AC03N-N-13"]' as never;
+  assert.deepEqual(readSpoolTags(asString), ['8"-22-214-01-CRD-0002-AC03N-N-12', '8"-22-214-01-CRD-0002-AC03N-N-13']);
+});
+
+test("a plain comma-separated string works too", () => {
+  assert.deepEqual(readSpoolTags("N-12, N-13, N-14" as never), ["N-12", "N-13", "N-14"]);
+});

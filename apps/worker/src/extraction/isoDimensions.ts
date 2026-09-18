@@ -74,16 +74,37 @@ const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
 /** An arrowhead is a small filled triangle. */
 const HEAD_MIN_PT = 3;
 const HEAD_MAX_PT = 12;
-/** How close an arrowhead must sit to the line's end to belong to it. */
-const HEAD_TOLERANCE_PT = 6;
+/**
+ * How close an arrowhead must sit to the line's end to belong to it, measured
+ * to whichever of its APEX or CENTRE is nearer.
+ *
+ * Swept on both revisions with that apex-aware match: 6 gives 89/90 and still
+ * misses sheet 2's 920, 7 gives 92/92 and finds it, 8 gives 90/90 and 9 drops
+ * to 87/87 as heads start pairing with ends they do not belong to. 7 is the
+ * peak, and it is the same on both drawings.
+ */
+const HEAD_TOLERANCE_PT = 7;
 /**
  * An arrowhead POINTS ALONG the line it terminates. Without this a weld dot
  * passes as an arrowhead -- it is a small filled blob of much the same size --
  * and then any pipe with a weld at each end reads as a dimension.
  */
 const HEAD_ALIGN_COS = 0.85;
-/** Shorter than this and it is a leader tick, not a dimension worth reading. */
-const MIN_DIMENSION_PT = 20;
+/**
+ * Shorter than this and it is a leader tick, not a dimension worth reading.
+ *
+ * MEASURED. 20 was costing a real length: sheet 2's 89mm piece across the
+ * 200x150 reducer just before weld 16 measures 14.6pt apex to apex -- the
+ * arrows are drawn OUTSIDE, as CAD does when the extent is too small to fit
+ * them within -- so it was thrown away before anything could read it, and N-07
+ * came out 751 where the drawing says 840.
+ *
+ * Swept on both revisions: 20, 16 and 14 all give the same count but 14 admits
+ * that 89; 12 admits one more, a 12.1pt span on page 1 with no pipe under it;
+ * below 10 nothing further appears. 14 is the value that takes the length the
+ * drawing prints and nothing else.
+ */
+const MIN_DIMENSION_PT = 14;
 /**
  * How far the apex-to-apex line may drift from the DRAWN line before the
  * arrowheads are assumed to have been mismatched. A dimension's two heads
@@ -102,8 +123,21 @@ const MAX_ANNOTATION_LW = 1.5;
 const PIPE_MIN_LW = 1.5;
 /** A pipe run drawn slightly off its nominal axis is still that run. */
 const PIPE_PARALLEL_DEG = 6;
-/** How far a witness line may carry a dimension back to its pipe. */
-const MAX_WITNESS_REACH_PT = 200;
+/**
+ * How far a witness line may carry a dimension back to its pipe.
+ *
+ * MEASURED, not guessed, and the same on both revisions of the reference ISO.
+ * The offsets actually used cluster hard at 42-43pt -- the first dimension
+ * chain -- with further chains at 59, 71, 81 and 85, and then NOTHING until
+ * 118. Every offset beyond that gap is a dimension being dragged across the
+ * sheet onto a pipe it does not measure: sheet 1's 15mm branch dimensions slid
+ * 131 and 141pt onto the 200mm main run, which is long, heavy and parallel to
+ * them, and came back 86-95% "covered" by pipe belonging to another leg
+ * entirely.
+ *
+ * 200 let all of that through. 100 sits in the measured gap.
+ */
+const MAX_WITNESS_REACH_PT = 100;
 /** Offsets this close describe the same slide-back. */
 const OFFSET_GROUP_PT = 4;
 // How much coverage MEANS a dimension is measuring pipe is not decided here:
@@ -167,6 +201,40 @@ const GLYPH_GAP_PT = 7;
  * of a long number also chained "WOL 200X" onto four labels. Direction does.
  */
 const LABEL_BAND_PT = 8;
+/**
+ * How far ACROSS its own dimension line the number may sit -- the test that
+ * says which printed text belongs to THIS dimension.
+ *
+ * LABEL_BAND_PT above holds a run together once it has started. This decides
+ * where it STARTS, and the two are not the same job: the band is measured from
+ * the seed, so a seed on the wrong text grows a tidy, confident box round the
+ * wrong text. Seeding on whatever glyph is NEAREST THE MIDPOINT is what went
+ * wrong, and it goes wrong in a specific place -- beside a FIELD WELD, where
+ * the sheet prints an "FW" note and a hatched tick right against the pipe, and
+ * beside a weld flag, whose label is as much a small stroked run as a digit is.
+ *
+ * A number belongs to a dimension by sitting ON ITS LINE: in the gap of a split
+ * line, just clear of a continuous one, or -- where the extent is too small to
+ * hold it -- further out along that same line, past the arrowheads. What it
+ * never does is stand off to the side, because a number to the side of a line
+ * is a number about something else.
+ *
+ * MEASURED, on every label box of both revisions of the reference ISO, as the
+ * distance from the dimension's own line to the box centre:
+ *
+ *   revised   0 -- 8.6  (90 labels, all read correctly)   15.8, 20.6, 29.0
+ *   original  0 -- 9.0  (89 labels, all read correctly)   13.9, 21.7, 29.0
+ *
+ * Nothing at all between 9.0 and 13.9, on either drawing, and the six outliers
+ * are exactly the six cells that came back unreadable or wrong -- the "FW" note
+ * that cost N-15 its 305, the two weld flags that read "BW4", and three with no
+ * number printed near them at all. 11 sits in the measured gap.
+ *
+ * Where nothing is in the band there is NO LABEL, and that is reported rather
+ * than papered over: a cell showing text that belongs to something else is
+ * worse than no cell, because it invites a reading.
+ */
+const LABEL_ACROSS_PT = 11;
 /** Breathing room so a digit is not shaved off at the edge of its crop. */
 const LABEL_PAD_PT = 2.5;
 
@@ -354,8 +422,18 @@ export function findDimensions(paths: GeomPath[]): DimensionRead {
     return best;
   };
   const headInfo = heads.map((h) => ({ at: centre(h), apex: apexOf(h), axis: headAxis(h) }));
+  // Matched on whichever of the head's APEX or CENTRE is nearer the line's end.
+  // The two drawn forms put different parts of the arrow there: an INWARD
+  // arrow has its apex exactly on the end, an OUTWARD one sits beyond it with
+  // its apex the nearest part and its centre half an arrowhead further out.
+  // Centre alone found the upper end of sheet 2's 920 at 2.9pt and missed the
+  // lower at 10.5, so the pair never formed and 920mm of N-09 went unread.
   const headNear = (q: Pt, dir: Pt) =>
-    headInfo.find((h) => dist(h.at, q) <= HEAD_TOLERANCE_PT && Math.abs(h.axis.x * dir.x + h.axis.y * dir.y) >= HEAD_ALIGN_COS);
+    headInfo.find(
+      (h) =>
+        Math.min(dist(h.at, q), h.apex ? dist(h.apex, q) : Infinity) <= HEAD_TOLERANCE_PT &&
+        Math.abs(h.axis.x * dir.x + h.axis.y * dir.y) >= HEAD_ALIGN_COS
+    );
 
   // Glyph strokes, for finding the printed number near a dimension's midpoint.
   // Text only: an arrowhead is not a glyph, however small it is.
@@ -391,13 +469,21 @@ export function findDimensions(paths: GeomPath[]): DimensionRead {
     // nearby -- a weld flag, a cut-piece marker, an item balloon -- and the
     // crop then shows two numbers with no way to tell which is the dimension.
     const sorted = near.slice().sort((g, h) => dist(centre(g), mid) - dist(centre(h), mid));
-    const box = { ...sorted[0].bbox };
-    const used = new Set([sorted[0]]);
-    // The band the text reads along: through the glyph nearest the middle,
-    // parallel to the dimension itself.
-    const seed = centre(sorted[0]);
     const len0 = dist(from, to) || 1;
     const dir = { x: (to.x - from.x) / len0, y: (to.y - from.y) / len0 };
+    // ON THE LINE, then nearest -- not nearest outright. The number may sit a
+    // long way ALONG the line (a small extent puts it out past the arrowheads,
+    // which is where N-15's 305 is printed, 34pt from a 23pt span's midpoint),
+    // but it is never far ACROSS it. Nearest-outright picks the "FW" note 17pt
+    // away instead, and then grows a perfectly tidy box round it.
+    const acrossLine = (q: Pt) => Math.abs((q.x - mid.x) * -dir.y + (q.y - mid.y) * dir.x);
+    const first = sorted.find((g) => acrossLine(centre(g)) <= LABEL_ACROSS_PT);
+    if (!first) return null;
+    const box = { ...first.bbox };
+    const used = new Set([first]);
+    // The band the text reads along: through the seed glyph, parallel to the
+    // dimension itself.
+    const seed = centre(first);
     const offBand = (q: Pt) => Math.abs((q.x - seed.x) * -dir.y + (q.y - seed.y) * dir.x);
     let grew = true;
     while (grew) {

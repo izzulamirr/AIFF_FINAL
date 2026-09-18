@@ -14,3 +14,5 @@ export * from "./containerFit";
 export * from "./weldTypes";
 export * from "./isoAxes";
 export * from "./spoolEnvelope";
+export * from "./spoolShape";
+export * from "./spoolTagClash";

@@ -16,7 +16,7 @@
 // scripts/rebuild-iso-tags.ts and packages/db/scripts/import-iso-tags.mjs.
 import { readFileSync, writeFileSync } from "node:fs";
 import { flagRegions, locateWeldFlags, numberingComplete, readGeometrySpools } from "../src/extraction/isoGeometrySpools";
-import { buildIsoTags } from "../src/extraction/iso";
+import { buildIsoTags, readSpoolTags } from "../src/extraction/iso";
 
 const short = (t: string) => String(t).replace(/^.*-N-/, "N-");
 
@@ -67,13 +67,17 @@ async function main() {
       console.log(`page ${page}: ${regions.length} flags, numbering NOT complete -- the vision pass keeps this sheet`);
       continue;
     }
-    const spoolTags = (sheet.result.spool_tags ?? []) as string[];
+    // Through the SAME unwrapper the worker uses. Tool-call JSON is not
+    // validated against the schema, and page 4 of the reference ISO comes
+    // back as a JSON STRING rather than the declared string[] -- reading it
+    // raw here threw where the worker itself copes.
+    const spoolTags = readSpoolTags(sheet.result.spool_tags);
     const g = await readGeometrySpools({
       pdf,
       page,
       marks,
       welds: (sheet.result.welds ?? []).map((w) => ({ weldNo: Number(w.weld_no), weldType: w.weld_type, size: w.size })),
-      spoolTags: spoolTags.map((t) => String(t)),
+      spoolTags,
       weldNumberOf: weldNumberOf(page),
       tagLabels,
     });

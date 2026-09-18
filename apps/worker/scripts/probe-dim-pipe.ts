@@ -34,7 +34,9 @@ async function main() {
     for (let i = 1; i < p.points.length; i++) if (dist(p.points[i - 1], p.points[i]) > 1) pipes.push({ a: p.points[i - 1], b: p.points[i] });
   }
 
+  const only = process.argv.includes("--cell") ? process.argv[process.argv.indexOf("--cell") + 1] : null;
   for (const d of dims.dimensions) {
+    const allOffsets: Array<{ t: number; cov: number }> = [];
     if (d.witnessDegrees == null) { console.log(`${d.cell.padEnd(5)} ${String(d.mm).padEnd(5)} no witness`); continue; }
     const T1 = d.from as Pt, T2 = d.to as Pt;
     const L = dist(T1, T2);
@@ -72,6 +74,22 @@ async function main() {
       for (const [lo, hi] of spans) { const s0 = Math.max(lo, end); if (hi > s0) { cov += hi - s0; end = hi; } }
       const frac = cov / L;
       if (!best || frac > best.cov) best = { t: c.t, cov: frac };
+      // With --cell, list EVERY candidate offset: which pipe a dimension could
+      // be measuring, and how much of it each one puts under the span. That is
+      // the only way to see why the attach landed where it did.
+      if (only === d.cell) allOffsets.push({ t: c.t, cov: frac });
+    }
+    if (only === d.cell) {
+      const seen = new Set<string>();
+      console.log(`
+${d.cell}  ${d.mm}mm  candidate offsets (t = how far it slides, cov = pipe under the span):`);
+      for (const o of allOffsets.sort((x, y) => Math.abs(x.t) - Math.abs(y.t))) {
+        const k = o.t.toFixed(0);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        console.log(`   t ${o.t.toFixed(1).padStart(7)}   cov ${(o.cov * 100).toFixed(0).padStart(3)}%`);
+      }
+      console.log("");
     }
     const t = best?.t ?? 0;
     const P1 = { x: T1.x + t * u.x, y: T1.y + t * u.y };

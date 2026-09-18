@@ -1,7 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { checkSpoolFit, MARGINAL_MM, STANDARD_CONTAINERS, type FitResult, type SpoolFit } from "@easy/shared";
+import {
+  checkSpoolFit,
+  FIELD_WELD_ALLOWANCE_MM,
+  MARGINAL_MM,
+  NEAR_MISS_MM,
+  TWENTY_FOOT_CONTAINERS,
+  withFieldWeldAllowance,
+  type FitResult,
+  type SpoolFit,
+} from "@easy/shared";
 import type { ContainerSpool } from "@/lib/containers";
 
 // Sizes are DERIVED from the dimensions read off the sheets -- there is
@@ -28,8 +37,18 @@ const AXIS_SIDE = { "UP-DOWN": "length", "N-S": "width", "E-W": "height" } as co
  */
 function fieldWeldSide(s: ContainerSpool): "length" | "width" | "height" | undefined {
   if (!s.envelope || s.fieldWeldNumbers.length === 0) return undefined;
-  for (const [axis, parts] of Object.entries(s.envelope.parts) as Array<[keyof typeof AXIS_SIDE, Array<{ weldNo?: number }>]>) {
-    if (parts.some((p) => p.weldNo != null && s.fieldWeldNumbers.includes(p.weldNo))) return AXIS_SIDE[axis];
+  for (const [axis, parts] of Object.entries(s.envelope.parts) as Array<
+    [keyof typeof AXIS_SIDE, Array<{ weldNo?: number; weldNos?: number[] }>]
+  >) {
+    // EVERY weld the length reaches, not just the one it is keyed by. A
+    // length ending AT its spool's closing weld is keyed by the weld at its
+    // other end: N-02's 881 is keyed 11 while the field weld it runs to is
+    // 12, so matching on the key alone found nothing and the 150mm went to
+    // the longest side -- 3437 east -- instead of the N-S leg carrying the
+    // weld.
+    const touches = (p: { weldNo?: number; weldNos?: number[] }) =>
+      (p.weldNos ?? (p.weldNo != null ? [p.weldNo] : [])).some((n) => s.fieldWeldNumbers.includes(n));
+    if (parts.some(touches)) return AXIS_SIDE[axis];
   }
   return undefined;
 }
@@ -45,14 +64,48 @@ function fieldWeldSide(s: ContainerSpool): "length" | "width" | "height" | undef
  * both ways it is named by the axis instead, since neither direction is the
  * honest answer.
  */
+/**
+ * The extents to show against a spool, named by direction.
+ *
+ * An axis carrying lengths BOTH ways is split and reported as both, not rolled
+ * into one figure under the axis name. N-03 drops 2376 down its main leg and
+ * rises 385 up each of two weldolet branches: "UP-DOWN 3652" is a number that
+ * describes nothing -- it is neither the drop, nor the rise, nor the height of
+ * anything -- while "DOWN 2882, UP 770" is what the drawing says and what a
+ * reviewer can check leg by leg.
+ */
+/**
+ * The container it ALMOST goes in, when none takes it outright.
+ *
+ * A spool over a nominal internal size by less than containers vary between
+ * operators has not been shown not to fit -- it has been shown to need a tape
+ * measure. N-10 carrying its field-weld allowance is the case: 6150 x 721 x
+ * 457 against a 20ft, missing by single-digit millimetres on a spec quoted to
+ * the nearest millimetre and built to rather less than that.
+ */
+function nearMiss(fit: SpoolFit): FitResult | null {
+  const close = fit.results
+    .filter((r) => !r.fits && r.shortfallMm != null && r.shortfallMm <= NEAR_MISS_MM)
+    .sort((a, b) => a.shortfallMm! - b.shortfallMm!);
+  return close[0] ?? null;
+}
+
 function sizeParts(e: NonNullable<ContainerSpool["envelope"]>): Array<{ label: string; mm: number }> {
   const out: Array<{ label: string; mm: number }> = [];
   for (const [axis, key] of Object.entries(AXIS_KEY) as Array<[keyof typeof AXIS_KEY, "upDownMm" | "nsMm" | "ewMm"]>) {
     const mm = e[key];
     if (!mm) continue;
-    const dirs = new Set((e.parts[axis] ?? []).map((p) => p.drawnAs));
-    const only = dirs.size === 1 ? [...dirs][0] : null;
-    out.push({ label: only ? LONG[only] ?? only : axis, mm });
+    const byDirection = new Map<string, number>();
+    for (const p of e.parts[axis] ?? []) byDirection.set(p.drawnAs, (byDirection.get(p.drawnAs) ?? 0) + p.mm);
+    if (byDirection.size <= 1) {
+      const only = [...byDirection.keys()][0];
+      out.push({ label: only ? LONG[only] ?? only : axis, mm });
+      continue;
+    }
+    // Biggest first, so the leg that decides the spool reads first.
+    for (const [dir, total] of [...byDirection.entries()].sort((a, b) => b[1] - a[1])) {
+      out.push({ label: LONG[dir] ?? dir, mm: total });
+    }
   }
   return out;
 }
@@ -74,21 +127,11 @@ function sizeParts(e: NonNullable<ContainerSpool["envelope"]>): Array<{ label: s
  * flows -- enough to sort a pile into six, not a claim about the run.
  */
 function Workings({ envelope }: { envelope: NonNullable<ContainerSpool["envelope"]> }) {
-  type Row = { cell: string; mm: number; printedMm?: number; correctionWhy?: string; overshootPt?: number; overshootWeldNo?: number };
+  type Row = { cell: string; mm: number };
   const byDirection = new Map<string, Row[]>();
   for (const list of Object.values(envelope.parts)) {
     for (const p of list)
-      byDirection.set(p.drawnAs, [
-        ...(byDirection.get(p.drawnAs) ?? []),
-        {
-          cell: p.cell,
-          mm: p.mm,
-          printedMm: p.printedMm,
-          correctionWhy: p.correctionWhy,
-          overshootPt: p.overshootPt,
-          overshootWeldNo: p.overshootWeldNo,
-        },
-      ]);
+      byDirection.set(p.drawnAs, [...(byDirection.get(p.drawnAs) ?? []), { cell: p.cell, mm: p.mm }]);
   }
   if (byDirection.size === 0) return null;
   return (
@@ -108,29 +151,6 @@ function Workings({ envelope }: { envelope: NonNullable<ContainerSpool["envelope
                     {v.map((x) => (
                       <span key={x.cell} className="whitespace-nowrap text-gray-400">
                         <span className="text-gray-600">{x.cell}</span> <span className="tabular-nums">{x.mm}</span>
-                        {x.printedMm != null && x.printedMm !== x.mm && (
-                          // A corrected length always shows what the sheet
-                          // prints beside it -- a figure that silently
-                          // disagrees with the drawing is unreviewable.
-                          <span className="text-amber-700" title={x.correctionWhy}>
-                            {" "}
-                            (of {x.printedMm} printed)
-                          </span>
-                        )}
-                        {x.overshootPt != null && (
-                          // The length runs past the end of this spool, so
-                          // part of what it measures is the next one's. How
-                          // much cannot be scaled off a drawing that is not
-                          // to scale -- look for the overshoot printed as
-                          // its own dimension and correct it.
-                          <span
-                            className="text-red-700"
-                            title={`Runs past weld ${x.overshootWeldNo}, which ends this spool, so part of this length belongs to the next one. The sheet usually prints the overshoot as its own dimension -- read it and correct this figure. The total is an over-estimate until you do.`}
-                          >
-                            {" "}
-                            &#9888; past weld {x.overshootWeldNo}
-                          </span>
-                        )}
                       </span>
                     ))}
                   </span>
@@ -214,7 +234,28 @@ export function ContainerFit({ spools }: { spools: ContainerSpool[] }) {
           ? checkSpoolFit(
               s.spoolNo,
               { lengthMm: e.upDownMm, widthMm: e.nsMm, heightMm: e.ewMm },
-              { fieldWelds: s.fieldWelds, axis: fieldWeldSide(s) }
+              // TWENTY FOOT ONLY. A spool that beats a 20ft reports "will
+              // not ship" rather than being answered with a 40ft: that is a
+              // spool to cut differently, and saying so is the point.
+              //
+              // And the RUN where it is known, so the check is done on the
+              // pipe rather than on the box around it. The field-weld excess
+              // goes onto the run itself -- it is pipe left on the end.
+              {
+                fieldWelds: s.fieldWelds,
+                axis: fieldWeldSide(s),
+                containers: TWENTY_FOOT_CONTAINERS,
+                shape:
+                  e.shape && s.pipeOdMm != null
+                    ? {
+                        points: withFieldWeldAllowance(
+                          e.shape as never,
+                          FIELD_WELD_ALLOWANCE_MM * s.fieldWelds
+                        ).points,
+                        odMm: s.pipeOdMm,
+                      }
+                    : undefined,
+              }
             )
           : null;
         return { spool: s, fit };
@@ -239,7 +280,6 @@ export function ContainerFit({ spools }: { spools: ContainerSpool[] }) {
         </label>
         <span className="text-gray-500">
           {sized.length} of {spools.length} sized
-          {spools.some((s) => s.envelope) && <span className="text-amber-700"> (derived, unconfirmed)</span>}
           {sized.length > 0 && (
             <>
               {" · "}
@@ -302,14 +342,6 @@ export function ContainerFit({ spools }: { spools: ContainerSpool[] }) {
                       ) : (
                         <span className="text-gray-400">not read</span>
                       )}
-                      {spool.envelope && (
-                        <span
-                          className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-900"
-                          title="Worked out from the sheet's own dimensions -- check it against the lengths below."
-                        >
-                          derived
-                        </span>
-                      )}
                     </div>
                     {spool.envelope && <Workings envelope={spool.envelope} />}
                   </td>
@@ -318,12 +350,32 @@ export function ContainerFit({ spools }: { spools: ContainerSpool[] }) {
                       ? `${Math.round(fit.shipping.lengthMm)} × ${Math.round(fit.shipping.widthMm)} × ${Math.round(fit.shipping.heightMm)}`
                       : ""}
                   </td>
-                  <td className="py-1.5 pr-3">{best ? best.container : fit ? <span className="text-red-700">none</span> : ""}</td>
+                  <td className="py-1.5 pr-3">
+                    {best ? (
+                      best.container
+                    ) : fit ? (
+                      // A NEAR MISS IS NOT A NO. Container internals vary
+                      // between operators by more than these spools miss by,
+                      // so "none" on a nominal spec would send someone away
+                      // to re-cut a spool that goes in.
+                      nearMiss(fit) != null ? (
+                        <span className="text-amber-800">{nearMiss(fit)!.container}?</span>
+                      ) : (
+                        <span className="text-red-700">none</span>
+                      )
+                    ) : (
+                      ""
+                    )}
+                  </td>
                   <td className="py-1.5 pr-3">{best ? <HowBadge result={best} /> : ""}</td>
                   <td className="py-1.5 pr-3 tabular-nums">
                     {best ? (
                       <span className={tight(best) ? "text-amber-800" : ""}>
                         {best.tightestMm}mm{tight(best) ? " — confirm" : ""}
+                      </span>
+                    ) : fit && nearMiss(fit) ? (
+                      <span className="text-amber-800">
+                        over by {nearMiss(fit)!.shortfallMm}mm — measure the actual box
                       </span>
                     ) : fit ? (
                       <span className="text-red-700">{fit.results[0]?.blockedBy[0] ?? ""}</span>
@@ -341,12 +393,11 @@ export function ContainerFit({ spools }: { spools: ContainerSpool[] }) {
       <Unplaced spools={spools} />
 
       <p className="text-xs text-gray-500">
-        Sizes marked <span className="text-amber-800">derived</span> were worked out from the dimensions printed on the sheets. Each length
-        is tied to a spool by where it meets the pipe, and a length spanning a bolted-in valve is listed as belonging to no spool, because
-        a valve ships on its own. One spool has been checked against the drawing; the rest{" "}
-        <span className="font-medium">have not been confirmed</span> &mdash; the lengths under each one are what went into it, so a wrong
-        total can be spotted by which length does not belong. Checked against{" "}
-        {STANDARD_CONTAINERS.map((c) => c.name).join(", ")}; internal sizes are nominal and vary between operators by a few tens of
+        Sizes are worked out from the dimensions printed on the sheets. Each length is tied to a spool by where it meets the pipe, and a
+        length spanning a bolted-in valve is listed as belonging to no spool, because a valve ships on its own. The lengths under each
+        size are what went into it, so a wrong total can be spotted by which length does not belong. Checked against{" "}
+        {TWENTY_FOOT_CONTAINERS.map((c) => c.name).join(" and ")} only &mdash; nothing larger, so a spool that beats a 20ft is reported as
+        not shipping rather than answered with a 40ft. Internal sizes are nominal and vary between operators by a few tens of
         millimetres, so anything under 50mm of clearance is marked to confirm against the actual container. A field weld adds 150mm of
         excess pipe per NOTE 4.
       </p>

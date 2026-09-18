@@ -86,7 +86,7 @@ try {
       notes.push(`${short(r.tag_number)} totals ${axisTotal}mm on one axis but its longest single length is ${longestPiece}mm -- a sum of legs, not one piece`);
     }
   }
-  console.log(`   ${sized} of ${spools.length} spool rows carry a derived envelope`);
+  console.log(`   ${sized} of ${spools.length} spool rows carry an envelope`);
 
   // 5. what the sheets printed that reached no spool
   console.log("\n5. DIMENSIONS");

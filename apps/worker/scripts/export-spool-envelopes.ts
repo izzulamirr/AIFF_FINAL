@@ -43,14 +43,23 @@ function main() {
       attach: d.attach,
     }))
   );
+  // Bore per weld, carried through the cuts file -- see placeDimension.
+  const boreOf = new Map<string, string>();
+  for (const p of cuts.pages) for (const a of p.assignment ?? []) if (a.size) boreOf.set(`${p.page}:${a.weldNo}`, String(a.size));
   const welds = geom.pages.flatMap((p: any) =>
-    p.welds.filter((w: any) => w.weldNo > 0).map((w: any) => ({ page: p.page, weldNo: w.weldNo, mark: w.mark }))
+    p.welds.filter((w: any) => w.weldNo > 0).map((w: any) => ({ page: p.page, weldNo: w.weldNo, mark: w.mark, size: boreOf.get(`${p.page}:${w.weldNo}`) }))
   );
   const assignment = cuts.pages.flatMap((p: any) =>
     (p.assignment ?? []).map((a: any) => ({ page: p.page, weldNo: a.weldNo, spool: a.spool }))
   );
 
-  const { envelopes, unplaced } = buildSpoolEnvelopes(dimensions, welds, assignment);
+  // The run where a flow arrow orients it -- what names a leg UP or DOWN.
+  // Absent from a geometry file written before arrows were read, and the
+  // builder then falls back to the drawn order.
+  const runSegments = geom.pages.flatMap((p: any) =>
+    (p.orientedSegments ?? []).map((sg: any) => ({ page: p.page, from: sg.from, to: sg.to }))
+  );
+  const { envelopes, unplaced } = buildSpoolEnvelopes(dimensions, welds, assignment, undefined, runSegments);
   const applied = Object.keys(fixes).filter((c) => dimensions.some((d: { cell: string }) => d.cell === c));
   for (const c of applied) console.log(`corrected ${c}: ${fixes[c].mm}mm -- ${fixes[c].why}`);
   for (const c of Object.keys(fixes)) if (!applied.includes(c)) console.log(`correction for ${c} matched no dimension`);
@@ -72,7 +81,7 @@ function main() {
     for (const u of unplaced) why.set(u.why, [...(why.get(u.why) ?? []), `${u.cell}=${u.mm}`]);
     for (const [reason, list] of [...why.entries()].sort()) console.log(`  ${reason.padEnd(22)} ${list.join("  ")}`);
   }
-  writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), derived: true, envelopes, unplaced }, null, 2));
+  writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), envelopes, unplaced }, null, 2));
   console.log(`\nwrote ${outPath}`);
 }
 main();

@@ -4,6 +4,7 @@ import {
   checkSpoolFit,
   fitsContainer,
   shippingEnvelope,
+  NEAR_MISS_MM,
   STANDARD_CONTAINERS,
   FIELD_WELD_ALLOWANCE_MM,
   type ContainerSpec,
@@ -193,6 +194,93 @@ test("angling never gets a spool past a door it cannot enter", () => {
   const r = fitsContainer(box(5000, 2350, 2340), spec("20ft GP"));
   assert.equal(r.fits, false);
   assert.match(r.blockedBy.join(" "), /door/);
+});
+
+test("a long stick enters END-ON and is tilted inside, so the door does not cap its attitude", () => {
+  // The door and the resting attitude are different questions. A 6.5m stick
+  // goes through a 2340 x 2280 opening along its own axis without trouble,
+  // and only then comes off the floor onto the body diagonal -- an attitude
+  // the doorway never sees. Capping the tilt by the opening loses this.
+  const r = fitsContainer(box(6500, 200, 200), spec("20ft GP"));
+  assert.equal(r.fits, true);
+  assert.equal(r.how, "tilted");
+});
+
+test("a spool goes in TURNED where square will not pass -- the door is free-angle too", () => {
+  // 2795 beats the 2340 opening squarely, but laid along the cross-section
+  // diagonal it presents about 1976 x 1976. Pythagoras on the opening, not a
+  // comparison of sorted sides.
+  const r = fitsContainer(box(5000, 10, 2795), spec("20ft GP"));
+  assert.equal(r.fits, true, "2795 fits the 3355mm section diagonal");
+});
+
+test("but turning never rescues a spool whose two larger sides both beat the opening", () => {
+  // Rotating a rectangle only grows its bounding box, so there is no angle
+  // that shrinks both. This is what keeps the free-angle door honest.
+  const r = fitsContainer(box(4000, 2350, 2350), spec("20ft GP"));
+  assert.equal(r.fits, false);
+  assert.match(r.blockedBy.join(" "), /door/);
+});
+
+test("the swing is reported off the CONTAINER'S LENGTH, not off whichever side is called a", () => {
+  // theta and 90-theta describe the same swing and tie on clearance, so which
+  // was printed came down to loop order: a 6m spool's 19 degrees was being
+  // reported as 71.
+  const r = fitsContainer(box(6000, 219, 219), spec("20ft GP"));
+  assert.equal(r.how, "angled");
+  assert.ok(r.angleDeg! > 0 && r.angleDeg! < 45, `a 6m spool swings modestly, got ${r.angleDeg}`);
+});
+
+test("a spool that misses by millimetres says SO, instead of a flat no", () => {
+  // N-10 carrying its 150mm field-weld allowance: 6150 x 721 x 457 against a
+  // 20ft. The best attitude is single-digit millimetres over on a spec quoted
+  // to the millimetre and built to rather less, so "will not ship" overstates
+  // what the numbers show.
+  const r = fitsContainer(box(6150, 721, 457), spec("20ft GP"));
+  assert.equal(r.fits, false);
+  assert.ok(r.shortfallMm != null, "it should say how far it missed");
+  assert.ok(r.shortfallMm! <= NEAR_MISS_MM, `expected a near miss, got ${r.shortfallMm}mm`);
+  assert.match(r.blockedBy.join(" "), /misses by only/);
+});
+
+test("a spool that misses by METRES is not dressed up as a near miss", () => {
+  const r = fitsContainer(box(9000, 2000, 2000), spec("20ft GP"));
+  assert.equal(r.fits, false);
+  assert.ok(r.shortfallMm == null || r.shortfallMm > NEAR_MISS_MM, `${r.shortfallMm}mm is not a near miss`);
+  assert.doesNotMatch(r.blockedBy.join(" "), /misses by only/);
+});
+
+test("a spool that cannot pass the DOOR gets no near-miss reprieve", () => {
+  // Being 6mm from fitting the body is no comfort if it never gets inside.
+  const r = fitsContainer(box(4000, 2350, 2350), spec("20ft GP"));
+  assert.equal(r.fits, false);
+  assert.equal(r.shortfallMm, undefined);
+  assert.match(r.blockedBy.join(" "), /door/);
+});
+
+test("the biggest cross member is set by the DOOR'S diagonal, less its own thickness", () => {
+  // Pythagoras on the opening: a 20ft door is 2340 x 2280, so 3267mm corner
+  // to corner. A member laid across it can be that long and no longer, and
+  // its own thickness comes off that.
+  const gp = spec("20ft GP");
+  const diag = Math.hypot(gp.door!.widthMm, gp.door!.heightMm);
+  assert.ok(Math.abs(diag - 3267) < 1, `door diagonal ${diag}`);
+  assert.equal(fitsContainer(box(5000, 1, 3200), gp).fits, true, "3200 clears it");
+  assert.equal(fitsContainer(box(5000, 1, 3300), gp).fits, false, "3300 is past the diagonal");
+});
+
+test("a TOP-LOADED box has no door, so the section diagonal is the limit instead", () => {
+  // 2352 x 2347 -> 3323mm, wider than the 3267 the door allows.
+  const ot = spec("20ft open top");
+  assert.ok(Math.abs(Math.hypot(ot.internal.widthMm, ot.internal.heightMm) - 3323) < 1);
+  assert.equal(fitsContainer(box(5000, 1, 3300), ot).fits, true, "past the door diagonal but inside the section's");
+});
+
+test("the diagonal is for a MEMBER, not for a block", () => {
+  // Turning a rectangle only grows its bounding box, so a solid section gets
+  // nothing from the diagonal. This is the line N-02 falls the wrong side of.
+  assert.equal(fitsContainer(box(5000, 1, 3200), spec("20ft GP")).fits, true);
+  assert.equal(fitsContainer(box(5000, 1400, 3200), spec("20ft GP")).fits, false);
 });
 
 /* --- turning it in all three axes ----------------------------------------- */

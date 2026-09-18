@@ -288,6 +288,79 @@ lower-numbered. Welds are frequently numbered out of the order the pipe reaches 
 a run can go weld 2, then 4, then 3 — record what the drawing shows and never reorder to
 make numbers ascend. This is why `buildSpoolsFromWeldTopology` works on topology alone.
 
+#### Reading the FLOW ARROW off the drawing — the code now does what the rule says
+
+`src/extraction/isoFlowArrows.ts`. The revised reference ISO draws flow arrows, so
+"follow a drawn flow arrow where there is one" stopped being advice to the model and
+became something the geometry can read. Free.
+
+**Why a bare "filled triangle" search is useless.** A page holds 2,500–5,200 filled
+triangles: glyph strokes in the title block and tables, every leader's arrowhead, every
+dimension terminator. An earlier attempt reported 58–60 mid-pipe hits a page and was
+abandoned as too noisy.
+
+**Three things together pick them out, and the separation is total.** Measured across
+both revisions — the earlier drawing has no flow arrows at all, which makes it a true
+negative control:
+
+| page | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| filled triangles | 2957 | 5195 | 3428 | 4745 | 2577 |
+| ON a pipe (≤4pt) | 783 | 806 | 386 | 652 | 485 |
+| …and ALONG it (≤10°) | 342 | 239 | 137 | 205 | 137 |
+| **…and with an OUTLINE** | **1** | **1** | **1** | **1** | **0** |
+| same pages, OLD drawing | 0 | 0 | 0 | 0 | 0 |
+
+Not one false positive on five sheets that have none. Every hit sits 0.2–1.3pt off the
+pipe and 1.0–1.9° off its axis, so nothing is near a threshold, and sheet 5 has no
+near-miss even at 12pt — it simply has no arrow drawn.
+
+**The OUTLINE is the discriminator.** A flow arrow is a filled triangle PLUS a stroked
+four-point outline round it that CROSSES ITSELF; a leader or dimension arrowhead is the
+filled triangle alone. That same self-crossing outline is what fooled the spool cut
+finder into reading an arrow as a valve — the shape that broke that is the shape that
+identifies this.
+
+Deliberately **not** filtered by size, though every arrow measures 13.7–15.0pt: the
+conjunction already separates the two drawings completely, so a size bound would add
+nothing but a number fitted to one CAD library.
+
+**Take the apex from the BASE MIDPOINT, not the centroid.** The centroid sits a third of
+the way up and skews the direction on a stubby head. The apex is the vertex furthest
+from the midpoint of the opposite edge.
+
+**What it is used for: orienting the run walk.** `isoRunOrder` had no reading of the
+flow at all — it started from "the end nearest the lowest-numbered weld", on the
+reasoning that CAD numbers welds along the run. That is an assumption about the
+draughtsman. An arrow fixes the direction of travel on the edge it sits on, and the
+run's start is then whichever open end lies upstream — found by removing that edge from
+the graph and seeing which side the upstream node falls on, which is exact and copes
+with a run that doubles back.
+
+**It confirms the numbering rather than overturning it, which is why the swap is safe.**
+On all four sheets with an arrow the upstream end is the one the numbering had already
+chosen, and every ordering is unchanged — sheet 3, the yardstick, still comes out
+`1,2,3,4,5,7,8,9,10,11`. The original drawing is bit-for-bit unchanged, still 55 welds
+ordered, still oriented by numbering. `orientedBy` says which rule decided and whether
+the two agreed, and is stored by `export-weld-geometry.ts` alongside the arrows.
+
+**Sheet 4's arrow points UP**, at page angle 269° — a riser. The fallback in
+`FLOW_DIRECTION_RULE` is "where there is none, flow runs downward", so on that sheet the
+default is simply wrong, which is the whole argument for reading the arrow. The other
+three sit at 331.9°, within 2° of the 330 isometric axis; every arrow landing on a real
+drawn axis is independent confirmation the direction maths is right.
+
+```
+pnpm --filter @easy/worker exec tsx scripts/probe-flow-arrow-candidates.ts <pdf> [page]
+pnpm --filter @easy/worker exec tsx scripts/probe-run-order.ts <pdf> <flag-labels.json> [page]
+```
+
+The first prints every filled triangle against all three tests, so the rule can be
+re-derived from measurements on a new drawing rather than trusted. The second prints the
+walk and what oriented it — **run it on sheet 3 and check that order before believing
+anything else here**, since four different attempts at widening the run graph each
+reached more welds and got sheet 3 wrong.
+
 #### What to try next, and what is already ruled out
 
 Ruled out by measurement, do not spend on these again:
@@ -867,6 +940,241 @@ The mm-per-point check printed per axis is weak by design -- the sheet is not
 to scale, so it flags real variation as often as a misread. It says where to
 look, it does not decide.
 
+##### MATCH AN ARROWHEAD TO A LINE END ON ITS APEX, NOT ITS CENTRE
+
+The two drawn forms put different parts of the arrow at the end it terminates.
+An INWARD arrow has its apex exactly on the line's end; an OUTWARD one sits
+beyond it, apex nearest and centre half an arrowhead further out again. Matching
+on the centre alone therefore works for one form and not the other, and it cost
+a whole length: sheet 2's **920** is 82pt of drawn line with its apexes 95.5pt
+apart, and the centre test found the upper end at 2.9pt and missed the lower at
+10.5, so the pair never formed and N-09 had no E-W extent at all.
+
+`headNear` now takes whichever of apex or centre is nearer. Swept on both
+revisions with that in place: 6 gives 89/90 and still misses the 920, **7 gives
+92/92 and finds it**, 8 gives 90/90, and 9 falls to 87/87 as heads begin pairing
+with ends they do not belong to. 7 is the peak and it is the same on both
+drawings.
+
+Do NOT reach for `HEAD_TOLERANCE_PT` alone: swept on the centre test it peaks at
+10 (90/91), still never finds the 920, admits spans at 27 and 26 degrees that
+are on no drawing axis, and silently grows a page 1 span from 126 to 132pt —
+which moves a hand-verified spool.
+
+##### RESCUE A LABEL CROP THAT CAME BACK TOO SMALL TO READ
+
+`labelFor` grows a box out from the glyph nearest the dimension's midpoint.
+Where it latches onto the wrong stroke the box comes back tiny, and the cell
+renders as an unreadable fragment -- no way to read the number, and no way to
+see that was why. Sheet 2's **178** got a 9x10pt box holding a single tick.
+
+A three-digit label measures 18-20pt on these sheets, so a box under
+`SUSPECT_LABEL_PT` (14) across is not a number and is opened out to
+`RESCUE_CROP_PT` (44) about its own centre. Both of page 2's broken cells then
+read plainly.
+
+Applied ONLY to the suspect boxes. Flooring EVERY cell was tried first and it
+puts a neighbouring number in frame -- the cell then shows two, with no way to
+tell which belongs to the dimension, which is the failure the tight box exists
+to prevent.
+
+`labelBox` is now carried into the JSON as well, so a cell that came back
+unreadable can be traced to a box on the wrong glyphs rather than guessed at.
+
+**The label finder is now the weakest step, and the contact sheet says so
+plainly.** Sheet 4 cost N-12 both of its extents, and neither was a detection
+failure -- both dimensions were found, only their numbers were not read:
+
+| cell | what the crop showed | should be |
+|---|---|---|
+| 4-8 | **"BW4"** -- the box landed on a weld flag | 1500 |
+| 4-10 | a fragment; the box is 9x20pt | 10614 |
+
+Two distinct faults. The first is the grower seeding on a WELD FLAG's text
+within `LABEL_REACH_PT` of the midpoint -- nothing excludes flag glyphs, and a
+hexagon's label is as much a small stroked run as a digit is. The second is a
+rotated 5-digit number needing ~33pt along its own reading direction and the
+grower stopping at 20; the size rescue does not fire because it tests the
+LONGER side, and a rotated label is legitimately thin.
+
+The FIRST is now fixed, by the rule below. The second is not. Read the preview
+before trusting a sheet's numbers -- it is free, and it shows exactly which
+cells failed and why.
+
+###### THE NUMBER SITS ON THE DIMENSION'S OWN LINE -- seed there, not nearest
+
+`LABEL_ACROSS_PT` in `isoDimensions.ts`. This is what found N-15's **WEST 305**,
+and the case is worth keeping because the failure looked like a success.
+
+Beside a field weld the sheet prints an **"FW" note and a hatched tick right
+against the pipe**. N-15's west extent is 305mm, too small an extent to hold its
+own number, so CAD pushes that number OUT ALONG the dimension line past the
+arrowheads -- 34pt from the midpoint of a 23pt span. The "FW" is 17pt away. The
+grower seeded on whatever glyph was NEAREST THE MIDPOINT, took the note, and
+then grew a perfectly tidy 14x19pt box round it. Nothing looked wrong: the cell
+rendered cleanly, it simply held the wrong text.
+
+`LABEL_BAND_PT` did not catch it and could not. That band is measured FROM THE
+SEED, so it holds a run together once started -- a seed on the wrong text grows
+a confident box round the wrong text. Where a run STARTS is a separate job.
+
+A number belongs to a dimension by sitting ON ITS LINE: in the gap of a split
+line, just clear of a continuous one, or further out along that same line where
+the extent is too small. What it never does is stand off to the side.
+
+MEASURED on every label box of both revisions, as the distance from the
+dimension's own line to the box centre:
+
+| | genuine | the failures |
+|---|---|---|
+| revised | 0 -- 8.6 (90 labels, all read correctly) | 15.8, 20.6, 29.0 |
+| original | 0 -- 9.0 (89 labels, all read correctly) | 13.9, 21.7, 29.0 |
+
+**Nothing at all between 9.0 and 13.9 on either drawing**, and the six outliers
+are exactly the six cells that came back wrong or unreadable. 11 sits in the
+gap. Re-running both drawings with it: **90 of 93 and 89 of 92 label boxes are
+byte-identical**, and the only three that move on each are those failures.
+
+| | was | now |
+|---|---|---|
+| revised 4-2 | the "FW" note | **305** |
+| revised 4-9 | the weld flag "BW4" | **1500** |
+| revised 3-5 | a fragment | **no box** -- nothing is printed near that line |
+| original 4-8 | the weld flag "BW4" | **1500** |
+| original 4-10 | a fragment | a different fragment; the growth fault above |
+
+Two things follow. **Where nothing is in the band there is NO LABEL, and that is
+reported** -- a cell showing text belonging to something else is worse than no
+cell, because it invites a reading. And a dimension with no box is now possible
+at all, which `regionsFor` in `export-dimensions.ts` was not written for: it
+cropped before it filtered and threw. Its cell names come from the dimension's
+own INDEX, never its position in the grid, so a neighbour dropping out must not
+renumber anything -- that would silently invalidate every saved `--labels-from`
+reading.
+
+**What this buys, end to end.** The 305 is the piece between the field weld at
+BW12 and the bend, and the 3100 printed beside it is the whole leg from that
+bend down to BW14 -- the same shape as sheet 1's 1186-less-305. So
+`subtractOvershoots` now resolves BOTH ends of it:
+
+```
+N-15   UP 1723   N 4152   W 305         <- was missing its west extent
+N-16   UP 5580   E 754    W 2795        <- 3100 less the 305, was unplaced
+```
+
+Every other spool envelope on the document is unchanged (18 of 20). The 305 is
+also independent confirmation of an earlier hand calculation: the half elbow
+worked out from the CUT PIECE LIST as (3100 - 2491)/2 = **304.5**, against a
+printed **305**.
+
+One consequence to watch. N-16 now carries lengths running BOTH WAYS on one
+axis, and the axis total is a SUM (754 + 2795 = 3549) where the bounding extent
+is 2795. The page splits it correctly and shows "WEST 2795, EAST 754", but
+`checkSpoolFit` is handed `ewMm`, so N-16's container answer is conservative by
+754mm. That is the known sum-vs-extent limitation, which needs the run topology
+to resolve -- it errs toward the bigger container, which is the safe direction,
+but it is not the answer.
+
+```
+pnpm --filter @easy/worker exec tsx scripts/probe-glyph-runs.ts <pdf> <page> <x0> <y0> <x1> <y1> [reachPt]
+```
+
+Free. Prints every contiguous glyph run near a dimension with how far it sits
+ALONG and ACROSS that dimension's line -- which is how the table above was
+measured, and the way to re-derive the threshold on a drawing this repo has
+not seen rather than trusting 11.
+
+##### TURN THE NUMBER UPRIGHT BEFORE READING IT
+
+Every misread this pipeline has produced is a rotated digit, and always the
+same kind: 4-6 came back **8000 for 6000**, 5-10 **289 for 299**, 2-2 **251 for
+257**. A dimension's number reads ALONG its own dimension line, so on an
+isometric most of them arrive at 30 or 150 degrees, and a 7 on its side looks
+like a 1.
+
+`ContactSheetRegion` now takes `rotateDeg`, and the dimension export passes
+each label's own angle, folded to the nearest half turn (`((deg + 90) % 180) -
+90` — a label at 150 reads the same way up as one at -30, and turning it by 150
+would stand it on its head). The cell is turned by MINUS that about its centre,
+and the grid leaves room for the diagonal so corners are not clipped.
+
+It costs nothing and it is checkable for nothing: render `--preview` and read
+the sheet yourself. On page 2 all 24 labels come out horizontal and legible,
+2-2 plainly reads 257, and the other 23 agree with what was already stored.
+
+##### WHICH SHEET ACTUALLY MOVED -- ask before paying to re-read one
+
+```
+pnpm --filter @easy/worker exec tsx scripts/probe-page-diff.ts <old.pdf> <new.pdf>
+```
+
+Free. A revision usually touches one sheet, and a sheet pass costs ~$0.63, so
+knowing which sheet changed is worth knowing before spending. It hashes every
+page's path coordinates, paints and line widths.
+
+**Count the coordinates, not the objects.** Path counts, weld-flag counts and
+flange-bar counts were all IDENTICAL across the revision that renumbered sheet
+5's spool tags -- swapping "N-15" for "N-17" replaces one glyph with another
+and every count survives. Only the hash saw it.
+
+It earned its keep at once: sheets 1-4 came back bit-identical and sheet 5
+CHANGED, so the re-extraction the revision seemed to call for turned out to
+cost **nothing**. Comparing the weld positions confirmed sheet 5's welds were
+untouched too, which meant the weld list, the BOM and the title block could not
+have changed -- the only thing to re-read was the four tag strings, and those
+come off the free tag contact sheet.
+
+##### PASS --bores, OR THE WALK CAN ROOT AT A VENT STUB
+
+`export-weld-geometry.ts` takes `--bores <weld-list.json>` purely for each
+weld's SIZE. Leaving it off does not fail and does not warn; it just turns off
+the small-bore guard in `isoRunOrder`, and a sheet whose only open end is a
+vent or drain stub then roots the whole fragment at that dead end and orients
+it backwards.
+
+That is not theoretical. Page 2 of the reference ISO, built without `--bores`,
+came back `orientedBy: "a drawn flow arrow"` with 5 oriented segments and
+flipped N-04's hand-verified **DOWN 506 to UP 506** -- one leg, on one sheet,
+in a document of twenty spools. Nothing else in the file looked wrong. It was
+caught by diffing the envelopes against the previous build, which is the reason
+to keep the old one.
+
+With the bores supplied, the guard removes the stub's end, no upstream end is
+left for the arrow to root at, page 2 falls back to `"the end nearest weld 1"`
+and the 506 reads DOWN again.
+
+**The worker never hits this** -- `readGeometrySpools` has the weld list in hand
+and always passes the bores. Only the script can be run without it, so the
+script now says so on stderr when it is. Two rules worth carrying:
+
+- **Diff the envelopes after any geometry rebuild.** One flipped leg in twenty
+  spools is invisible in a summary and obvious in a diff.
+- `orientedBy` is the field that tells you which rule decided. A sheet that
+  says "a drawn flow arrow" where it used to say "the end nearest weld 1" has
+  had its orientation changed by something, and that something is worth finding
+  before trusting the result.
+
+##### The numbering settled: 20 blocks, 20 names, nothing spans
+
+Worth recording because it was argued from arithmetic before the drawing
+confirmed it. Blocks per sheet, all found geometrically:
+
+| sheet | 1 | 2 | 3 | 4 | 5 | total |
+|---|---|---|---|---|---|---|
+| blocks (cuts + 1) | 3 | 6 | 2 | 5 | 4 | **20** |
+
+Sheets 1-4 use N-01..N-16 -- exactly 16 names for 16 blocks, one each. So sheet
+5's four blocks need four FRESH names, N-17..N-20, and **no spool spans two
+sheets anywhere in this document**. The revision that followed prints exactly
+that, which is the drawing agreeing with the count rather than the count being
+fitted to the drawing.
+
+The earlier reading -- sheet 5 renumbered +1, making N-16 span sheets 4 and 5 --
+satisfied `spoolTagClashes` (N-16 was the last block of sheet 4 and the first of
+sheet 5, which is what a genuine continuation looks like) and was still wrong.
+**The clash check tests that a spanning tag is PLAUSIBLE, not that it spans.**
+Counting blocks against names is the check that catches it, and it is free.
+
 #### Will it ship? The container check
 
 `packages/shared/src/containerFit.ts`, free to run, no API call:
@@ -931,6 +1239,200 @@ door-is-smaller-than-the-section invariant (7 tests catch this). The practical
 limit the 2.33 rule is reaching for is already enforced, and more tightly --
 the door is 2340 x 2280, so 2280 binds before 2330 ever does.
 
+##### TWENTY FOOT ONLY -- and a spool that beats one is a RESULT, not a gap
+
+`TWENTY_FOOT_CONTAINERS` is what the page and `check-container-fit.ts` check
+against: a filter of `STANDARD_CONTAINERS`, not a second table, so the specs
+cannot drift apart. `--all-sizes` puts the full equipment list back for a
+one-off question.
+
+This refinery does not ship anything larger, so answering "40ft HC" is not an
+answer -- it hides the thing worth knowing. **Report WILL NOT SHIP and mean
+it**: that names a spool which has to be cut differently or moved some other
+way, and the spool rules are what decide which. A fit report that always finds
+something is not a report.
+
+On the reference ISO, 20ft only, with free turning: **19 of 20 fit**, and the
+twentieth misses by 29mm.
+
+Five need turning, and all five are 6000mm forced cuts or near it -- N-10,
+N-12, N-13, N-14 swung flat, N-16 tilted. Loaded square none of them goes in,
+which is the 5,898mm usable length biting on the rule that produces 6000mm
+pieces. The "Allow turning and angling" checkbox keeps that a decision rather
+than an assumption: angling costs floor and needs blocking.
+
+##### THE LEGS CHAIN -- the spool's real shape is recoverable, and the box is wrong
+
+`scripts/probe-spool-legs.ts`, free. **12 of the 20 spools chain into a single
+run today**, N-02 among them:
+
+```
+N-02:  DOWN 1412 -> E 1500 -> E 1000 -> E 937 -> S 1500 -> S 881
+N-10:  UP 457 -> N 721 -> E 6000
+N-16:  E 754 -> UP 5580 -> W 2795
+```
+
+Every placed length carries the segment of pipe it ATTACHES to, and those
+segments join end to end. So the run's ORDER comes out of the attach points
+with no weld graph to solve -- the thing this file calls unsolved is unsolved
+for ORDERING WELDS, not for ordering the legs an envelope is built from.
+
+**Why it matters: the bounding box stacks legs that are at opposite ends.**
+N-02 goes DOWN 1412, then EAST 3437, then SOUTH 2381 -- east is the MIDDLE
+part, and the other two legs are at either END of it. They never share a
+cross-section. The envelope reports 1412 x 2381 x 3437 and the fit reads that
+as a solid block whose section is 1412 x 2381, which is a shape the spool does
+not have anywhere along its length.
+
+Lay the 3437 east leg along the container and the section holds ONE leg at any
+station: 1412 goes in easily, and 2381 -- a single thin member -- lies on the
+door diagonal (3267mm) with room. **N-02 ships.** Only the box says otherwise.
+
+That also settles `axisExtent` properly where a run chains: the max(one
+direction, other) bound is the best you can do WITHOUT the order, and with the
+order the extent is exact. N-16's E 754 -> UP 5580 -> W 2795 gives an E-W
+extent of 2795 either way, so the bound was tight there -- but it is a bound,
+and this is the measurement.
+
+**BUILT.** `packages/shared/src/spoolShape.ts`: `chainLegs` walks the legs into
+a run and `shapeExtent` measures it; `fitsAsRun` in `containerFit.ts` fits the
+RUN instead of its bounding box, given the pipe's OD. `buildSpoolEnvelopes`
+emits `shape` on every envelope whose legs chain, the importer stores it, and
+the page passes it to `checkSpoolFit`.
+
+**11 of 20 chain.** The other nine fork and keep the bounding box, so the
+answer for them is exactly what it was.
+
+A rotated BOX has eight corners and its extent is `sum_j |R_ij| * s_j`; a
+rotated RUN has only the corners it actually has, and the air between its legs
+turns with it instead of sweeping. The test is on the convex hull of those
+corners grown by one pipe diameter -- the spool lies inside that hull, so a
+hull that fits means a spool that fits. Still the safe direction, just far less
+slack thrown away.
+
+With it, **every one of the 20 ships in a 20ft**:
+
+| | as a box | as the run |
+|---|---|---|
+| N-02 | over by 29mm | **angled, 175mm** |
+| N-10 + its field weld | over by 8mm | **tilted, 40mm** |
+
+**Clearances also came DOWN where the box was flattering**, which is the other
+half of being right: N-16 went from 319mm to 103, N-11 from 1619 to 1400. The
+envelope's extents are a CENTRELINE -- they come from dimensions between weld
+points -- so the box was never counting the pipe's own 219mm. The run does.
+
+Three things worth keeping:
+
+- **Refuse a fork, never pick an arm.** An earlier probe walked forks and
+  reported N-03's two parallel 385mm branch legs as one sequential run. Taking
+  either arm silently drops the other, and the dropped arm is real pipe that
+  still has to go in the box. `chainLegs` returns null instead, which is why
+  the count is 11 and not the 12 that looser walk claimed.
+- **The bore is not the outside diameter.** The weld list prints the bore;
+  what occupies a container is the OD, and at small sizes the gap is half as
+  much again (15 -> 21.3). `nominalBoreOdMm` is the B36.10 table and returns
+  null off it rather than guessing -- a guess here is a number that makes a
+  spool look like it fits.
+- **A field weld's excess is pipe on the END of the run**, so
+  `withFieldWeldAllowance` carries the last leg further rather than fattening
+  a box. That is what it physically is.
+
+##### THE CROSS-SECTION DIAGONAL, and exactly what it is the limit OF
+
+Pythagoras on a 20ft, which is the number to reach for when asking how big a
+leg can be laid across the box:
+
+| | section | diagonal |
+|---|---|---|
+| 20ft GP body | 2352 x 2393 | **3355mm** |
+| 20ft GP **door** | 2340 x 2280 | **3267mm** |
+| 20ft open top (no door) | 2352 x 2347 | **3323mm** |
+
+**The DOOR is the limit on a dry box, not the section** -- 3267, not 3355. A
+top-loaded box has no opening to pass, so its section diagonal is the whole
+answer, which is 56mm MORE than a GP allows despite the open top being the
+smaller space. That is the reason a 20ft open top is worth keeping on the
+list.
+
+**And the member's own thickness comes off it.** Found by bisection, not
+derived -- the search is what it is:
+
+| pipe OD | 20ft GP | 20ft open top |
+|---|---|---|
+| 1mm (a line) | 3266 | 3320 |
+| 100mm | 3166 | 3221 |
+| **219mm (8" line)** | **3047** | **3102** |
+| 400mm | 2867 | 2921 |
+
+So on this refinery's 200NB line the practical answer is about **3.0 metres**
+across the section, not 3.35.
+
+**THE DIAGONAL IS FOR A MEMBER, NOT FOR A BLOCK, and that distinction is the
+whole of what is still unsolved.** A thin leg laid corner to corner uses the
+full diagonal. A solid section gets NOTHING from it, because turning a
+rectangle only ever grows its bounding box -- 5000 x 1 x 3200 goes in and
+5000 x 1400 x 3200 does not. N-02 falls on the wrong side of exactly that
+line: its 1412 x 2381 cross-section is two thin legs in reality and a solid
+2381-wide block to this code, and 2381 beats a 2280 door opening.
+
+Pinned as three tests. The search resolution was suspected first and cleared:
+a 3260mm member really does not pass a 2340 x 2280 opening at any angle,
+because 3267 less its own thickness is under 3260. Bisecting for the true
+limit is what settled it.
+
+##### A NEAR MISS IS NOT A NO -- report how far it missed
+
+`NEAR_MISS_MM` (50, the same figure as `MARGINAL_MM` and for the same reason).
+`FitResult.shortfallMm` carries how far the BEST attitude was over.
+
+Without it a 6mm miss and a 3-metre miss both read "will not ship", which are
+not the same answer. **N-10 carrying its 150mm field-weld allowance is
+6150 x 721 x 457 and misses a 20ft by single-digit millimetres** -- an
+exhaustive 0.25-degree sweep puts the true figure at 5.6mm, at yaw 15 / pitch
+15 / roll 45.75, with extents 5904 x 2353 x 2399 against 5898 x 2352 x 2393.
+That is 0.09% of its length, on a spec quoted to the millimetre and built to
+rather less. Calling it "no" is a stronger claim than the specs support, and
+it is the claim that sends someone away to re-cut a spool that goes in.
+
+So a miss inside the threshold reports the container with a `?` and "over by
+Nmm -- measure the actual box" instead of "none". Two guards keep it honest:
+
+- **A spool that cannot pass the DOOR gets no reprieve.** Being millimetres
+  from fitting the body is no comfort if it never gets inside, so the
+  shortfall is only computed where the opening is not the blocker.
+- **A miss by metres is not dressed up as a near miss.** Both pinned as tests.
+
+The shipped search (3-degree sweep, then 0.25 around the best) reports 8mm
+where the exhaustive sweep says 5.6 -- the right order, and honest, but do not
+quote it as a measurement.
+
+**What it is really telling you** is that the BOX is the wrong model, not that
+the container is too small. N-10 is a 6000mm run of 219mm pipe with a 721mm
+leg and a 457mm leg; the 721 x 457 section exists at the ENDS, not along the
+length. As bare pipe the same spool swings in with 162mm to spare. The box is
+mostly air, and closing that gap needs the run's topology.
+
+**N-02 is the one that does not ship**, and it misses by very little:
+
+```
+1412 x 2381 x 3437
+  20ft GP        the DOOR -- 2381 against a 2340 opening      41mm over
+  20ft open top  the section -- 2381 against 2352 wide        29mm over
+```
+
+No rotation helps, and the reason is worth knowing: **turning a rectangle only
+ever grows its bounding box**, so where the two larger sides both beat the
+opening there is no angle that shrinks them. Its 2381 is 1500+881 SOUTH and
+its 3437 is 937+1000+1500 EAST -- all one way each, so `axisExtent` has
+nothing to cancel either.
+
+It would go in as REAL PIPE. A thin L tilts out of the door plane and passes;
+a solid 1412 x 2381 x 3437 block does not. That gap is the box model, not the
+rotation, and closing it needs the run's topology. 41mm on a nominal opening
+is also inside the range real containers vary by, so this one is worth a tape
+measure before it is believed.
+
 **Two numbers worth knowing for this refinery.** A 20ft's usable length is
 5,898mm, so:
 
@@ -941,6 +1443,20 @@ the door is 2340 x 2280, so 2280 binds before 2330 ever does.
   spare. Tight enough to confirm against the actual container
 - loaded square and with a field weld, the longest spool that still makes a
   20ft is **5,748mm**
+
+**ONE ROW PER SPOOL, even where it spans sheets.** A spool does not stop being
+one thing because the draughtsman ran out of paper. N-15 and N-16 each carry on
+from sheet 4 onto sheet 5, and the page showed each of them TWICE -- one row
+with four welds and "not read" for the size, another with five welds and the
+size. A loader reading that counts two spools and ships the wrong number. The
+size was never missing either: it is derived from the lengths on BOTH sheets
+and stored once, so the other row simply had nothing on it.
+
+`buildContainerSpools` merges by spool tag, summing the welds and field welds
+and taking whichever row carries the envelope; the sheet reads "4 & 5 / 5".
+Merged THERE and not in the extraction, where a row per sheet is the right
+shape -- weld numbers restart on every sheet, so the per-sheet rows are what
+keeps "weld 12 of sheet 4" apart from "weld 12 of sheet 5".
 
 **The page.** `/containers` (`apps/web/src/app/(app)/containers/`) lists every
 spool with its weld and FIELD WELD counts read from the extraction. The size
@@ -1058,6 +1574,59 @@ than being fitted to it. Three of the rejects were checked by rendering them:
 sheet 5's 502mm spans a wafer check valve between two flanges, sheet 3's 659mm
 spans a valve and ends on a DASHED tie-in with a break symbol, and sheet 1's
 210mm spans the branch's own valve below BW1. All three are right to drop.
+
+**NO PIPE UNDER THE SPAN IS NOT ALWAYS A VALVE.** The coverage test exists
+because a valve is bolted in between two flanges and ships on its own, so a
+length across one belongs to no spool — and the eight 464mm valve assemblies
+it rejects are all correct. But a **REDUCING TEE or a reducer interrupts the
+drawn line just as completely and is a FABRICATION item**: welded in, shipped
+with the spool. Both read 0% coverage, so coverage cannot tell them apart, and
+N-06 came out 653 when the drawing says 894.
+
+The BORE does tell them apart, because a reducer is where the line changes
+size. Sheet 2 carries both cases 30pt from each other:
+
+| | spans welds | bores | |
+|---|---|---|---|
+| 2-11 = 241mm | 14 and 15 | 200 and **150** | the reducing tee — **keep it** |
+| 2-9 = 273mm | 15 and 16 | 150 and 150 | the gate valve — drop it |
+
+So a length with nil coverage is still refused UNLESS its two flanking welds
+differ in bore. The bore is the one thing geometry cannot supply — it comes
+off the WELD LIST — so it now travels with the assignment through
+`spool-cuts.ts`, and where it is absent the old answer stands rather than
+every valve assembly being let in.
+
+Tried first and not sharp enough: testing whether a BOLTED JOINT (a flange
+pair, the same detector the cut finder uses) lies within the span. It gets the
+valves right, but the nearest joint is 29pt from the reducing tee and 21pt
+from a length that must stay out — too close to separate.
+
+Two details the second case forced, N-07 (751 where the drawing says 840):
+
+- **Judge the bore on the welds along the SPAN'S OWN LINE, not on the two its
+  ends matched.** A short piece across a reducer can have both ends nearest the
+  SAME weld — sheet 2's 89mm measures 14.6pt on the page and both its ends
+  resolve to weld 16, while the size change is between weld 16 at 150 and weld
+  17 at 200, the pair straddling it.
+- **Those welds must be AT the span.** `REDUCER_WELD_PT` is 60. The 89's pair
+  sits 3 and 36pt away; sheet 1's 108mm, which must stay out, has its nearest
+  weld 107pt off and the next 135 — welds elsewhere on the run whose differing
+  bores would otherwise fake a size change, and letting them count put 108mm
+  into N-03.
+
+**And the 89 was not being DETECTED at all.** `MIN_DIMENSION_PT` was 20; the 89
+spans 14.6pt apex to apex, its arrows drawn OUTSIDE because the extent will not
+fit them within — the same shape as sheet 1's 305, just smaller. Swept on both
+revisions: 20, 16 and 14 give the same count except that 14 admits this one; 12
+admits one more, a 12.1pt span on page 1 with no pipe under it; below 10
+nothing further appears. **14 takes the length the drawing prints and nothing
+else.** An earlier sweep tried 14 and recorded "one extra dimension, on sheet
+2, not the 305" as if it were noise — it was this 89.
+
+Adding a dimension RENUMBERS every cell and invalidates the read labels, so
+carry them across by each span's MIDPOINT and angle (all 79 carried; only the
+new cell needed eyes).
 
 **Then both ends must agree on a spool.** Where they name different ones the
 length crosses a boundary and belongs wholly to neither -- except when the two
@@ -1235,6 +1804,35 @@ The part keeps `printedMm`, and the page shows "881 (of 1186 printed)" with
 the reason on hover. A figure that silently disagrees with the drawing is
 unreviewable, which is the whole point of the workings.
 
+**A length reports EVERY weld it reaches, not just the one it is keyed by.**
+`placeDimension` returns `weldNos`, one per end. Keying by a single weld hid
+the thing the container check most needs: a length ending AT its spool's
+closing weld is keyed by the weld at its OTHER end, so N-02's 881 named weld 11
+while the field weld it runs to is 12. `fieldWeldSide` then matched nothing and
+fell through to the longest side, putting the 150mm on the 3437mm east leg
+instead of the N-S one carrying the weld — the exact error the rule below
+exists to prevent, defeated by the key rather than by the rule.
+
+**A boundary-crossing length still has a share, where the sheet prints the part
+beyond it.** `subtractOvershoots` already handles a length that stays in one
+spool and merely runs past its closing weld (sheet 1's 1186 less its 305). The
+same thing happens with the length reaching properly into the NEXT spool: both
+ends then name different spools and the whole thing is refused. Sheet 3's 6761
+runs from inside N-10 up to the apex in N-11, the sheet prints that last stretch
+as its own 761, and **6000mm of N-10 — the forced-cut length — went
+unreported**. The tail is recognised as it is there: a shorter length on the
+same line, inside this one, sharing an end.
+
+Two guards, both learned by breaking something:
+
+- **The tail and what remains must be NEIGHBOURS.** Removing one printed tail
+  can only resolve a length crossing ONE boundary. Sheet 4's 15109 runs N-12
+  through N-15; taking its 3100 off left 12009 still spanning three, and it
+  landed in N-12 as a 12-metre extent.
+- Checking instead that the remainder's interior welds are all one spool's is
+  NOT enough — that remainder had no weld inside it at all, so the test passed
+  on no evidence.
+
 **Put the field weld's 150mm on the axis the field weld is ON.** The check
 falls back to the longest side when the direction is unknown, and that is the
 WORST CASE rather than the answer — it is deliberately conservative about
@@ -1263,16 +1861,167 @@ have one.** "DOWN 588, WEST 404", not "588 x 0 x 404" under a fixed
 UP-DOWN x N-S x E-W heading: a spool occupies at most three axes and usually
 fewer, so the fixed triple spends most of its width on zeroes and still
 leaves the reader working out which way round it is. Where an axis holds
-lengths drawn BOTH ways it is named by the axis instead, since neither
-direction is then the honest answer (N-03 reads "UP-DOWN 3368").
+lengths running BOTH ways it is named by the axis instead, since neither
+direction is then the honest answer.
+
+##### Which way a leg runs comes from the PIPE, and the flow arrow is what says so
+
+**A DIMENSION HAS NO DIRECTION.** It brackets an extent. The two endpoints CAD
+writes for it are in whatever order the exporter emitted, and `drawnAs` used to
+be `plantDirection(pageAngleOf(d.from, d.to))` — reading a direction out of that
+order, which is reading noise. This file said a dimension "only ever gets an
+axis" while the code was doing the opposite.
+
+It looks harmless until it isn't. N-03's five vertical legs came back **UP, UP,
+DOWN, UP, UP** and its height was labelled "UP-DOWN 1498" — one run of pipe,
+dropping the whole way, described as doing both. The user spotted it: *"N-03
+suppose to be down only, no up."*
+
+The fix is the flow arrow, through two steps:
+
+- `isoRunOrder` emits **`orientedSegments`** — every run segment pointed the way
+  the pipe travels. NOT taken from the weld walk, which has to tell branch from
+  main run and is only right on one sheet. Flow enters at one end and travels
+  outward, so orienting every edge AWAY FROM THE START is the whole answer: a
+  breadth-first sweep from the start node the arrow fixes, indifferent to weld
+  adjacency, branch classification and numbering alike.
+- `buildSpoolEnvelopes` takes those segments and names each leg from the pipe
+  under it — nearest segment ON THE DIMENSION'S OWN AXIS, within
+  `RUN_DIRECTION_PT`. A dimension is drawn parallel to what it measures, so a
+  segment on another axis is a different leg and must not name it.
+
+Result on the revised reference ISO: **every axis of every spool now resolves to
+a single direction**, no "UP-DOWN" or "E-W" labels left. N-01 (588 DOWN / 404 W)
+and N-02 are unchanged and still match the hand-verified answer.
+
+Two legs FLIPPED, and both were wrong before — the old value was noise, so a
+change is not a regression:
+
+- **N-10 is UP 457**, verified against the drawing: BW1 sits at the BOTTOM of
+  that leg with its valve below it, and the run ascends BW1 → BW2 → … → BW11
+  before dropping 444 into "CONT. ON …N-2". An inverted U, up one end and down
+  the other, which is why the sheet needs both.
+- **N-13 is UP 6000** on sheet 4, whose flow arrow points straight up.
+
+**A spool's legs do NOT all run the same way.** N-03 drops 2376 down its main
+leg and RISES 385 up each of two 15mm weldolet branches.
+
+**EVERY SHEET CARRIES A FLOW ARROW, and where one is found the drawing wins.**
+`buildSpoolEnvelopes` takes the run segments a flow arrow orients and names a
+leg from the pipe under it; only where no arrow evidences the fragment does the
+drawn endpoint order stand. Two things had to be right before that was safe:
+
+- **Orient ONLY an arrow-rooted fragment.** The run graph comes from the
+  heaviest line weight and leaves a sheet in disconnected pieces; rooting an
+  arrow-less piece at its topmost open end is a guess, and measured against the
+  drawn order it reversed every horizontal on two sheets (48 agreed, 24
+  differed, all in whole components).
+- **Do not root at a small-bore stub** (`boreOf`, above). Page 2's walk started
+  at weld 6, a 15mm THREADED weld at the bottom of a vent branch ending in a
+  closed valve, and read that branch's 506mm drop as a RISE.
+
+With both, N-10's 457 reads UP -- BW1 sits at the bottom of that leg with its
+valve below and the run ascends -- while N-04's 506 vent branch still reads
+DOWN, which the two rules could not do separately.
+
+**The outline does NOT sit exactly on the fill.** `OUTLINE_PT` was 3 and sheet
+5's arrow missed by a tenth of a point: the outline is a four-point path whose
+corners are not the triangle's, so its bbox centre drifts, 3.1pt there.
+Measured THROUGH THE MODULE on both revisions -- not through the probe, which
+carries its own copy of the rules and hid this for several sweeps -- 3 finds 4
+of the 5 arrows while 4, 5, 6 and 8 all find 5 of 5 with none on the drawing
+that has none. 5 sits mid-plateau.
+
+Sheet 5's arrow then **OVERRULED the weld numbering**, the only sheet where the
+two disagree -- which is the whole reason for preferring the drawing.
+
+**And the direction is the DRAWN ENDPOINT ORDER after all.** Two attempts to
+replace it were both reverted, and the measurement is worth keeping so nobody
+spends a third time on it. The override read each leg's direction off the pipe
+underneath, orienting the run graph outward from the end a flow arrow points
+away from. Scored against the drawn order across both drawings: **48 legs
+agreed, 24 differed** — and the differences were not scattered. They came in
+whole components: every horizontal on page 2, every one on page 5, both branch
+legs on page 1. That is the signature of a FRAGMENT ROOTED BACKWARDS, not of a
+bad endpoint order. The run graph is built from the heaviest line weight, which
+leaves a sheet in several disconnected pieces, and a piece holding no flow
+arrow has nothing to root it but a guess at which end comes first.
+
+Every case checkable against the drawing went to the drawn order: page 1's two
+weldolet branches rise 385 each, page 2's run goes EAST and its vent branch
+drops 506, and the hand-verified N-01 and N-02 are unchanged by it. So the
+drawn order stands and the flow arrow is kept for what it is reliably good at —
+orienting the weld walk in `isoRunOrder`.
+
+Also tried and reverted, in the same attempt: orienting EVERY disconnected
+component (rooting the arrow-less ones at their topmost open end) and using
+weld BORE to stop the walk rooting at a small-bore branch stub. The first is
+what produced the 24 wrong legs. The second is sound in principle — a 15mm vent
+cannot be a 200mm line's inlet, and page 2's walk does start at the dead end of
+one — but it only moves the walk's start, which the envelopes no longer depend
+on. **Do not re-attempt the override without fixing component rooting first;
+the 48/24 comparison is the test it has to pass.**
+
+##### Three more things N-03 caught, all of them costing real millimetres
+
+The user's answer — **DOWN 2882, UP 770, E 2216** — did not match, and the gap
+was not one bug but three. Worth reading together, because each is a different
+way of confusing "the same axis" with "the same piece of pipe".
+
+**1. A dimension slid 141pt onto a pipe it does not measure.** `pipeAttachment`
+takes the offset with the MOST pipe under it, and a 15mm branch leg is short
+and thin while the 200mm main run beside it is long, heavy and parallel. Both
+385mm branch rises, and both 111mm lengths above the branches' own valves, slid
+131-141pt onto the main run and came back 86-95% "covered" by another leg's
+pipe. That cost the direction (the main run drops where the branches rise) AND
+let the 111s in, when what they actually span is a bolted-in valve.
+
+The fix is a REACH CAP, measured and identical on both revisions of the drawing:
+offsets actually used cluster hard at 42-43pt (the first dimension chain), with
+further chains at 59, 71, 81 and 85, and then NOTHING until 118.
+`MAX_WITNESS_REACH_PT` was 200, which let all of it through; **100 sits in the
+measured gap**. With it the 385s attach to their own branches and read UP, and
+the 111s find no pipe at any reachable offset and are correctly dropped.
+
+Tried and reverted: choosing the NEAREST offset rather than the best-covered
+one. It fixes this case but breaks the general one — a pipe 40pt away covering
+20% of the span should lose to one 100pt away covering all of it. The cap is
+enough on its own.
+
+**2. Two parallel legs, and one swallowed the other.** `outermost` projects a
+span onto its own direction, so two legs running the same way at different
+places on the sheet collapse onto the same interval and the shorter looks
+nested in the longer. N-03's 506mm drop (attaching at x=1007) vanished inside
+its 2376mm drop (at x=782). Containment now needs ONE LINE, not one axis —
+`SAME_LINE_PT` is 10pt, and it is safe to be that tight because containment is
+judged on the ATTACH: sheet 4's 15109 overall and both its parts attach at
+*exactly* x=695.5, being all on the one piece of pipe.
+
+**3. A length was refused for crossing a boundary it does not cross.** The
+2376mm drop runs from the elbow at the top of the leg down to weld 14. Its
+upper end lands 27pt from weld 12 — the field weld closing N-02, sitting on the
+horizontal leg above the corner — and 41pt from weld 13, so the two ends read
+N-02 and N-03 and the whole 2376 went unreported.
+
+A dimension ends at the FITTING, not at the weld dot a few points inside it, so
+an end can brush the last weld of the previous spool. What it MEASURES is the
+pipe between its ends, so **the welds INSIDE the span are what say whose that
+is**; where they all belong to one spool, that is the answer whatever the ends
+touch. The old "two CONSECUTIVE welds" exception is the case where nothing is
+inside, and is kept for it (sheet 4's 6000mm piece between its two FW ticks).
+
+**And the page reports both directions, not the axis.** An axis carrying
+lengths both ways is split: "DOWN 2882, UP 770", never "UP-DOWN 3652", which is
+a number describing nothing — neither the drop, nor the rise, nor the height of
+anything.
 
 **There is nothing to type on that page.** The sizes are read off the
 drawing; the job is to VERIFY them, which is what the per-direction lengths
 under each one are for.
 
-**It is stored marked `derived:true` and carrying `parts`.** Each part keeps
-its `cell` and the direction it is DRAWN in, and the page lists them ONE BY
-ONE under all six directions -- never rolled into a sum:
+**It is stored carrying `parts`.** Each part keeps its `cell` and the
+direction it is DRAWN in, and the page lists them ONE BY ONE under all six
+directions -- never rolled into a sum:
 
 ```
 N-01   UP   0  -           N-02   UP   0  -
@@ -1303,13 +2052,47 @@ before it could not be checked:
   N-01 having nothing sideways is how its missing branch announced itself.
 
 The `cell` is what makes it checkable -- it names the box on the dimension
-contact sheet the length was read from. Editing a size drops the badge and
-the workings; it is yours from then on.
+contact sheet the length was read from.
 
-**A total is a SUM along an axis, not a bounding extent.** For N-01 the two
-are the same, because the run only ever goes down. Where a run doubles back
-they are not, and resolving that needs the run's topology, which is not
-solved. Do not let a derived envelope reach a shipping decision unreviewed.
+**There is no `derived` flag and no badge.** One was carried for a while,
+meaning "nobody has confirmed this", and nothing ever read it except the badge
+that displayed it -- so it marked every row forever and said the same thing
+about a spool checked against the drawing as about one nobody had looked at.
+The workings ARE the confirmation mechanism: a length with its cell can be
+checked, a badge cannot. Removed from the page, the exporter, the importer and
+the stored attributes.
+
+Removed with it: the "(of N printed)" note on a corrected length and the
+"past weld N" overshoot warning. Both were review prompts on a figure the
+reviewer has since been through by hand.
+
+**AN AXIS TOTAL IS max(one direction, the other) -- NOT the sum.** This was
+a sum, and the sum is wrong whenever a run doubles back: 754 EAST then 2795
+WEST does not reach 3549, it covers ground twice.
+
+`axisExtent` in `spoolEnvelope.ts`. **The bound is tight without knowing the
+order the legs run in**, which is what makes it usable while the topology is
+unsolved. The proof is short enough to keep: walking the run gives a position
+after each leg, and the extent is the highest position reached minus the
+lowest. Getting from the highest to the lowest travels only in the negative
+direction, so that drop is at most the sum of the negative legs; if the lowest
+comes first, the same argument bounds it by the sum of the positive legs. So
+the extent never exceeds the LARGER of the two sums -- and it is reached, by
+the order taking every positive leg before every negative one.
+
+It is still an upper bound on a real run, since alternating legs cancel
+further than the grouped order does. Safe direction for shipping, and the page
+lists the legs so it can be argued with.
+
+Two figures moved, both toward the drawing:
+
+| | summed | extent | |
+|---|---|---|---|
+| N-03 up-down | 3652 | **2882** | the user's verified DOWN 2882 / UP 770 |
+| N-16 E-W | 3549 | **2795** | E 754 + W 2795 |
+
+N-03 landing exactly on a hand-verified number it was never fitted to is the
+evidence this is right and not just smaller.
 
 Free probes, all geometry-only, for working on this:
 

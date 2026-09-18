@@ -149,9 +149,32 @@ test("halves on PARALLEL but different lines do not pair", () => {
 });
 
 test("a span too short to be worth reading is not taken", () => {
-  const { dims, why } = only(splitDimension({ at: { x: 100, y: 200 }, deg: 90, span: 19, halfLen: 7 }));
+  const { dims } = only(splitDimension({ at: { x: 100, y: 200 }, deg: 90, span: 13, halfLen: 4 }));
   assert.deepEqual(dims, []);
-  assert.deepEqual(why, ["span too short"]);
+});
+
+test("a SHORT continuous span with its arrows OUTSIDE is still a dimension", () => {
+  // The real shape, built to sheet 2's 920: one unbroken line with an
+  // arrowhead beyond each end, apexes further apart than the line is long.
+  // Matching a head to a line end on its CENTRE alone missed the lower end of
+  // that one by 10.5pt while finding the upper at 2.9, so the pair never
+  // formed and 920mm went unread. The apex is the part that lands on the end.
+  const d = unit(150);
+  const from = { x: 600, y: 400 };
+  const to = along(from, d, 82);
+  const perp = { x: -d.y, y: d.x };
+  const back = { x: -d.x, y: -d.y };
+  const paths = [
+    // Apexes sit ~6pt BEYOND each end, pointing back in at the witnesses.
+    head(along(from, back, 6 + APEX), d),
+    head(along(to, d, 6 + APEX), back),
+    path([from, to], "stroke"),
+    glyph(along({ x: (from.x + to.x) / 2 + perp.x * 8, y: (from.y + to.y) / 2 + perp.y * 8 }, d, 0)),
+  ];
+  const { dims } = only(paths);
+  assert.equal(dims.length, 1);
+  // Measured APEX to APEX, so longer than the drawn line.
+  assert.ok(dims[0].pagePt > 82, `measured ${dims[0].pagePt}, should exceed the 82pt line`);
 });
 
 test("PIPE-weight lines never make a dimension, however they are terminated", () => {
@@ -195,6 +218,62 @@ test("a dimension drawn as ONE line, arrowheads at both ends, still reads", () =
   assert.equal(dims[0].drawnAs, "line");
   assert.equal(dims[0].pagePt, 90);
   assert.ok(dims[0].labelBox);
+});
+
+/* --- WHICH printed number belongs to this dimension ---------------------- */
+
+test("the number is taken from the dimension's OWN LINE, not from the nearest text", () => {
+  // N-15's WEST extent, and the shape that hid it. The extent is too small to
+  // hold its number, so CAD pushes the number OUT ALONG the line, past the
+  // arrowheads -- while the sheet prints an "FW" note for the field weld
+  // right beside the same span, closer to the midpoint than the number is.
+  // Seeding on whatever is nearest picks the note and then grows a confident,
+  // tidy box round it.
+  const d = unit(30);
+  const from = { x: 300, y: 500 };
+  const to = along(from, d, 26);
+  const perp = { x: -d.y, y: d.x };
+  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  const back = { x: -d.x, y: -d.y };
+  const number = along(mid, back, 38); // out past the arrowheads, ON the line
+  const note = { x: mid.x + perp.x * 17, y: mid.y + perp.y * 17 }; // the "FW"
+  const paths = [
+    head(along(from, back, 6 + APEX), d),
+    head(along(to, d, 6 + APEX), back),
+    path([from, to], "stroke"),
+    glyph(number),
+    glyph({ x: number.x - 7, y: number.y - 4 }),
+    glyph(note),
+    glyph({ x: note.x + 6, y: note.y }),
+  ];
+  const { dims } = only(paths);
+  assert.equal(dims.length, 1);
+  const box = dims[0].labelBox;
+  assert.ok(box);
+  const cx = (box.x0 + box.x1) / 2;
+  const cy = (box.y0 + box.y1) / 2;
+  const across = Math.abs((cx - mid.x) * -d.y + (cy - mid.y) * d.x);
+  assert.ok(across < 8, `label sits ${across.toFixed(1)}pt across its own line -- it took the note`);
+});
+
+test("text only to the SIDE means this dimension has no number, and none is claimed", () => {
+  // A blank is the honest answer. A crop of somebody else's text invites a
+  // reading, and a wrong length is worse than a missing one.
+  const d = unit(90);
+  const from = { x: 700, y: 200 };
+  const to = along(from, d, 70);
+  const perp = { x: -d.y, y: d.x };
+  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  const paths = [
+    head(from, d),
+    head(to, d),
+    path([from, to], "stroke"),
+    glyph({ x: mid.x + perp.x * 20, y: mid.y + perp.y * 20 }),
+    glyph({ x: mid.x + perp.x * 20 + 6, y: mid.y + perp.y * 20 }),
+  ];
+  const { dims } = only(paths);
+  assert.equal(dims.length, 1);
+  assert.equal(dims[0].labelBox, null);
 });
 
 test("a continuous dimension does not read its own ticks as its number", () => {

@@ -223,7 +223,29 @@ export function buildWeldTopology(welds: IsoWeld[], boundaryWelds: Set<number>):
 // The sheet's own printed "PIPE SPOOLS" tags, tolerating the object shape real
 // runs have drifted to ({spool_tag, ...}) instead of the declared strings.
 export function readSpoolTags(spoolTags: IsoSheetResult["spool_tags"]): string[] {
-  return asArray(spoolTags)
+  // A THIRD shape seen in a real run: the whole list as one JSON STRING,
+  // '["...-N-12", "...-N-13", ...]'. Left alone that reads as a single tag
+  // named after five, so the sheet appears to print one spool and the cut
+  // count check throws it out. Tool-call JSON is not validated against the
+  // declared schema -- parse defensively, and unwrap a string that is really
+  // a list before anything else looks at it.
+  const unwrapped: IsoSheetResult["spool_tags"] =
+    typeof spoolTags === "string"
+      ? (() => {
+          const text = String(spoolTags).trim();
+          if (text.startsWith("[")) {
+            try {
+              const parsed: unknown = JSON.parse(text);
+              if (Array.isArray(parsed)) return parsed as IsoSheetResult["spool_tags"];
+            } catch {
+              // Not valid JSON after all -- fall through to the comma split,
+              // which handles the plain "a, b, c" form too.
+            }
+          }
+          return text.replace(/^\[|\]$/g, "").split(/"\s*,\s*"|\s*,\s*/).map((t) => t.replace(/^"|"$/g, "").trim());
+        })()
+      : spoolTags;
+  return asArray(unwrapped)
     .map((t) => (typeof t === "string" ? t : ((t as { spool_tag?: string } | null)?.spool_tag ?? undefined)))
     .map((t) => (t != null ? (normalizeCellValue(t) ?? t) : undefined))
     .filter((t): t is string => Boolean(t));

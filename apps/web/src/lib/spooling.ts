@@ -42,8 +42,8 @@ export interface SpoolWeld {
 
 /**
  * The overall size worked out from the sheet's dimensions, with the lengths
- * that produced it. `derived` means nobody has confirmed it yet -- show the
- * workings beside it rather than the figure alone.
+ * that produced it. Show the workings beside it rather than the figure alone:
+ * a total cannot be argued with, a list of lengths can.
  */
 export interface SpoolEnvelopeAttr {
   upDownMm: number;
@@ -70,7 +70,11 @@ export interface SpoolEnvelopeAttr {
    * wondering where it went.
    */
   unplaced?: Array<{ cell: string; mm: number; why: string }>;
-  derived: boolean;
+  /**
+   * The run's real shape, where its legs chained end to end. With it the
+   * container check works on the PIPE rather than on the box around it.
+   */
+  shape?: { legs: Array<{ cell: string; mm: number; direction: string }>; points: Array<[number, number, number]> };
 }
 
 export interface SpoolRow {

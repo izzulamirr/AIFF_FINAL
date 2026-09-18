@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { readWeldMarks } from "../src/extraction/isoWeldMarks";
 import { readSpoolCuts, assignSpools } from "../src/extraction/isoSpoolCuts";
 import { tagsByBlock } from "../src/extraction/isoSpoolTags";
+import { spoolTagClashes } from "@easy/shared";
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -33,7 +34,7 @@ async function main() {
     trusted: boolean;
     /** Why each cut is where it is, carried through so a spool row can say so. */
     evidence: Array<{ cut: number; why: string }>;
-    assignment: Array<{ rowId: number; weldNo: number; spool: string; stored: string }>;
+    assignment: Array<{ rowId: number; weldNo: number; spool: string; stored: string; size: string }>;
   }> = [];
   let agree = 0;
   let differ = 0;
@@ -74,7 +75,11 @@ async function main() {
     }
     const assigned = assignSpools(p.welds, cuts, spoolTags);
     const assignment = p.welds
-      .map((w) => ({ rowId: w.rowId, weldNo: w.weldNo, spool: assigned.get(w.weldNo) ?? "", stored: w.storedSpool }))
+      // The bore travels with the assignment because the envelope builder needs
+      // it: a length with no pipe under it is a REDUCER (welded, part of the
+      // spool) when its flanking welds differ in size, and a valve when they do
+      // not.
+      .map((w) => ({ rowId: w.rowId, weldNo: w.weldNo, spool: assigned.get(w.weldNo) ?? "", stored: w.storedSpool, size: String(w.size ?? "") }))
       .filter((a) => a.spool);
     const changed = assignment.filter((a) => a.spool !== a.stored);
     agree += assignment.length - changed.length;
@@ -82,6 +87,24 @@ async function main() {
     console.log(`   ${assignment.length - changed.length} welds agree with what is stored, ${changed.length} differ`);
     for (const ch of changed) console.log(`      weld ${ch.weldNo}: stored ${ch.stored.slice(-4)} -> drawing says ${ch.spool.slice(-4)}`);
     out.push({ page: p.page, cuts, trusted: true, evidence, assignment });
+  }
+
+  // A SPOOL NUMBER MUST NAME ONE PIECE OF PIPE. Checked across the whole
+  // document, because each sheet can be perfectly tidy on its own: a revision
+  // that adds a spool to one sheet without renumbering the next leaves two
+  // pieces sharing a tag, and nothing on either sheet shows it.
+  const blocks = out.flatMap((p) => {
+    const by = new Map<string, number[]>();
+    for (const a of p.assignment) by.set(a.spool, [...(by.get(a.spool) ?? []), a.weldNo]);
+    return [...by.entries()].map(([spool, weldNumbers]) => ({ page: p.page, spool, weldNumbers }));
+  });
+  const clashes = spoolTagClashes(blocks);
+  if (clashes.length === 0) console.log(`
+no spool number names more than one piece`);
+  else {
+    console.log(`
+${clashes.length} SPOOL NUMBER CLASH${clashes.length === 1 ? "" : "ES"}:`);
+    for (const c of clashes) console.log(`   ${short(c.spool)} ${c.why}`);
   }
 
   writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), pages: out }, null, 2));
