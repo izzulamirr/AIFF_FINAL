@@ -366,3 +366,45 @@ export const lineReviews = pgTable(
   },
   (table) => [primaryKey({ columns: [table.projectId, table.lineKey] })]
 );
+
+// ---------------------------------------------------------------------------
+// Library: reference material that is not itself reviewed -- legends, client
+// specifications, standards, templates, datasheets.
+//
+// It is kept apart from `documents` on purpose. A document is a drawing or table
+// the extraction reads and the checks run against; a library file is only ever
+// looked up and downloaded. Putting them in one table would make every extraction
+// query have to say which it means.
+//
+// `projectId` null means the OVERALL library: it belongs to the organization and
+// is shared by all of its projects. Otherwise the file belongs to that one
+// project. Either way `organizationId` is set, so a file can always be traced to
+// the organization that owns it without a join.
+// ---------------------------------------------------------------------------
+export const libraryItems = pgTable(
+  "library_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    category: text("category").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    fileName: text("file_name").notNull(),
+    storagePath: text("storage_path").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    contentType: text("content_type"),
+    uploadedBy: uuid("uploaded_by").references(() => authUsers.id, { onDelete: "set null" }),
+    // A snapshot, like line_reviews.reviewed_by_name: the name lives on the
+    // Supabase account, which this schema does not own.
+    uploadedByName: text("uploaded_by_name"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("library_items_org_idx").on(table.organizationId),
+    index("library_items_project_idx").on(table.projectId),
+    check("library_items_category_check", sql`${table.category} in ('legend','specification','standard','template','datasheet','other')`),
+  ]
+);

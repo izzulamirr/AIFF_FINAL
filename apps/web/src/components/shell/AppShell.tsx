@@ -3,15 +3,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BrandMark, IconBuilding, IconClipboard, IconClose, IconDashboard, IconFolder, IconMenu, IconUsers } from "@/components/ui/icons";
+import { BrandMark, IconBuilding, IconClipboard, IconClose, IconDashboard, IconFolder, IconLibrary, IconMenu, IconUsers } from "@/components/ui/icons";
 
-// The frame around every signed-in page: a navigation rail on wide screens, a
-// top bar and slide-over drawer on narrow ones.
+// The frame around Document Control's pages: a top bar with the brand, the
+// organization it is working in, the pages, and who is signed in. On narrow
+// screens the pages fold into a menu.
 //
-// It is a client component only because the rail highlights the page you are
-// on (usePathname) and the drawer opens and closes. The auth check and the
-// sign-out action stay in the server layout that renders this -- the sign-out
-// form arrives as a prop, already bound to its server action.
+// It matches the bar the organization picker and the checkers get (GuidedShell),
+// so choosing an organization does not change how the app looks.
+//
+// It is a client component only because the bar highlights the page you are on
+// (usePathname) and the menu opens and closes. The auth check and the sign-out
+// and switch-organization actions stay in the server layout that renders this --
+// they arrive as props, already bound to their server actions.
 
 interface NavItem {
   href: string;
@@ -22,19 +26,12 @@ interface NavItem {
 // The places Document Control works from. The engineering tools are not here:
 // they open from the dashboard and from a project, already on the project being
 // worked on, rather than from a link that has to guess which one.
-const NAV: Array<{ heading: string; items: NavItem[] }> = [
-  {
-    heading: "Workspace",
-    items: [
-      { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
-      { href: "/projects", label: "Projects", icon: IconFolder },
-      { href: "/review", label: "Line review", icon: IconClipboard },
-    ],
-  },
-  {
-    heading: "Administration",
-    items: [{ href: "/users", label: "Users", icon: IconUsers }],
-  },
+const NAV: NavItem[] = [
+  { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
+  { href: "/projects", label: "Projects", icon: IconFolder },
+  { href: "/review", label: "Line review", icon: IconClipboard },
+  { href: "/library", label: "Library", icon: IconLibrary },
+  { href: "/users", label: "Users", icon: IconUsers },
 ];
 
 // Who is signed in, passed down from the server layout. `roleLabel` is the
@@ -54,90 +51,59 @@ interface Workspace {
   switcher: ReactNode;
 }
 
-function SidebarContent({
-  email,
-  name,
-  roleLabel,
-  isDcc,
-  organization,
-  signOut,
-  onNavigate,
-}: Identity & { organization?: Workspace; signOut: ReactNode; onNavigate?: () => void }) {
+function NavLinks({ vertical = false, onNavigate }: { vertical?: boolean; onNavigate?: () => void }) {
   const pathname = usePathname();
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
-  const displayName = name ?? email;
-  const initial = (displayName.trim()[0] ?? "?").toUpperCase();
 
   return (
-    <div className="flex h-full flex-col">
-      <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-3 px-5 pb-4 pt-5">
-        <BrandMark size={34} />
-        <span className="leading-tight">
-          <span className="block text-[0.9375rem] font-semibold tracking-wide text-sidebar-strong">EASY</span>
-          <span className="block text-[0.6875rem] text-sidebar-muted">Engineering review</span>
-        </span>
-      </Link>
+    <ul className={vertical ? "flex flex-col gap-1" : "flex items-center gap-1"}>
+      {NAV.map(({ href, label, icon: Icon }) => {
+        const active = isActive(href);
+        return (
+          <li key={href}>
+            <Link
+              href={href}
+              onClick={onNavigate}
+              aria-current={active ? "page" : undefined}
+              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                active ? "bg-primary-soft text-link" : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+            >
+              <Icon size={16} />
+              {label}
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
-      {organization && (
-        <div className="mx-3 mb-2 flex items-center gap-2.5 rounded-lg border border-sidebar-border bg-white/[0.03] py-2 pl-3 pr-2">
-          <IconBuilding size={16} className="flex-none text-sidebar-muted" />
-          <div className="min-w-0 flex-1">
-            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-sidebar-muted">Organization</p>
-            <p className="truncate text-sm font-medium text-sidebar-strong" title={organization.name}>
-              {organization.name}
-            </p>
-          </div>
-          {organization.switcher}
-        </div>
-      )}
+function OrganizationChip({ organization, className = "" }: { organization: Workspace; className?: string }) {
+  return (
+    <div className={`items-center gap-2 rounded-lg border bg-muted/40 py-1 pl-2.5 pr-1 ${className}`}>
+      <IconBuilding size={15} className="flex-none text-muted-foreground" />
+      <span className="min-w-0 max-w-44 truncate text-sm font-medium" title={organization.name}>
+        {organization.name}
+      </span>
+      {organization.switcher}
+    </div>
+  );
+}
 
-      <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 py-2">
-        {NAV.map((group) => (
-          <div key={group.heading} className="mb-5">
-            <p className="mb-1.5 px-3 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-sidebar-muted">{group.heading}</p>
-            <ul className="flex flex-col gap-0.5">
-              {group.items.map(({ href, label, icon: Icon }) => {
-                const active = isActive(href);
-                return (
-                  <li key={href}>
-                    <Link
-                      href={href}
-                      onClick={onNavigate}
-                      aria-current={active ? "page" : undefined}
-                      className={`group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                        active
-                          ? "bg-sidebar-active text-sidebar-strong"
-                          : "text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-strong"
-                      }`}
-                    >
-                      {active && <span aria-hidden="true" className="absolute -left-3 bottom-1.5 top-1.5 w-[3px] rounded-r bg-sidebar-accent" />}
-                      <Icon size={18} className={active ? "text-sidebar-accent" : "text-sidebar-muted transition-colors group-hover:text-sidebar-foreground"} />
-                      {label}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ))}
-      </nav>
-
-      <div className="border-t border-sidebar-border p-3">
-        <div className="flex items-center gap-3 rounded-lg px-2 py-1.5">
-          <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-sidebar-active text-[0.8125rem] font-semibold text-sidebar-strong ring-1 ring-sidebar-border">
-            {initial}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[0.8125rem] font-medium text-sidebar-strong" title={email}>
-              {displayName}
-            </p>
-            <p className={`truncate text-[0.6875rem] ${isDcc ? "font-medium text-sidebar-accent" : "text-sidebar-muted"}`}>
-              {roleLabel}
-              {isDcc ? "" : " · read-only"}
-            </p>
-          </div>
-          {signOut}
-        </div>
+function Person({ name, email, roleLabel, className = "" }: Identity & { className?: string }) {
+  const displayName = name ?? email;
+  const initial = (displayName.trim()[0] ?? "?").toUpperCase();
+  return (
+    <div className={`items-center gap-2.5 ${className}`}>
+      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-muted text-[0.8125rem] font-semibold ring-1 ring-border">
+        {initial}
+      </span>
+      <div className="min-w-0 leading-tight">
+        <p className="max-w-40 truncate text-[0.8125rem] font-medium" title={email}>
+          {displayName}
+        </p>
+        <p className="text-[0.6875rem] text-muted-foreground">{roleLabel}</p>
       </div>
     </div>
   );
@@ -150,9 +116,9 @@ export function AppShell({
   ...identity
 }: Identity & { organization?: Workspace; signOut: ReactNode; children: ReactNode }) {
   const pathname = usePathname();
-  // The drawer records the page it was opened on and counts as open only while
-  // you are still on it, so following any link closes it -- no effect needed to
-  // reset it on navigation.
+  // The menu records the page it was opened on and counts as open only while you
+  // are still on it, so following any link closes it -- no effect needed to reset
+  // it on navigation.
   const [openOn, setOpenOn] = useState<string | null>(null);
   const open = openOn === pathname;
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -182,26 +148,34 @@ export function AppShell({
         Skip to content
       </a>
 
-      {/* Wide screens: a fixed rail. */}
-      <aside className="app-chrome fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-sidebar-border bg-sidebar lg:block">
-        <SidebarContent {...identity} organization={organization} signOut={signOut} />
-      </aside>
+      <header className="app-chrome sticky top-0 z-30 border-b bg-card">
+        <div className="mx-auto flex h-14 w-full max-w-[1440px] items-center gap-3 px-4 sm:px-6 lg:px-10">
+          <button
+            type="button"
+            aria-label="Open menu"
+            aria-expanded={open}
+            onClick={() => setOpenOn(pathname)}
+            className="btn btn-ghost -ml-2 h-9 w-9 p-0 lg:hidden"
+          >
+            <IconMenu />
+          </button>
 
-      {/* Narrow screens: a slim bar that opens the same navigation as a drawer. */}
-      <header className="app-chrome sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-card px-4 lg:hidden">
-        <button
-          type="button"
-          aria-label="Open menu"
-          aria-expanded={open}
-          onClick={() => setOpenOn(pathname)}
-          className="btn btn-ghost -ml-1 h-9 w-9 p-0"
-        >
-          <IconMenu />
-        </button>
-        <Link href="/dashboard" className="flex items-center gap-2.5">
-          <BrandMark size={28} />
-          <span className="font-semibold tracking-wide">EASY</span>
-        </Link>
+          <Link href="/dashboard" className="flex items-center gap-2.5">
+            <BrandMark size={28} />
+            <span className="font-semibold tracking-wide">EASY</span>
+          </Link>
+
+          {organization && <OrganizationChip organization={organization} className="ml-2 hidden lg:flex" />}
+
+          <nav aria-label="Main" className="ml-2 hidden lg:block">
+            <NavLinks />
+          </nav>
+
+          <div className="ml-auto flex items-center gap-3">
+            <Person {...identity} className="hidden sm:flex" />
+            {signOut}
+          </div>
+        </div>
       </header>
 
       {open && (
@@ -213,25 +187,34 @@ export function AppShell({
             aria-hidden="true"
           />
           <div
-            className="drawer-panel absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-sidebar shadow-2xl"
+            className="drawer-panel absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col gap-5 bg-card p-4 shadow-2xl"
             style={{ animation: "drawer-in 0.2s ease-out" }}
           >
-            <button
-              ref={closeRef}
-              type="button"
-              aria-label="Close menu"
-              onClick={close}
-              className="absolute right-3 top-4 flex h-8 w-8 items-center justify-center rounded-md text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-strong"
-            >
-              <IconClose size={18} />
-            </button>
-            <SidebarContent {...identity} organization={organization} signOut={signOut} onNavigate={close} />
+            <div className="flex items-center justify-between">
+              <Link href="/dashboard" onClick={close} className="flex items-center gap-2.5">
+                <BrandMark size={28} />
+                <span className="font-semibold tracking-wide">EASY</span>
+              </Link>
+              <button ref={closeRef} type="button" aria-label="Close menu" onClick={close} className="btn btn-ghost h-9 w-9 p-0">
+                <IconClose size={18} />
+              </button>
+            </div>
+
+            {organization && <OrganizationChip organization={organization} className="flex w-full" />}
+
+            <nav aria-label="Main">
+              <NavLinks vertical onNavigate={close} />
+            </nav>
+
+            <div className="mt-auto border-t pt-4">
+              <Person {...identity} className="flex" />
+            </div>
           </div>
         </div>
       )}
 
-      <main id="main" className="lg:pl-64">
-        <div className="app-content mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-10 lg:py-9">{children}</div>
+      <main id="main" className="app-content mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-10 lg:py-9">
+        {children}
       </main>
     </div>
   );

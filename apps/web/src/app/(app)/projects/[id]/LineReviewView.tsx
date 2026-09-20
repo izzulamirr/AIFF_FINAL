@@ -5,7 +5,7 @@ import { CollapsibleCard } from "@/components/ui/CollapsibleCard";
 import { Badge, EmptyState, Stat } from "@/components/ui/primitives";
 import { BomSheets, DesignBasisTable, FittingsMatchGroups, RoutingTable } from "@/components/checks/IsoCheckTables";
 import { HookupResults } from "@/components/checks/HookupResults";
-import { IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconSpool, IconTable } from "@/components/ui/icons";
+import { IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconSpool, IconTable } from "@/components/ui/icons";
 import { ProgressBar } from "@/components/progress/ProgressBar";
 import { findLine, isoLinesOf } from "@/lib/isoLines";
 import { summariseLine, type IsoDrawingChecks, type LineSummary } from "@/lib/lineSummary";
@@ -490,6 +490,12 @@ export async function LineReviewView({
         title={projectName}
         back={links.back}
         description="Choose a line number to review its spools, hook-up and container check."
+        actions={
+          <Link href={`/library?project=${projectId}`} className="btn btn-secondary">
+            <IconLibrary size={16} />
+            Library
+          </Link>
+        }
       />
 
       {/* How far through the project the checkers are -- against the total Document

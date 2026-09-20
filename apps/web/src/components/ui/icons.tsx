@@ -116,6 +116,16 @@ export const IconUsers = (p: IconProps) => (
   </Svg>
 );
 
+// Books on a shelf: the reference material a project draws on.
+export const IconLibrary = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m16 6 4 14" />
+    <path d="M12 6v14" />
+    <path d="M8 8v12" />
+    <path d="M4 4v16" />
+  </Svg>
+);
+
 export const IconBuilding = (p: IconProps) => (
   <Svg {...p}>
     <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />

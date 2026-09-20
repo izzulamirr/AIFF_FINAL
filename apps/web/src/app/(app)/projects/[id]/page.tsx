@@ -6,7 +6,7 @@ import { getSessionUser } from "@/lib/session";
 import { MAX_UPLOAD_MB } from "@/lib/uploadLimits";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
-import { IconBox, IconFile, IconGauge, IconNest, IconSpool, IconUpload } from "@/components/ui/icons";
+import { IconBox, IconFile, IconGauge, IconLibrary, IconNest, IconSpool, IconUpload } from "@/components/ui/icons";
 import { deleteDocument, uploadDocument } from "./actions";
 import { DeleteDocumentButton } from "./DeleteDocumentButton";
 import { LineReviewView } from "./LineReviewView";
@@ -99,6 +99,12 @@ export default async function ProjectDetailPage({
           <Badge>
             {projectDocuments.length} document{projectDocuments.length === 1 ? "" : "s"}
           </Badge>
+        }
+        actions={
+          <Link href={`/library?project=${id}`} className="btn btn-secondary">
+            <IconLibrary size={16} />
+            Library
+          </Link>
         }
       />
 
