@@ -1,14 +1,19 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { documents, extractedTags, extractionJobs, organizationMembers, projects } from "@easy/db";
+import { documents, extractedTags, extractionJobs, projects } from "@easy/db";
 import { outlineExtentMm, type CutPart, type CutShape } from "@easy/shared";
-import { createClient } from "@/lib/supabase/server";
+import { getSessionUser } from "@/lib/session";
+import { visibleOrganizations } from "@/lib/access";
 import { getDb } from "@/lib/db";
 import { MAX_UPLOAD_MB } from "@/lib/uploadLimits";
 import { deleteDocument, uploadDocument } from "../projects/[id]/actions";
 import { DeleteDocumentButton } from "../projects/[id]/DeleteDocumentButton";
 import { loadCuttingQuantities, loadCuttingStock } from "./queries";
 import { CuttingSelectors } from "./CuttingSelectors";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Alert, EmptyState, JobStatus } from "@/components/ui/primitives";
+import { IconFile, IconFolder, IconUpload } from "@/components/ui/icons";
 import { CuttingPlanner } from "./CuttingPlanner";
 
 // Cutting plan.
@@ -28,18 +33,17 @@ export default async function CuttingPage({
   searchParams: Promise<{ project?: string; drawing?: string; [key: string]: string | string[] | undefined }>;
 }) {
   const params = await searchParams;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+  const session = await getSessionUser();
+  if (!session) return null;
+  // Cutting drawings are not ISOs, so a plain user -- who sees only a project's
+  // ISO lines -- has no part of this page. The upload, delete and save actions
+  // enforce Document Control again on the server.
+  if (!session.isDcc) redirect("/organizations");
 
   const db = getDb();
-  const memberships = await db
-    .select({ organizationId: organizationMembers.organizationId })
-    .from(organizationMembers)
-    .where(eq(organizationMembers.userId, user.id));
-  const orgIds = memberships.map((m) => m.organizationId);
+  // The organizations this person can read: Document Control's own, or every
+  // one for a plain user (see lib/access.ts).
+  const orgIds = (await visibleOrganizations(session)).map((o) => o.id);
   // Ordered, and ordered by something that cannot change. Postgres returns an
   // unordered select in whatever order it likes, and the fallback below is
   // "the first project" -- so an unordered list meant a bare /cutting could
@@ -57,15 +61,19 @@ export default async function CuttingPage({
   const projectId = params.project && myProjects.some((p) => p.id === params.project) ? params.project : myProjects[0]?.id;
   if (!projectId) {
     return (
-      <div className="flex flex-col gap-4">
-        <h1 className="text-xl font-semibold">Cutting Plan</h1>
-        <p className="text-gray-500">
-          You need a project first --{" "}
-          <Link href="/projects" className="underline">
-            create one
-          </Link>
-          .
-        </p>
+      <div className="flex flex-col gap-6">
+        <PageHeader title="Cutting Plan" />
+        <div className="card">
+          <EmptyState
+            icon={<IconFolder />}
+            title="You need a project first"
+            action={
+              <Link href="/projects" className="btn btn-primary btn-sm mt-1">
+                Create one
+              </Link>
+            }
+          />
+        </div>
       </div>
     );
   }
@@ -186,13 +194,11 @@ export default async function CuttingPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-semibold">Cutting Plan</h1>
-      <p className="max-w-3xl text-sm text-gray-600">
-        A cutting-plate drawing says what has to be cut and how big each piece is; it does not say what plate to buy or where on it
-        anything goes. This reads the parts off the drawing and arranges them on stock plate with the cutting allowances that keep each
-        piece the size it was drawn &mdash; the kerf the torch burns away, plus a web of solid metal between cuts &mdash; on as few
-        plates as the geometry allows.
-      </p>
+      <PageHeader
+        title="Cutting Plan"
+        back={{ href: `/projects/${projectId}`, label: myProjects.find((p) => p.id === projectId)?.name ?? "Project" }}
+        description="A cutting-plate drawing says what has to be cut and how big each piece is; it does not say what plate to buy or where on it anything goes. This reads the parts off the drawing and arranges them on stock plate with the cutting allowances that keep each piece the size it was drawn — the kerf the torch burns away, plus a web of solid metal between cuts — on as few plates as the geometry allows."
+      />
 
       <CuttingSelectors
         projects={myProjects.map((p) => ({
@@ -206,68 +212,86 @@ export default async function CuttingPage({
         drawingId={drawingId ?? ""}
       />
 
-      <div className="flex flex-wrap gap-4">
-        <form action={handleUpload} className="flex max-w-md flex-col gap-2 rounded border p-4">
-          <p className="text-sm font-medium">Upload cutting drawings</p>
-          <p className="text-xs text-gray-500">
-            <strong>Upload the DWG or DXF if you have it.</strong> A CAD file carries the part outlines as geometry, so the profiles are
-            read exactly and the nest works to the real shape &mdash; and it is read by arithmetic, in seconds, with no model involved.
-          </p>
-          <p className="text-xs text-gray-500">
-            A plotted <strong>PDF</strong> still works, but it records the dimension figures and not the geometry: the outlines arrive
-            exploded into disconnected dash fragments mixed in with dimension lines, and nothing can reliably regroup them. From a PDF
-            you get sizes and part marks, and every part is nested as its bounding box.
-          </p>
-          <label className="text-sm">
-            PDF, DWG or DXF (max {MAX_UPLOAD_MB} MB)
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,30rem)_minmax(0,1fr)]">
+        <form action={handleUpload} className="card flex flex-col gap-4">
+          <div>
+            <h2 className="card-title">Upload cutting drawings</h2>
+          </div>
+          <div className="flex flex-col gap-2.5 text-[0.8125rem] leading-relaxed text-muted-foreground">
+            <p>
+              <strong className="text-foreground">Upload the DWG or DXF if you have it.</strong> A CAD file carries the part outlines as
+              geometry, so the profiles are read exactly and the nest works to the real shape &mdash; and it is read by arithmetic, in
+              seconds, with no model involved.
+            </p>
+            <p>
+              A plotted <strong className="text-foreground">PDF</strong> still works, but it records the dimension figures and not the
+              geometry: the outlines arrive exploded into disconnected dash fragments mixed in with dimension lines, and nothing can
+              reliably regroup them. From a PDF you get sizes and part marks, and every part is nested as its bounding box.
+            </p>
+          </div>
+          <div>
+            <label htmlFor="cutting-file" className="field-label">
+              PDF, DWG or DXF <span className="font-normal text-muted-foreground">(max {MAX_UPLOAD_MB} MB)</span>
+            </label>
             <input
+              id="cutting-file"
               type="file"
               name="file"
               accept=".pdf,.dwg,.dxf,application/pdf,image/vnd.dwg,image/vnd.dxf"
               required
-              className="mt-1 block w-full"
+              className="input input-file"
             />
-          </label>
-          <button className="rounded bg-black px-4 py-2 text-white">Upload</button>
+          </div>
+          <button className="btn btn-primary self-start">
+            <IconUpload size={16} />
+            Upload
+          </button>
         </form>
 
-        <div className="min-w-[22rem] flex-1 rounded border p-4">
-          <p className="mb-2 text-sm font-medium">Cutting drawings in this project</p>
-          <table className="w-full text-left text-sm">
-            <tbody>
-              {cuttingDocs.map((doc) => {
-                const job = latestJob.get(doc.id);
-                return (
-                  <tr key={doc.id} className="border-b">
-                    <td className="py-1">{doc.fileName}</td>
-                    <td className="text-gray-500">
-                      {job?.status ?? "no job"}
-                      {job?.status === "running" && job.progressTotal
-                        ? ` ${job.progressCurrent ?? 0}/${job.progressTotal}`
-                        : ""}
-                      {job?.status === "failed" && job.errorMessage ? `: ${job.errorMessage.slice(0, 80)}` : ""}
-                    </td>
-                    <td className="py-1 text-right">
-                      <DeleteDocumentButton
-                        fileName={doc.fileName}
-                        onDelete={async () => {
-                          "use server";
-                          await deleteDocument(projectId!, doc.id);
-                        }}
-                      />
+        <div className="card card-flush">
+          <div className="card-header">
+            <h2 className="card-title">Cutting drawings in this project</h2>
+          </div>
+          <div className="table-wrap">
+            <table className="table table-plain">
+              <tbody>
+                {cuttingDocs.map((doc) => {
+                  const job = latestJob.get(doc.id);
+                  return (
+                    <tr key={doc.id}>
+                      <td>
+                        <span className="flex items-center gap-2.5">
+                          <IconFile size={16} className="flex-none text-muted-foreground" />
+                          <span className="break-all font-medium">{doc.fileName}</span>
+                        </span>
+                      </td>
+                      <td>
+                        <JobStatus job={job} errorMaxChars={80} />
+                      </td>
+                      <td className="text-right">
+                        <DeleteDocumentButton
+                          fileName={doc.fileName}
+                          onDelete={async () => {
+                            "use server";
+                            await deleteDocument(projectId!, doc.id);
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+                {cuttingDocs.length === 0 && (
+                  <tr>
+                    <td colSpan={3}>
+                      <EmptyState icon={<IconFile />} title="None uploaded yet" />
                     </td>
                   </tr>
-                );
-              })}
-              {cuttingDocs.length === 0 && (
-                <tr>
-                  <td className="py-2 text-gray-500">None uploaded yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                )}
+              </tbody>
+            </table>
+          </div>
           {parts.length > 0 && (
-            <p className="mt-2 text-xs text-gray-500">
+            <p className="border-t px-5 py-3 text-xs text-muted-foreground">
               {parts.length} part{parts.length === 1 ? "" : "s"} extracted,{" "}
               {parts.reduce((sum, p) => sum + p.quantity, 0)} piece
               {parts.reduce((sum, p) => sum + p.quantity, 0) === 1 ? "" : "s"} to cut.
@@ -281,12 +305,12 @@ export default async function CuttingPage({
           was first mounted with, and the previous project's plate sizes stay
           on screen -- ready to be saved onto the project now selected. */}
       {supersededParts > 0 && (
-        <p className="rounded border border-blue-300 bg-blue-50 p-3 text-sm text-blue-900">
+        <Alert tone="info">
           This project holds both a CAD file and a plotted PDF of the cutting drawing. The CAD file carries the real outlines, so its{" "}
           <strong>{outlinedParts.length} part{outlinedParts.length === 1 ? "" : "s"}</strong> are what is nested below and the{" "}
           {supersededParts} part{supersededParts === 1 ? "" : "s"} read from the PDF are set aside &mdash; they are the same pieces
           measured a worse way, and nesting both would cut everything twice. Pick a single drawing above if that is not what you want.
-        </p>
+        </Alert>
       )}
 
       <CuttingPlanner

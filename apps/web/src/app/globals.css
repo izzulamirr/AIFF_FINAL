@@ -1,127 +1,745 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   Design system
+   ==========================================================================
+   Colour is defined ONCE, as semantic tokens, and every surface, text colour
+   and border in the app reads from them. The dark theme is a second set of
+   values for the same names, so a component never has to know which theme it
+   is in.
+
+   Use the semantic utilities -- bg-card, text-muted-foreground, text-danger,
+   border-border, bg-warning-soft -- and NOT raw palette colours (text-gray-500,
+   bg-amber-50). A raw palette colour is fixed to a white page and goes
+   unreadable in dark mode; that is exactly what the old per-class dark-mode
+   overrides here were patching, one utility at a time. Tokens make the patch
+   unnecessary.
+
+   Every text/background pair below was checked against WCAG AA (4.5:1) in
+   both themes.
+
+   Tailwind v4 defaults a bare `border` to currentColor, which is why borders
+   used to render near-black. The base layer sets the default border colour to
+   the --border token.
+   ========================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  /* Surfaces */
+  --background: #f4f6f9;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --muted: #eef1f6;
+  --muted-foreground: #566376;
+
+  /* Lines and focus */
+  --border: #e1e6ee;
+  --border-strong: #c9d1dd;
+  --input: #c9d1dd;
+  --ring: #3b82f6;
+
+  /* Brand */
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
+  --primary-foreground: #ffffff;
+  --primary-soft: #eaf0fe;
+  --link: #1d4ed8;
+
+  /* Status: text colour, soft fill, border, and a solid for dots and bars */
+  --success: #146c43;
+  --success-soft: #e8f6ee;
+  --success-border: #b9e2c9;
+  --success-solid: #16a34a;
+
+  --warning: #8a4a0b;
+  --warning-soft: #fff6e0;
+  --warning-border: #f3d38b;
+  --warning-solid: #d97706;
+
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --danger-border: #f5b8b1;
+  --danger-solid: #dc2626;
+
+  --info: #1d4ed8;
+  --info-soft: #eaf0fe;
+  --info-border: #b9cdf9;
+  --info-solid: #2563eb;
+
+  /* Navigation rail: dark in both themes, deeper still in dark mode */
+  --sidebar: #0c1322;
+  --sidebar-border: #1a2540;
+  --sidebar-foreground: #b6c2d4;
+  --sidebar-strong: #f1f5f9;
+  --sidebar-muted: #8593a8;
+  --sidebar-hover: rgba(255, 255, 255, 0.06);
+  --sidebar-active: #16233f;
+  --sidebar-accent: #60a5fa;
+
+  --radius: 0.625rem;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(15, 23, 42, 0.01);
+  --shadow-pop: 0 12px 32px -12px rgba(15, 23, 42, 0.3);
+
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23566376' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* `screen` is deliberate: a printed page never matches it, so paper always
+   gets the light tokens, whatever the operating system is set to. */
+@media screen and (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --background: #0a0e16;
+    --foreground: #e6eaf1;
+    --card: #111826;
+    --card-foreground: #e6eaf1;
+    --muted: #182131;
+    --muted-foreground: #93a0b4;
+
+    --border: #212c3f;
+    --border-strong: #2f3c52;
+    --input: #2f3c52;
+    --ring: #5b8def;
+
+    --primary: #3b6cf0;
+    --primary-hover: #4d7bf4;
+    --primary-foreground: #ffffff;
+    --primary-soft: #14203a;
+    --link: #8db3ff;
+
+    --success: #5fd58d;
+    --success-soft: #0f2a1c;
+    --success-border: #1d5a38;
+    --success-solid: #22c55e;
+
+    --warning: #f6c453;
+    --warning-soft: #2d2208;
+    --warning-border: #6b4e12;
+    --warning-solid: #f59e0b;
+
+    --danger: #ff8a80;
+    --danger-soft: #341311;
+    --danger-border: #7a2a24;
+    --danger-solid: #ef4444;
+
+    --info: #8db3ff;
+    --info-soft: #101f3d;
+    --info-border: #243f7a;
+    --info-solid: #5b8def;
+
+    --sidebar: #080d18;
+    --sidebar-border: #151e31;
+    --sidebar-active: #14203a;
+
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-pop: 0 12px 32px -12px rgba(0, 0, 0, 0.7);
+
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393a0b4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
 }
 
 @theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-link: var(--link);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-border: var(--success-border);
+  --color-success-solid: var(--success-solid);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-border: var(--warning-border);
+  --color-warning-solid: var(--warning-solid);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-border: var(--danger-border);
+  --color-danger-solid: var(--danger-solid);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-border: var(--info-border);
+  --color-info-solid: var(--info-solid);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-strong: var(--sidebar-strong);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-accent: var(--sidebar-accent);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ==========================================================================
+   Base
+   ========================================================================== */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    /* A data-heavy tool: 14px is the working size, headings step up from it. */
+    font-size: 0.875rem;
+    line-height: 1.5;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 28%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--primary);
+  }
+
+  hr {
+    border-color: var(--border);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ==========================================================================
+   Components
+   ==========================================================================
+   Kept in the components layer so a utility on the same element always wins:
+   <div class="card p-0"> removes the card's padding, <input class="input w-28">
+   narrows a field. */
+@layer components {
+  /* ---- Surfaces ---------------------------------------------------------- */
+  .card {
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-card);
+    padding: 1.25rem;
+  }
+  /* A card whose content runs edge to edge -- a table, mostly. `clip` rounds
+     the corners without becoming a scroll container. */
+  .card-flush {
+    padding: 0;
+    overflow: clip;
+  }
+  .card-warning {
+    border-color: var(--warning-border);
+  }
+  .card-danger {
+    border-color: var(--danger-border);
+  }
+  .card-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.875rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .card-body {
+    padding: 1.25rem;
+  }
+  .card-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.35;
+  }
+  .card-description {
+    margin-top: 0.125rem;
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+  .section-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .eyebrow {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  /* ---- Links ------------------------------------------------------------- */
+  .link {
+    color: var(--link);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
+    text-underline-offset: 3px;
+    transition: text-decoration-color 0.12s;
+  }
+  .link:hover {
+    text-decoration-color: currentColor;
+  }
+
+  /* ---- Buttons ----------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.25rem;
+    padding: 0 0.875rem;
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition:
+      background-color 0.12s,
+      border-color 0.12s,
+      color 0.12s,
+      box-shadow 0.12s;
+  }
+  .btn:disabled,
+  .btn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      0 1px 2px rgba(15, 23, 42, 0.18);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+  }
+  .btn-secondary {
+    background: var(--card);
+    color: var(--foreground);
+    border-color: var(--input);
+    box-shadow: 0 1px 1px rgba(15, 23, 42, 0.04);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--muted);
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted-foreground);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+  .btn-danger {
+    background: transparent;
+    color: var(--danger);
+    border-color: var(--danger-border);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--danger-solid);
+    border-color: var(--danger-solid);
+    color: #fff;
+  }
+  .btn-sm {
+    height: 1.875rem;
+    padding: 0 0.625rem;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    border-radius: 0.4375rem;
+  }
+  .btn-xs {
+    height: 1.625rem;
+    padding: 0 0.5rem;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    border-radius: 0.375rem;
+  }
+
+  /* ---- Fields ------------------------------------------------------------ */
+  .field-label {
+    display: block;
+    margin-bottom: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--foreground);
+  }
+  .field-hint {
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .input {
+    width: 100%;
+    height: 2.25rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--input);
+    border-radius: 0.5rem;
+    background-color: var(--card);
+    color: var(--foreground);
+    font-size: 0.875rem;
+    transition:
+      border-color 0.12s,
+      box-shadow 0.12s;
+  }
+  .input::placeholder {
+    color: var(--muted-foreground);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 28%, transparent);
+  }
+  .input:disabled {
+    background-color: var(--muted);
+    color: var(--muted-foreground);
+    cursor: not-allowed;
+  }
+  .input-sm {
+    height: 1.875rem;
+    padding: 0 0.5rem;
+    font-size: 0.8125rem;
+    border-radius: 0.4375rem;
+  }
+  select.input {
+    appearance: none;
+    padding-right: 2rem;
+    background-image: var(--chevron);
+    background-repeat: no-repeat;
+    background-position: right 0.625rem center;
+    background-size: 1rem;
+    cursor: pointer;
+  }
+  /* The native file control, dressed to match. */
+  .input-file {
+    height: auto;
+    padding: 0.375rem;
+    cursor: pointer;
+  }
+  .input-file::file-selector-button {
+    height: 1.75rem;
+    margin-right: 0.75rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--input);
+    border-radius: 0.375rem;
+    background: var(--muted);
+    color: var(--foreground);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.12s;
+  }
+  .input-file:hover::file-selector-button {
+    background: var(--border);
+  }
+
+  /* ---- Tables ------------------------------------------------------------ */
+  .table-wrap {
+    overflow-x: auto;
+  }
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 0.875rem;
+  }
+  /* Child combinators throughout: a cell can hold a small table of its own
+     (a spool's workings, say) and that one must not inherit these rules. */
+  .table > thead > tr > th {
+    padding: 0.625rem 0.875rem;
+    background: var(--muted);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+  }
+  .table > tbody > tr > td {
+    padding: 0.625rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .table > tbody > tr:last-child > td {
+    border-bottom: 0;
+  }
+  .table > tbody > tr:hover > td {
+    background: color-mix(in srgb, var(--muted) 55%, transparent);
+  }
+  .table-top > tbody > tr > td {
+    vertical-align: top;
+  }
+  .table-compact > thead > tr > th {
+    padding: 0.5rem 0.75rem;
+  }
+  .table-compact > tbody > tr > td {
+    padding: 0.4375rem 0.75rem;
+  }
+  /* A table that is not the point of the card -- a list of two or three rows
+     inside a form, say -- gets no header band and no row hover. */
+  .table-plain > thead > tr > th {
+    background: transparent;
+  }
+  .table-plain > tbody > tr:hover > td {
+    background: transparent;
+  }
+
+  /* ---- Badges ------------------------------------------------------------ */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.125rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    white-space: nowrap;
+  }
+  .badge-dot::before {
+    content: "";
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 9999px;
+    background: currentColor;
+  }
+  .badge-live::before {
+    animation: status-pulse 1.4s ease-in-out infinite;
+  }
+  .badge-success {
+    color: var(--success);
+    background: var(--success-soft);
+    border-color: var(--success-border);
+  }
+  .badge-warning {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning-border);
+  }
+  .badge-danger {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger-border);
+  }
+  .badge-info {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info-border);
+  }
+  .badge-mono {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0;
+  }
+
+  /* ---- Alerts and callouts ----------------------------------------------- */
+  .alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--muted);
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+  .alert > svg {
+    flex: none;
+    margin-top: 0.125rem;
+  }
+  .alert-info {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info-border);
+  }
+  .alert-success {
+    color: var(--success);
+    background: var(--success-soft);
+    border-color: var(--success-border);
+  }
+  .alert-warning {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-color: var(--warning-border);
+  }
+  .alert-danger {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger-border);
+  }
+  /* A quiet note: explanation that is worth having and not worth shouting. */
+  .callout {
+    padding: 0.625rem 0.875rem;
+    border-left: 3px solid var(--border-strong);
+    border-radius: 0 0.5rem 0.5rem 0;
+    background: var(--muted);
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+
+  /* ---- Figures ----------------------------------------------------------- */
+  .stat {
+    min-width: 9.5rem;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+  }
+  .stat-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+  .stat-value {
+    margin-top: 0.125rem;
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-warning {
+    border-color: var(--warning-border);
+    background: var(--warning-soft);
+  }
+  .stat-warning .stat-value {
+    color: var(--warning);
+  }
+  .stat-good .stat-value {
+    color: var(--success);
+  }
+  .stat-danger {
+    border-color: var(--danger-border);
+    background: var(--danger-soft);
+  }
+  .stat-danger .stat-value {
+    color: var(--danger);
+  }
+
+  /* ---- Code -------------------------------------------------------------- */
+  .code-block {
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow: auto;
+  }
+
+  /* ---- Empty state ------------------------------------------------------- */
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 2.25rem 1rem;
+    text-align: center;
+    color: var(--muted-foreground);
+  }
+
+  /* ---- Sign-in backdrop: a faint drawing grid ---------------------------- */
+  .blueprint {
+    background-color: var(--sidebar);
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+      linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px);
+    background-size:
+      96px 96px,
+      96px 96px,
+      24px 24px,
+      24px 24px;
+  }
 }
 
-/* Dark mode.
-   Every colour utility in this app was chosen against a white page -- muted
-   text as gray-500, warnings as amber-700, panels as gray-50. The body follows
-   the operating system, so on a dark desktop all of that inverts into dark
-   grey on near-black and stops being readable: "not stated" against a 50 mm
-   plate is a thing somebody has to notice, and it was invisible.
-   Rather than sprinkle dark: variants through several hundred class names --
-   which drifts the moment anyone adds a component -- the handful of utilities
-   the app actually uses are remapped here, once. The pairs are chosen for
-   contrast against #0a0a0a rather than by flipping the scale: amber and red
-   have to stay obviously amber and red, because they are the difference
-   between a note and a warning. */
-@media (prefers-color-scheme: dark) {
-  .text-gray-400 { color: #9ca3af; }
-  .text-gray-500 { color: #a8b0bb; }
-  .text-gray-600 { color: #c3cad4; }
-  .text-gray-700 { color: #d4dae2; }
-  .text-gray-900 { color: #f1f3f5; }
-
-  .text-amber-600 { color: #fbbf24; }
-  .text-amber-700 { color: #fcd34d; }
-  .text-amber-800,
-  .text-amber-900 { color: #fde68a; }
-
-  .text-red-600,
-  .text-red-700 { color: #f87171; }
-  .text-red-800,
-  .text-red-900 { color: #fca5a5; }
-
-  .text-green-600 { color: #4ade80; }
-  .text-green-900 { color: #86efac; }
-
-  .text-blue-600 { color: #60a5fa; }
-  .text-blue-800,
-  .text-blue-900 { color: #93c5fd; }
-
-  /* Panels. A near-white surface would glare; these sit just above the page
-     so a bordered block still reads as a block. */
-  .bg-gray-50 { background-color: #16181c; }
-  .bg-gray-100 { background-color: #1c1f24; }
-  .bg-amber-50 { background-color: #2a2008; }
-  .bg-red-50 { background-color: #2b1212; }
-  .bg-green-50 { background-color: #0f2417; }
-  .bg-blue-50 { background-color: #101c2e; }
-
-  /* The -100s are chips and highlights -- a light patch carrying dark text.
-     Lightening the text without darkening the patch is how a hook-up note
-     ended up as pale yellow on pale yellow: legible in neither theme. They are
-     darker than the -50 panels so a highlight still reads as a highlight
-     against the block it sits in. */
-  .bg-amber-100 { background-color: #422006; }
-  .bg-red-100 { background-color: #3b1717; }
-  .bg-blue-100 { background-color: #16263f; }
-  .bg-green-100 { background-color: #14301f; }
-  .bg-yellow-100 { background-color: #3a2f06; }
-
-  /* Borders default to a light-page grey and vanish here. */
-  .border { border-color: #2f333a; }
-  .border-b { border-bottom-color: #2f333a; }
-  .border-t { border-top-color: #2f333a; }
-  .border-amber-300 { border-color: #a16207; }
-  .border-red-300 { border-color: #b91c1c; }
-  .border-green-300 { border-color: #15803d; }
-  .border-blue-300 { border-color: #1d4ed8; }
-
-  /* A black primary button on a near-black page is a button nobody can see.
-     Inverted: light surface, dark label, which is what "primary" means here.
-     These rules sit outside Tailwind's @layer, so they win over the utilities
-     regardless of order -- including .text-white on the same element. */
-  .bg-black {
-    background-color: #f1f3f5;
-    color: #0a0a0a;
+/* ==========================================================================
+   Motion
+   ========================================================================== */
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
   }
-  .bg-gray-300 { background-color: #3a3f47; }
-
-  /* Disabled has to read as disabled. Tailwind's disabled:bg-gray-300 is a
-     LIGHT grey, which against this page looks more enabled than the enabled
-     state -- so it is handled on the element rather than on the class. */
-  button:disabled {
-    background-color: #26292f;
-    color: #7c828c;
-    border-color: #2f333a;
+  50% {
+    opacity: 0.3;
   }
-
-  /* Inputs: transparent on a dark page reads as empty space, not as a field. */
-  input,
-  select,
-  textarea {
-    background-color: #16181c;
-    color: #f1f3f5;
-    border-color: #3a3f47;
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
   }
-  input::placeholder { color: #8b929c; }
-  input:disabled { background-color: #101216; color: #6b7280; }
+  to {
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge-live::before,
+  .drawer-panel,
+  .drawer-backdrop {
+    animation: none !important;
+  }
 }
 
-/* Printing a cutting plan.
+/* ==========================================================================
+   Print
+   ==========================================================================
    A nest is a shop document -- it gets taken to the machine on paper or as a
    PDF -- so the page has to print as one, not as a screenshot of an app. The
    editing chrome goes, each plate takes its own sheet, and the layouts print
@@ -132,15 +750,22 @@ body {
     margin: 12mm;
   }
   nav,
-  .no-print {
+  .no-print,
+  .app-chrome {
     display: none !important;
   }
-  main {
+  main,
+  .app-content {
     padding: 0 !important;
+    max-width: none !important;
   }
   body {
     background: #fff;
     color: #000;
+  }
+  .card,
+  .stat {
+    box-shadow: none;
   }
   .print-plate {
     break-before: page;

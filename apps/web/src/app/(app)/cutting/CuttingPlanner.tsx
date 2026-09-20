@@ -14,6 +14,8 @@ import {
   type NestResult,
   type StockPlate,
 } from "@easy/shared";
+import { Alert, EmptyState } from "@/components/ui/primitives";
+import { IconDownload, IconNest, IconPlus, IconPrinter } from "@/components/ui/icons";
 import { runTrueShapeNest, saveCuttingQuantities, saveCuttingStock } from "./actions";
 
 // The nest is recomputed in the browser as the stock and the allowances are
@@ -384,106 +386,115 @@ export function CuttingPlanner({
   return (
     <div className="flex flex-col gap-6">
       {/* ---- stock and allowances ------------------------------------- */}
-      <div className="no-print rounded border p-4">
-        <p className="text-sm font-medium">Plate stock</p>
+      <div className="no-print card">
+        <h2 className="card-title">Plate stock</h2>
         {drawingStock && (
-          <p className="mb-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
+          <p className="callout mt-3 text-xs">
             The drawing states its own stock
             {drawingStock.statedAs ? ` — “${drawingStock.statedAs}”` : ""}, and that is what is loaded below. Change it
             only if you are actually cutting from something else.
           </p>
         )}
-        <p className="mb-3 text-xs text-gray-500">
+        <p className="mb-4 mt-2 max-w-3xl text-[0.8125rem] leading-relaxed text-muted-foreground">
           The plate you are cutting from. Parts are grouped by thickness first &mdash; a 12 mm part cannot come off a 10 mm plate &mdash;
           so add a row per thickness you hold. A row left without a grade is treated as usable for any part.{" "}
-          <strong>Plates available</strong> is how many of that size the job may use: the nest will not open one more than that, and
-          anything that will not fit within them is reported rather than drawn onto plate nobody has.
+          <strong className="text-foreground">Plates available</strong> is how many of that size the job may use: the nest will not
+          open one more than that, and anything that will not fit within them is reported rather than drawn onto plate nobody has.
         </p>
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b text-xs text-gray-500">
-              <th className="py-1">Length (mm)</th>
-              <th>Width (mm)</th>
-              <th>Thickness (mm)</th>
-              <th>Grade</th>
-              <th>Plates available</th>
-              <th>Plates used</th>
-              <th className="w-10"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {stock.map((row) => (
-              <tr key={row.id} className="border-b">
-                <td className="py-1 pr-2">
-                  <input
-                    value={row.lengthMm}
-                    onChange={(e) => updateStock(row.id, { lengthMm: e.target.value })}
-                    className="w-28 rounded border px-2 py-1"
-                    inputMode="decimal"
-                  />
-                </td>
-                <td className="pr-2">
-                  <input
-                    value={row.widthMm}
-                    onChange={(e) => updateStock(row.id, { widthMm: e.target.value })}
-                    className="w-28 rounded border px-2 py-1"
-                    inputMode="decimal"
-                  />
-                </td>
-                <td className="pr-2">
-                  <input
-                    value={row.thicknessMm}
-                    onChange={(e) => updateStock(row.id, { thicknessMm: e.target.value })}
-                    className="w-24 rounded border px-2 py-1"
-                    inputMode="decimal"
-                  />
-                </td>
-                <td className="pr-2">
-                  <input
-                    value={row.material}
-                    onChange={(e) => updateStock(row.id, { material: e.target.value })}
-                    placeholder="e.g. A516 GR.70"
-                    className="w-44 rounded border px-2 py-1"
-                  />
-                </td>
-                <td className="pr-2">
-                  <input
-                    value={row.quantity}
-                    onChange={(e) => updateStock(row.id, { quantity: e.target.value.replace(/[^0-9]/g, "") })}
-                    className="w-20 rounded border px-2 py-1 disabled:bg-gray-100 disabled:text-gray-400"
-                    inputMode="numeric"
-                    disabled={unlimited}
-                    title={unlimited ? "Ignored while the nest is allowed as many plates as it needs." : undefined}
-                  />
-                </td>
-                <td className="pr-2 text-sm">
-                  {(() => {
-                    const use = nest.stockUsage.find((u) => u.stockId === row.id);
-                    if (!use) return <span className="text-gray-400">&mdash;</span>;
-                    return (
-                      <span className={use.short ? "font-medium text-red-600" : use.used === 0 ? "text-gray-400" : "text-gray-900"}>
-                        {use.used}
-                        {use.available != null ? ` of ${use.available}` : ""}
-                        {use.short ? " — not enough" : ""}
-                      </span>
-                    );
-                  })()}
-                </td>
-                <td className="text-right">
-                  {stock.length > 1 && (
-                    <button
-                      onClick={() => setStock((rows) => rows.filter((r) => r.id !== row.id))}
-                      className="text-xs text-red-600 underline"
-                    >
-                      remove
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+        <div className="overflow-hidden rounded-lg border">
+          <div className="table-wrap">
+            <table className="table table-compact">
+              <thead>
+                <tr>
+                  <th>Length (mm)</th>
+                  <th>Width (mm)</th>
+                  <th>Thickness (mm)</th>
+                  <th>Grade</th>
+                  <th>Plates available</th>
+                  <th>Plates used</th>
+                  <th className="w-10"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {stock.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <input
+                        value={row.lengthMm}
+                        onChange={(e) => updateStock(row.id, { lengthMm: e.target.value })}
+                        className="input input-sm w-28"
+                        inputMode="decimal"
+                        aria-label="Plate length in millimetres"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={row.widthMm}
+                        onChange={(e) => updateStock(row.id, { widthMm: e.target.value })}
+                        className="input input-sm w-28"
+                        inputMode="decimal"
+                        aria-label="Plate width in millimetres"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={row.thicknessMm}
+                        onChange={(e) => updateStock(row.id, { thicknessMm: e.target.value })}
+                        className="input input-sm w-24"
+                        inputMode="decimal"
+                        aria-label="Plate thickness in millimetres"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={row.material}
+                        onChange={(e) => updateStock(row.id, { material: e.target.value })}
+                        placeholder="e.g. A516 GR.70"
+                        className="input input-sm w-44"
+                        aria-label="Plate grade"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        value={row.quantity}
+                        onChange={(e) => updateStock(row.id, { quantity: e.target.value.replace(/[^0-9]/g, "") })}
+                        className="input input-sm w-20"
+                        inputMode="numeric"
+                        disabled={unlimited}
+                        aria-label="Plates available"
+                        title={unlimited ? "Ignored while the nest is allowed as many plates as it needs." : undefined}
+                      />
+                    </td>
+                    <td className="tabular-nums">
+                      {(() => {
+                        const use = nest.stockUsage.find((u) => u.stockId === row.id);
+                        if (!use) return <span className="text-muted-foreground">&mdash;</span>;
+                        return (
+                          <span className={use.short ? "font-medium text-danger" : use.used === 0 ? "text-muted-foreground" : "text-foreground"}>
+                            {use.used}
+                            {use.available != null ? ` of ${use.available}` : ""}
+                            {use.short ? " — not enough" : ""}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td className="text-right">
+                      {stock.length > 1 && (
+                        <button
+                          onClick={() => setStock((rows) => rows.filter((r) => r.id !== row.id))}
+                          className="btn btn-danger btn-xs"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
           <button
             onClick={() =>
               setStock((rows) => [
@@ -491,27 +502,28 @@ export function CuttingPlanner({
                 { id: `s${Date.now()}`, lengthMm: "6000", widthMm: "2000", thicknessMm: "", material: "", quantity: "1" },
               ])
             }
-            className="rounded border px-2 py-1"
+            className="btn btn-secondary btn-xs"
           >
-            + add plate size
+            <IconPlus size={13} />
+            Add plate size
           </button>
-          <span className="text-gray-500">quick set first row:</span>
+          <span className="text-muted-foreground">Quick set first row:</span>
           {COMMON_PLATES.map((p) => (
             <button
               key={p.label}
               onClick={() => stock[0] && updateStock(stock[0].id, { lengthMm: String(p.lengthMm), widthMm: String(p.widthMm) })}
-              className="rounded border px-2 py-1"
+              className="btn btn-secondary btn-xs"
             >
               {p.label}
             </button>
           ))}
         </div>
 
-        <label className="mt-3 flex items-start gap-2 text-sm">
-          <input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} className="mt-1" />
-          <span>
+        <label className="mt-4 flex cursor-pointer items-start gap-2.5 text-sm">
+          <input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} className="mt-0.5 h-4 w-4" />
+          <span className="font-medium">
             Use as many plates as the job needs
-            <span className="block text-xs text-gray-400">
+            <span className="mt-0.5 block max-w-3xl text-xs font-normal leading-relaxed text-muted-foreground">
               Ignores the counts above and answers &ldquo;how much plate should I order?&rdquo;. Leave it off to answer &ldquo;does it
               fit on the plate I have?&rdquo; &mdash; then anything that does not fit is listed rather than nested onto plate nobody
               holds. The counts are saved either way.
@@ -519,22 +531,22 @@ export function CuttingPlanner({
           </span>
         </label>
 
-        <div className="mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4">
           <button
             onClick={save}
             disabled={saving || !dirty}
-            className="rounded bg-black px-4 py-2 text-sm text-white disabled:bg-gray-300"
+            className="btn btn-primary"
           >
             {saving ? "Saving..." : "Save stock for this project"}
           </button>
           {saveError ? (
-            <span className="text-xs text-red-600">{saveError}</span>
+            <span className="text-xs text-danger">{saveError}</span>
           ) : dirty ? (
-            <span className="text-xs text-amber-600">
+            <span className="text-xs text-warning">
               Unsaved &mdash; the nest below already uses these figures, but nobody else on the project will see them until you save.
             </span>
           ) : (
-            <span className="text-xs text-gray-500">Saved to the project &mdash; it will be here on your next visit.</span>
+            <span className="text-xs text-muted-foreground">Saved to the project &mdash; it will be here on your next visit.</span>
           )}
         </div>
       </div>
@@ -545,84 +557,94 @@ export function CuttingPlanner({
           take the quantity table off the page along with everything else --
           leaving no way to put a number back. */}
       {Object.keys(drawnQuantities).length === 0 ? (
-        <p className="text-sm text-gray-500">No parts extracted yet. Upload a cutting drawing and wait for its extraction to finish.</p>
+        <div className="card">
+          <EmptyState icon={<IconNest />} title="No parts extracted yet">
+            Upload a cutting drawing and wait for its extraction to finish.
+          </EmptyState>
+        </div>
       ) : (
         <>
           {/* The quantity decision comes before the layout, because it is
               the input to it: how many of each part, then where they go. */}
-          <div className="rounded border p-4">
-            <p className="mb-1 text-sm font-medium">Parts read from the drawing &mdash; and how many to cut</p>
-            <p className="mb-3 max-w-3xl text-xs text-gray-500">
-              <strong>Drawn</strong> is how many times the extraction found that shape on the sheet. That is a measurement, not an
-              instruction: a cutting sheet often lays out one representative piece and states the real count in its parts table. So{" "}
-              <strong>To cut</strong> is yours to set, and it is what the nest below uses. Set it to 0 to leave a part out of this run.
+          <div className="card">
+            <h2 className="card-title mb-1">Parts read from the drawing &mdash; and how many to cut</h2>
+            <p className="mb-4 max-w-3xl text-[0.8125rem] leading-relaxed text-muted-foreground">
+              <strong className="text-foreground">Drawn</strong> is how many times the extraction found that shape on the sheet. That is
+              a measurement, not an instruction: a cutting sheet often lays out one representative piece and states the real count in
+              its parts table. So <strong className="text-foreground">To cut</strong> is yours to set, and it is what the nest below
+              uses. Set it to 0 to leave a part out of this run.
             </p>
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b text-xs text-gray-500">
-                  <th className="py-1">Part mark</th>
-                  <th className="w-24">Shape</th>
-                  <th className="w-40">Cut size (mm)</th>
-                  <th className="w-24">Thk</th>
-                  <th className="w-16">Drawn</th>
-                  <th className="w-24">To cut</th>
-                  <th>Dimensions printed on the drawing</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.keys(drawnQuantities).map((mark) => {
-                  const p = parts.find((q) => q.partNo === mark);
-                  const drawn = drawnQuantities[mark];
-                  const value = qty[mark] ?? String(drawn);
-                  const changed = count0(value) !== drawn;
-                  return (
-                    <tr key={mark} className={`border-b ${count0(value) === 0 ? "opacity-50" : ""}`}>
-                      <td className="py-1">
-                        {p && (
-                          <span className="inline-block h-3 w-3 rounded-sm align-middle" style={{ background: colourOf(p.id) }} />
-                        )}{" "}
-                        <span className="font-mono text-xs">{mark}</span>
-                        {p && !p.rotatable && <span className="ml-2 text-xs text-amber-700">grain fixed</span>}
-                      </td>
-                      <td className="text-xs text-gray-600">{p?.shape ?? "-"}</td>
-                      <td className="font-mono text-xs">
-                        {p ? `${p.lengthMm.toFixed(2)} × ${p.widthMm.toFixed(2)}` : "-"}
-                      </td>
-                      <td className="text-xs">
-                        {p?.thicknessMm ?? <span className="text-amber-700">not stated</span>}
-                      </td>
-                      <td className="text-xs text-gray-500">{drawn}</td>
-                      <td>
-                        <input
-                          value={value}
-                          onChange={(e) => setQty((q) => ({ ...q, [mark]: e.target.value.replace(/[^0-9]/g, "") }))}
-                          inputMode="numeric"
-                          className={`w-16 rounded border px-2 py-1 text-sm ${changed ? "border-blue-500 font-medium" : ""}`}
-                        />
-                      </td>
-                      <td className="text-xs text-gray-500">{p?.description ?? "-"}</td>
+            <div className="overflow-hidden rounded-lg border">
+              <div className="table-wrap">
+                <table className="table table-compact">
+                  <thead>
+                    <tr>
+                      <th>Part mark</th>
+                      <th className="w-24">Shape</th>
+                      <th className="w-40">Cut size (mm)</th>
+                      <th className="w-24">Thk</th>
+                      <th className="w-16">Drawn</th>
+                      <th className="w-24">To cut</th>
+                      <th>Dimensions printed on the drawing</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {Object.keys(drawnQuantities).map((mark) => {
+                      const p = parts.find((q) => q.partNo === mark);
+                      const drawn = drawnQuantities[mark];
+                      const value = qty[mark] ?? String(drawn);
+                      const changed = count0(value) !== drawn;
+                      return (
+                        <tr key={mark} className={count0(value) === 0 ? "opacity-50" : ""}>
+                          <td>
+                            {p && (
+                              <span className="inline-block h-3 w-3 rounded-sm align-middle" style={{ background: colourOf(p.id) }} />
+                            )}{" "}
+                            <span className="font-mono text-xs font-medium">{mark}</span>
+                            {p && !p.rotatable && <span className="ml-2 text-xs text-warning">grain fixed</span>}
+                          </td>
+                          <td className="text-xs text-muted-foreground">{p?.shape ?? "-"}</td>
+                          <td className="font-mono text-xs">
+                            {p ? `${p.lengthMm.toFixed(2)} × ${p.widthMm.toFixed(2)}` : "-"}
+                          </td>
+                          <td className="text-xs">
+                            {p?.thicknessMm ?? <span className="text-warning">not stated</span>}
+                          </td>
+                          <td className="text-xs tabular-nums text-muted-foreground">{drawn}</td>
+                          <td>
+                            <input
+                              value={value}
+                              onChange={(e) => setQty((q) => ({ ...q, [mark]: e.target.value.replace(/[^0-9]/g, "") }))}
+                              inputMode="numeric"
+                              aria-label={`Number of ${mark} to cut`}
+                              className={`input input-sm w-16 ${changed ? "border-primary font-medium" : ""}`}
+                            />
+                          </td>
+                          <td className="text-xs text-muted-foreground">{p?.description ?? "-"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4">
               <button
                 onClick={saveQuantities}
                 disabled={savingQty || !qtyDirty}
-                className="rounded bg-black px-4 py-2 text-sm text-white disabled:bg-gray-300"
+                className="btn btn-primary"
               >
                 {savingQty ? "Saving..." : "Save quantities and re-nest"}
               </button>
               {qtyError ? (
-                <span className="text-xs text-red-600">{qtyError}</span>
+                <span className="text-xs text-danger">{qtyError}</span>
               ) : qtyDirty ? (
-                <span className="text-xs text-amber-600">
+                <span className="text-xs text-warning">
                   Unsaved &mdash; the layout below is still nesting the old counts.
                 </span>
               ) : (
-                <span className="text-xs text-gray-500">
+                <span className="text-xs text-muted-foreground">
                   {Object.entries(qty).reduce((sum, [, v]) => sum + count0(v), 0)} piece
                   {Object.entries(qty).reduce((sum, [, v]) => sum + count0(v), 0) === 1 ? "" : "s"} to cut across{" "}
                   {Object.values(qty).filter((v) => count0(v) > 0).length} part
@@ -632,14 +654,15 @@ export function CuttingPlanner({
             </div>
           </div>
 
-          <div className="no-print flex flex-col gap-2 rounded border p-4">
-            <p className="text-sm font-medium">How the parts are arranged</p>
+          <div className="no-print card flex flex-col gap-3">
+            <h2 className="card-title">How the parts are arranged</h2>
             {outlined === 0 ? (
-              <p className="max-w-3xl text-xs text-gray-500">
+              <p className="max-w-3xl text-[0.8125rem] leading-relaxed text-muted-foreground">
                 These parts came from a plotted PDF, which records the dimension figures but not the geometry &mdash; so each part is
-                nested and drawn as its <strong>bounding box</strong>, the rectangle it reserves, not the shape that gets cut.{" "}
-                <strong>Upload the DWG or DXF of the same drawing</strong> and the real profiles are read straight out of it; parts then
-                nest inside each other&apos;s concave regions instead of each paying for a full rectangle.
+                nested and drawn as its <strong className="text-foreground">bounding box</strong>, the rectangle it reserves, not the
+                shape that gets cut. <strong className="text-foreground">Upload the DWG or DXF of the same drawing</strong> and the real
+                profiles are read straight out of it; parts then nest inside each other&apos;s concave regions instead of each paying
+                for a full rectangle.
               </p>
             ) : (
               <>
@@ -647,32 +670,32 @@ export function CuttingPlanner({
                   <button
                     onClick={runShapeNest}
                     disabled={shaping}
-                    className="rounded bg-black px-4 py-2 text-sm text-white disabled:bg-gray-300"
+                    className="btn btn-primary"
                   >
                     {shaping ? "Nesting to the true shapes..." : shapeNest && !shapeStale ? "Re-run true-shape nest" : "Nest to the true shapes"}
                   </button>
                   {shapeError ? (
-                    <span className="max-w-2xl text-xs text-red-600">{shapeError}</span>
+                    <span className="max-w-2xl text-xs text-danger">{shapeError}</span>
                   ) : shaping ? (
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-muted-foreground">
                       Rasterising every part at every angle and searching &mdash; this takes a few seconds.
                     </span>
                   ) : shapeStale ? (
-                    <span className="text-xs text-amber-600">
+                    <span className="text-xs text-warning">
                       The stock changed since this was nested &mdash; showing the bounding-box layout again. Re-run it.
                     </span>
                   ) : shapeNest ? (
-                    <span className="text-xs text-green-600">
+                    <span className="text-xs text-success">
                       Nested on the true outlines. Everything below is this layout.
                     </span>
                   ) : (
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-muted-foreground">
                       {outlined} of {parts.length} parts carry a real cut line. Until you run this, the layout below reserves a full
                       rectangle for each one.
                     </span>
                   )}
                 </div>
-                <p className="max-w-3xl text-xs text-gray-500">
+                <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
                   The bounding-box nest is instant and updates as you edit the stock, so it is what you plan against. The true-shape nest
                   is the one to issue: it packs the profiles themselves, which on an irregular part is the difference between paying for
                   the rectangle and paying for the metal.
@@ -683,18 +706,14 @@ export function CuttingPlanner({
 
 
           {parts.length === 0 && (
-            <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <Alert tone="warning">
               Every part is set to cut 0, so there is nothing to nest. Put a count against the parts you are cutting in the table below
               and save.
-            </p>
+            </Alert>
           )}
 
           {clearance.plates.length > 0 && (
-            <div
-              className={`rounded border p-3 text-sm ${
-                clearance.ok ? "border-green-300 bg-green-50 text-green-900" : "border-red-300 bg-red-50 text-red-900"
-              }`}
-            >
+            <Alert tone={clearance.ok ? "success" : "danger"}>
               {clearance.ok ? (
                 <>
                   <strong>Cutting allowance checked.</strong> Measured between the finished outlines, the tightest gap anywhere on this
@@ -719,7 +738,7 @@ export function CuttingPlanner({
                   </ul>
                 </>
               )}
-            </div>
+            </Alert>
           )}
 
           <div className="flex flex-wrap gap-4">
@@ -738,53 +757,57 @@ export function CuttingPlanner({
             <Stat label="Utilisation" value={`${(nest.totals.utilisation * 100).toFixed(1)} %`} tone={nest.totals.utilisation < 0.6 ? "warn" : "good"} />
           </div>
 
-          <p className="max-w-3xl text-xs text-gray-500">
-            Utilisation is measured on each part&apos;s <strong>bounding box</strong>, which is what the drawing dimensions and what this
-            plan reserves. A part cut to an irregular profile &mdash; a gusset with a radius bitten out of it &mdash; does not use all of
-            its box, so the real metal taken is lower than the figure above and the plate count is an honest upper bound. Closing that
-            gap needs the true outline, which a plotted PDF does not carry; the CAD DXF does.
+          <p className="callout max-w-3xl text-xs leading-relaxed">
+            Utilisation is measured on each part&apos;s <strong className="text-foreground">bounding box</strong>, which is what the
+            drawing dimensions and what this plan reserves. A part cut to an irregular profile &mdash; a gusset with a radius bitten out
+            of it &mdash; does not use all of its box, so the real metal taken is lower than the figure above and the plate count is an
+            honest upper bound. Closing that gap needs the true outline, which a plotted PDF does not carry; the CAD DXF does.
           </p>
 
           {nest.assumedThicknessParts.length > 0 && (
-            <p className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+            <Alert tone="warning">
               The drawing states no plate thickness for{" "}
               {nest.assumedThicknessParts.length === parts.length ? "any part" : `${nest.assumedThicknessParts.length} part(s)`}, so they
               are nested on the first stock row ({stocks[0]?.thicknessMm ?? "?"} mm). That is only right if that is the plate going on the
               table &mdash; set the thickness above to the one you are cutting.
-            </p>
+            </Alert>
           )}
 
           {short && (
-            <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+            <Alert tone="danger">
               The stock list allows {nest.totals.plateCountAvailable ?? 0} plate
               {nest.totals.plateCountAvailable === 1 ? "" : "s"} and the job does not fit on{" "}
               {nest.totals.plateCountAvailable === 1 ? "it" : "them"}. The layouts below are for the plate you have; everything that
               needs another plate is listed under <strong>Not nested</strong>. Raise a count above, or tick &ldquo;use as many plates as
               the job needs&rdquo; to see how many it would actually take.
-            </p>
+            </Alert>
           )}
 
           {nest.unplaced.length > 0 && (
-            <div className="rounded border border-red-300 p-4">
-              <p className="mb-2 text-sm font-medium text-red-700">Not nested</p>
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-gray-500">
-                    <th className="py-1">Part</th>
-                    <th className="w-20">Qty</th>
-                    <th>Why</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {nest.unplaced.map((u, i) => (
-                    <tr key={`${u.part.id}-${i}`} className="border-b">
-                      <td className="py-1 font-mono text-xs">{u.part.partNo}</td>
-                      <td>{u.quantity}</td>
-                      <td className="text-xs text-gray-600">{u.reason}</td>
+            <div className="card card-danger card-flush">
+              <div className="card-header">
+                <h2 className="card-title text-danger">Not nested</h2>
+              </div>
+              <div className="table-wrap">
+                <table className="table table-compact">
+                  <thead>
+                    <tr>
+                      <th>Part</th>
+                      <th className="w-20">Qty</th>
+                      <th>Why</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {nest.unplaced.map((u, i) => (
+                      <tr key={`${u.part.id}-${i}`}>
+                        <td className="font-mono text-xs font-medium">{u.part.partNo}</td>
+                        <td className="tabular-nums">{u.quantity}</td>
+                        <td className="text-xs text-muted-foreground">{u.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -794,58 +817,63 @@ export function CuttingPlanner({
 
           {/* Last, because exporting is the end of the job: everything above
               is what you are deciding, and this is what you take away. */}
-          <div className="no-print flex flex-col gap-2 rounded border p-4">
-            <p className="text-sm font-medium">Export this plan</p>
+          <div className="no-print card flex flex-col gap-3">
+            <h2 className="card-title">Export this plan</h2>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={() => download(["pdf", "dxf"])}
                 disabled={exportBlocked}
-                className="rounded bg-black px-4 py-2 text-sm text-white disabled:bg-gray-300"
+                className="btn btn-primary"
               >
+                <IconDownload size={16} />
                 Download PDF + DXF
               </button>
               <button
                 onClick={() => download(["pdf"])}
                 disabled={exportBlocked}
-                className="rounded border px-4 py-2 text-sm disabled:text-gray-400"
+                className="btn btn-secondary"
               >
                 PDF only
               </button>
               <button
                 onClick={() => download(["dxf"])}
                 disabled={exportBlocked}
-                className="rounded border px-4 py-2 text-sm disabled:text-gray-400"
+                className="btn btn-secondary"
               >
                 DXF only
               </button>
               {exportBlocked && (
-                <span className="text-xs text-amber-600">
+                <span className="text-xs text-warning">
                   {shaping
                     ? "Waiting for the true-shape nest to finish — exporting now would give you the bounding-box draft."
                     : "Re-run the true-shape nest first — the layout on screen is the bounding-box draft."}
                 </span>
               )}
-              <button onClick={() => window.print()} className="rounded border px-4 py-2 text-sm">
+              <button onClick={() => window.print()} className="btn btn-secondary">
+                <IconPrinter size={16} />
                 Print this page
               </button>
             </div>
-            <p className="max-w-3xl text-xs text-gray-500">
-              The <strong>PDF</strong> is drawn to scale, A3 landscape, one page per plate, with that plate&apos;s cut list under the
-              layout and the allowances printed on it &mdash; issue it to the shop as it is. The <strong>DXF</strong> is the geometry
-              itself in millimetres, on layers (<span className="font-mono">CUT</span>, <span className="font-mono">HOLES</span>,{" "}
-              <span className="font-mono">PLATE</span>, <span className="font-mono">EDGE_MARGIN</span>,{" "}
-              <span className="font-mono">TEXT</span>), for loading into CAD or CAM.
-            </p>
-            <p className="max-w-3xl text-xs text-gray-500">
-              Both files are written from one snapshot of the layout and stamped with the same <strong>layout id</strong> &mdash; it is
-              in the file name and printed on the drawing. If a PDF and a DXF ever show different ids, one of them is from an older nest;
-              take them again together.
-            </p>
-            <p className="max-w-3xl text-xs text-gray-500">
-              There is no DWG. DWG is a closed binary format with no published specification and no writer worth trusting outside
-              Autodesk&apos;s own; DXF is the interchange format that exists for exactly this, and AutoCAD opens it and saves it as DWG
-              in one step. A half-correct DWG would be worse than none.
-            </p>
+            <div className="callout flex max-w-3xl flex-col gap-2 text-xs leading-relaxed">
+              <p>
+                The <strong className="text-foreground">PDF</strong> is drawn to scale, A3 landscape, one page per plate, with that
+                plate&apos;s cut list under the layout and the allowances printed on it &mdash; issue it to the shop as it is. The{" "}
+                <strong className="text-foreground">DXF</strong> is the geometry itself in millimetres, on layers (
+                <span className="font-mono">CUT</span>, <span className="font-mono">HOLES</span>,{" "}
+                <span className="font-mono">PLATE</span>, <span className="font-mono">EDGE_MARGIN</span>,{" "}
+                <span className="font-mono">TEXT</span>), for loading into CAD or CAM.
+              </p>
+              <p>
+                Both files are written from one snapshot of the layout and stamped with the same{" "}
+                <strong className="text-foreground">layout id</strong> &mdash; it is in the file name and printed on the drawing. If a
+                PDF and a DXF ever show different ids, one of them is from an older nest; take them again together.
+              </p>
+              <p>
+                There is no DWG. DWG is a closed binary format with no published specification and no writer worth trusting outside
+                Autodesk&apos;s own; DXF is the interchange format that exists for exactly this, and AutoCAD opens it and saves it as
+                DWG in one step. A half-correct DWG would be worse than none.
+              </p>
+            </div>
           </div>
         </>
       )}
@@ -854,11 +882,11 @@ export function CuttingPlanner({
 }
 
 function Stat({ label, value, tone = "plain" }: { label: string; value: string; tone?: "plain" | "good" | "warn" }) {
-  const colour = tone === "good" ? "text-green-600" : tone === "warn" ? "text-amber-600" : "text-gray-900";
+  const toneClass = tone === "good" ? "stat-good" : tone === "warn" ? "stat-warning" : "";
   return (
-    <div className="min-w-[9rem] rounded border p-3">
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className={`text-lg font-semibold ${colour}`}>{value}</p>
+    <div className={`stat ${toneClass}`.trim()}>
+      <p className="stat-label">{label}</p>
+      <p className="stat-value">{value}</p>
     </div>
   );
 }
@@ -874,13 +902,13 @@ function PlateView({ plate, colourOf }: { plate: NestedPlate; colourOf: (partId:
   const fs = Math.max(plate.lengthMm, plate.widthMm) / 55;
 
   return (
-    <div className="print-plate rounded border p-4">
-      <div className="mb-2 flex flex-wrap items-baseline gap-3">
-        <p className="text-sm font-medium">
+    <div className="print-plate card">
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <p className="card-title">
           Plate {plate.index} &mdash; {plate.lengthMm} × {plate.widthMm} × {plate.thicknessMm} mm
           {plate.material ? ` ${plate.material}` : ""}
         </p>
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-muted-foreground">
           {plate.placements.length} part{plate.placements.length === 1 ? "" : "s"} &middot; {(plate.utilisation * 100).toFixed(1)} % used
           &middot; {((plate.plateAreaMm2 - plate.partAreaMm2) / 1_000_000).toFixed(2)} m² waste &middot; {plate.allowances.spacingMm} mm
           between parts, {plate.allowances.edgeMarginMm} mm off the edge
@@ -890,7 +918,11 @@ function PlateView({ plate, colourOf }: { plate: NestedPlate; colourOf: (partId:
         </p>
       </div>
 
-      <svg viewBox={`0 0 ${vbW} ${vbH}`} className="w-full" style={{ maxHeight: "70vh" }} role="img">
+      {/* The drawing is dark ink on light paper -- its dimension labels sit
+          OUTSIDE the plate, on whatever is behind the SVG -- so it is given a
+          white sheet to sit on in either theme. Without one, dark mode put dark
+          labels on a dark card. */}
+      <svg viewBox={`0 0 ${vbW} ${vbH}`} className="w-full rounded-lg border bg-white" style={{ maxHeight: "70vh" }} role="img">
         <rect x={pad} y={pad} width={plate.lengthMm} height={plate.widthMm} fill="#f8fafc" stroke="#0f172a" strokeWidth={fs / 6} />
 
         {plate.placements.map((pl) => {

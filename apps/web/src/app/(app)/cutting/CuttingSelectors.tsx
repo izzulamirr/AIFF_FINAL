@@ -25,20 +25,24 @@ export function CuttingSelectors({
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded border p-4">
-      <label className="text-sm">
-        Project
-        <select value={projectId} onChange={(e) => go(e.target.value, "")} className="mt-1 block rounded border px-3 py-2">
+    <div className="card flex flex-wrap items-end gap-4 p-4">
+      <div className="w-full sm:w-auto">
+        <label htmlFor="project-select" className="field-label">
+          Project
+        </label>
+        <select id="project-select" value={projectId} onChange={(e) => go(e.target.value, "")} className="input sm:min-w-64">
           {projects.map((p) => (
             <option key={p.id} value={p.id}>
               {p.label}
             </option>
           ))}
         </select>
-      </label>
-      <label className="text-sm">
-        Parts to nest
-        <select value={drawingId} onChange={(e) => go(projectId, e.target.value)} className="mt-1 block rounded border px-3 py-2">
+      </div>
+      <div className="w-full sm:w-auto">
+        <label htmlFor="drawing-select" className="field-label">
+          Parts to nest
+        </label>
+        <select id="drawing-select" value={drawingId} onChange={(e) => go(projectId, e.target.value)} className="input sm:min-w-72">
           {/* A job is cut from one stock of plate whatever it was drawn on, so
               nesting every cutting drawing in the project together is the
               default -- splitting the run per drawing only buys more plate. */}
@@ -49,7 +53,7 @@ export function CuttingSelectors({
             </option>
           ))}
         </select>
-      </label>
+      </div>
     </div>
   );
 }

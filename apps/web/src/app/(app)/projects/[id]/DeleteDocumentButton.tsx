@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { IconTrash } from "@/components/ui/icons";
 
 // Deleting a document also destroys its extraction and any findings raised
 // from it, and there is no undo, so the button asks first and names the file
@@ -21,7 +22,7 @@ export function DeleteDocumentButton({
         type="button"
         disabled={pending}
         aria-label={`Delete ${fileName}`}
-        className="rounded border border-red-600 px-2 py-1 text-xs text-red-600 hover:bg-red-600 hover:text-white disabled:opacity-50"
+        className="btn btn-danger btn-xs"
         onClick={() => {
           if (!window.confirm(`Delete "${fileName}"?\n\nThis also removes its extracted data and any findings raised from it. This cannot be undone.`)) {
             return;
@@ -36,9 +37,10 @@ export function DeleteDocumentButton({
           });
         }}
       >
+        <IconTrash size={13} />
         {pending ? "Deleting…" : "Delete"}
       </button>
-      {error && <span className="ml-2 text-xs text-red-600">{error}</span>}
+      {error && <span className="ml-2 text-xs text-danger">{error}</span>}
     </>
   );
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import { Badge, EmptyState } from "@/components/ui/primitives";
+import { IconChevronDown, IconChevronRight, IconFile } from "@/components/ui/icons";
 
 export interface TagRow {
   id: number;
@@ -13,6 +15,36 @@ export interface TagRow {
 export interface TagGroup {
   tag: TagRow;
   accessories: TagRow[];
+}
+
+// A tag's attributes as name / value pairs rather than a JSON blob. Faithful:
+// strings are shown as they are, numbers and booleans as text, and anything
+// nested is shown as its JSON -- nothing is dropped or reworded. The raw
+// extraction result is still on the page for anyone who wants the JSON itself.
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (value === "") return '""';
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function Attributes({ value }: { value: unknown }) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return <span className="text-muted-foreground">—</span>;
+    return (
+      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
+        {entries.map(([key, v]) => (
+          <Fragment key={key}>
+            <dt className="font-mono text-muted-foreground">{key}</dt>
+            <dd className="break-words">{formatValue(v)}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    );
+  }
+  return <pre className="whitespace-pre-wrap font-mono text-xs">{JSON.stringify(value, null, 2)}</pre>;
 }
 
 // Extracted-tags table with valve assemblies collapsible: each valve that
@@ -39,68 +71,92 @@ export function ExtractedTagsTable({ groups }: { groups: TagGroup[] }) {
   return (
     <>
       {parentIdsWithSubs.length > 0 && (
-        <button onClick={toggleAll} className="mb-2 rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50">
-          {allCollapsed ? "Expand all assemblies" : "Collapse all assemblies"}
-        </button>
+        <div className="flex items-center justify-between gap-3 border-b px-5 py-2.5">
+          <p className="text-xs text-muted-foreground">
+            {parentIdsWithSubs.length} valve assembl{parentIdsWithSubs.length === 1 ? "y" : "ies"} with sub-instruments
+          </p>
+          <button onClick={toggleAll} className="btn btn-secondary btn-xs">
+            {allCollapsed ? "Expand all assemblies" : "Collapse all assemblies"}
+          </button>
+        </div>
       )}
-      <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="border-b">
-            <th className="py-2">Tag type</th>
-            <th>Tag number</th>
-            <th>Page</th>
-            <th>Attributes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map(({ tag, accessories }) => {
-            const hasSubs = accessories.length > 0;
-            const isOpen = hasSubs && !collapsed.has(tag.id);
-            return (
-              <Fragment key={tag.id}>
-                <tr className="border-b align-top">
-                  <td className="py-2">{tag.tagType}</td>
-                  <td>
-                    {hasSubs ? (
-                      <button onClick={() => toggle(tag.id)} className="inline-flex items-center gap-1 text-left hover:underline">
-                        <span className="text-gray-500">{isOpen ? "▾" : "▸"}</span>
-                        <span>{tag.tagNumber}</span>
-                        <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
-                          {accessories.length} sub-instrument{accessories.length > 1 ? "s" : ""}
-                        </span>
-                      </button>
-                    ) : (
-                      tag.tagNumber
-                    )}
-                  </td>
-                  <td>{tag.sourcePage ?? "-"}</td>
-                  <td>
-                    <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(tag.attributes, null, 2)}</pre>
-                  </td>
-                </tr>
-                {isOpen &&
-                  accessories.map((acc) => (
-                    <tr key={acc.id} className="border-b align-top bg-gray-50/60">
-                      <td className="py-2 pl-6 text-gray-500">&#8627; {acc.tagType}</td>
-                      <td className="text-gray-700">{acc.tagNumber}</td>
-                      <td>{acc.sourcePage ?? "-"}</td>
-                      <td>
-                        <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(acc.attributes, null, 2)}</pre>
-                      </td>
-                    </tr>
-                  ))}
-              </Fragment>
-            );
-          })}
-          {groups.length === 0 && (
+      <div className="table-wrap">
+        <table className="table table-top">
+          <thead>
             <tr>
-              <td colSpan={4} className="py-4 text-gray-500">
-                No tags extracted.
-              </td>
+              <th>Tag type</th>
+              <th>Tag number</th>
+              <th>Page</th>
+              <th>Attributes</th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {groups.map(({ tag, accessories }) => {
+              const hasSubs = accessories.length > 0;
+              const isOpen = hasSubs && !collapsed.has(tag.id);
+              return (
+                <Fragment key={tag.id}>
+                  <tr>
+                    <td>
+                      <Badge mono>{tag.tagType}</Badge>
+                    </td>
+                    <td>
+                      {hasSubs ? (
+                        <button
+                          onClick={() => toggle(tag.id)}
+                          aria-expanded={isOpen}
+                          className="inline-flex items-center gap-1.5 text-left font-medium hover:underline"
+                        >
+                          {isOpen ? (
+                            <IconChevronDown size={15} className="flex-none text-muted-foreground" />
+                          ) : (
+                            <IconChevronRight size={15} className="flex-none text-muted-foreground" />
+                          )}
+                          <span className="break-all">{tag.tagNumber}</span>
+                          <Badge className="ml-1">
+                            {accessories.length} sub-instrument{accessories.length > 1 ? "s" : ""}
+                          </Badge>
+                        </button>
+                      ) : (
+                        <span className="break-all font-medium">{tag.tagNumber}</span>
+                      )}
+                    </td>
+                    <td className="tabular-nums text-muted-foreground">{tag.sourcePage ?? "-"}</td>
+                    <td>
+                      <Attributes value={tag.attributes} />
+                    </td>
+                  </tr>
+                  {isOpen &&
+                    accessories.map((acc) => (
+                      <tr key={acc.id} className="bg-muted/40">
+                        <td className="pl-8">
+                          <span className="flex items-center gap-1.5 text-muted-foreground">
+                            <span aria-hidden="true">&#8627;</span>
+                            <Badge mono>{acc.tagType}</Badge>
+                          </span>
+                        </td>
+                        <td>
+                          <span className="break-all">{acc.tagNumber}</span>
+                        </td>
+                        <td className="tabular-nums text-muted-foreground">{acc.sourcePage ?? "-"}</td>
+                        <td>
+                          <Attributes value={acc.attributes} />
+                        </td>
+                      </tr>
+                    ))}
+                </Fragment>
+              );
+            })}
+            {groups.length === 0 && (
+              <tr>
+                <td colSpan={4}>
+                  <EmptyState icon={<IconFile />} title="No tags extracted" />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

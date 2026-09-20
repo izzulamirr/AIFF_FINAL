@@ -1,9 +1,15 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { asc, eq, inArray } from "drizzle-orm";
-import { documents, extractedTags, organizationMembers, projects } from "@easy/db";
-import { createClient } from "@/lib/supabase/server";
+import { documents, extractedTags, projects } from "@easy/db";
+import { getSessionUser } from "@/lib/session";
+import { visibleOrganizations } from "@/lib/access";
+import { findLine, isoLinesOf, lineKey } from "@/lib/isoLines";
 import { getDb } from "@/lib/db";
 import { buildContainerSpools, type ContainerSpool } from "@/lib/containers";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { EmptyState, Stat } from "@/components/ui/primitives";
+import { IconFile, IconFolder } from "@/components/ui/icons";
 import { SpoolingSelectors } from "../spooling/SpoolingSelectors";
 import { ContainerFit } from "./ContainerFit";
 
@@ -26,21 +32,18 @@ import { ContainerFit } from "./ContainerFit";
 export default async function ContainersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ project?: string; drawing?: string; [key: string]: string | string[] | undefined }>;
+  searchParams: Promise<{ project?: string; line?: string; drawing?: string; [key: string]: string | string[] | undefined }>;
 }) {
   const params = await searchParams;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+  const session = await getSessionUser();
+  if (!session) return null;
 
   const db = getDb();
-  const memberships = await db
-    .select({ organizationId: organizationMembers.organizationId })
-    .from(organizationMembers)
-    .where(eq(organizationMembers.userId, user.id));
-  const orgIds = memberships.map((m) => m.organizationId);
+  // The organizations this person can read: Document Control's own, or every
+  // one for a plain user (see lib/access.ts). This used to ask for the
+  // person's membership rows directly, which is empty for a User -- so a User
+  // opening this page was told there were no projects at all.
+  const orgIds = (await visibleOrganizations(session)).map((o) => o.id);
   // Ordered by something that cannot change, so a bare /containers lands on
   // the same project every visit.
   const myProjects = orgIds.length
@@ -51,25 +54,45 @@ export default async function ContainersPage({
         .orderBy(asc(projects.createdAt), asc(projects.id))
     : [];
 
-  const projectId = params.project && myProjects.some((p) => p.id === params.project) ? params.project : myProjects[0]?.id;
+  const requestedProject = params.project && myProjects.some((p) => p.id === params.project) ? params.project : undefined;
+  // A plain user gets here from a project's own tiles, so the project is always
+  // named in the URL and this page shows that project alone; without one they go
+  // back to the start rather than land on a project they never chose. Document
+  // Control arrives from the sidebar with none chosen, and gets the first plus
+  // the picker. (Same rule as the spooling page.)
+  if (!requestedProject && !session.isDcc) redirect("/organizations");
+  const projectId = requestedProject ?? myProjects[0]?.id;
   if (!projectId) {
     return (
-      <div className="flex flex-col gap-4">
-        <h1 className="text-xl font-semibold">Container check</h1>
-        <p className="text-sm text-gray-500">
-          No projects yet.{" "}
-          <Link href="/projects" className="underline">
-            Create one
-          </Link>{" "}
-          and upload an isometric to check its spools.
-        </p>
+      <div className="flex flex-col gap-6">
+        <PageHeader title="Container check" />
+        <div className="card">
+          <EmptyState
+            icon={<IconFolder />}
+            title="No projects yet"
+            action={
+              <Link href="/projects" className="btn btn-primary btn-sm mt-1">
+                Create one
+              </Link>
+            }
+          >
+            Create a project and upload an isometric to check its spools.
+          </EmptyState>
+        </div>
       </div>
     );
   }
 
+  // The ISO line this page is scoped to. A plain user reaches it from a line's
+  // tools, so the line is always named; without a valid one they go back to the
+  // project to choose it. Document Control can arrive with none and see every
+  // line, as before.
+  const line = params.line ? findLine(await isoLinesOf(projectId), params.line) : undefined;
+  if (!line && !session.isDcc) redirect(`/projects/${projectId}`);
+
   const isoDocs = (
     await db.select().from(documents).where(eq(documents.projectId, projectId)).orderBy(asc(documents.uploadedAt), asc(documents.id))
-  ).filter((d) => d.docType === "iso");
+  ).filter((d) => d.docType === "iso" && (!line || line.documentIds.includes(d.id)));
 
   const drawingId = params.drawing && isoDocs.some((d) => d.id === params.drawing) ? params.drawing : undefined;
   const sourceDocs = drawingId ? isoDocs.filter((d) => d.id === drawingId) : isoDocs;
@@ -77,9 +100,10 @@ export default async function ContainersPage({
   const perDoc: Array<{ id: string; fileName: string; spools: ContainerSpool[] }> = [];
   for (const doc of sourceDocs) {
     const tags = await db.select().from(extractedTags).where(eq(extractedTags.documentId, doc.id));
+    // A document can hold more than one line; keep only the chosen one's spools.
     const spools = buildContainerSpools(
       tags.map((t) => ({ id: t.id, tagType: t.tagType, tagNumber: t.tagNumber, sourcePage: t.sourcePage, attributes: t.attributes }))
-    );
+    ).filter((s) => !line || lineKey(s.lineNumber) === line.key);
     if (spools.length > 0) perDoc.push({ id: doc.id, fileName: doc.fileName, spools });
   }
 
@@ -87,64 +111,106 @@ export default async function ContainersPage({
   const withFieldWelds = perDoc.reduce((n, d) => n + d.spools.filter((s) => s.fieldWelds > 0).length, 0);
 
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold">Container check</h1>
-      <SpoolingSelectors
-        projects={myProjects.map((p) => ({
-          id: p.id,
-          label: myProjects.filter((o) => o.name === p.name).length > 1 ? `${p.name} (${p.id.slice(0, 8)})` : p.name,
-        }))}
-        projectId={projectId}
-        drawings={isoDocs.map((d) => ({ id: d.id, label: d.fileName }))}
-        drawingId={drawingId ?? ""}
-        basePath="/containers"
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Container check"
+        back={
+          line && !session.isDcc
+            ? { href: `/projects/${projectId}?line=${encodeURIComponent(line.lineNumber)}`, label: line.lineNumber }
+            : { href: `/projects/${projectId}`, label: myProjects.find((p) => p.id === projectId)?.name ?? "Project" }
+        }
+        description="Whether each spool fits a 20ft container: turned, angled and through the door, with 150mm of excess pipe for every field weld."
       />
+      {/* A user with one drawing for the line has nothing to choose. */}
+      {(session.isDcc || isoDocs.length > 1) && (
+        <SpoolingSelectors
+          projects={myProjects.map((p) => ({
+            id: p.id,
+            label: myProjects.filter((o) => o.name === p.name).length > 1 ? `${p.name} (${p.id.slice(0, 8)})` : p.name,
+          }))}
+          projectId={projectId}
+          showProject={session.isDcc}
+          line={line?.lineNumber}
+          drawings={isoDocs.map((d) => ({ id: d.id, label: d.fileName }))}
+          drawingId={drawingId ?? ""}
+          basePath="/containers"
+        />
+      )}
 
       {isoDocs.length === 0 && (
-        <p className="text-sm text-gray-500">
-          No isometrics in this project yet. Upload one from the{" "}
-          <Link href={`/projects/${projectId}`} className="underline">
-            project page
-          </Link>
-          .
-        </p>
+        <div className="card">
+          <EmptyState icon={<IconFile />} title="No isometrics in this project yet">
+            {session.isDcc ? (
+              <>
+                Upload one from the{" "}
+                <Link href={`/projects/${projectId}`} className="link">
+                  project page
+                </Link>
+                .
+              </>
+            ) : (
+              "Document Control has not uploaded any isometrics to this project yet."
+            )}
+          </EmptyState>
+        </div>
       )}
 
       {isoDocs.length > 0 && perDoc.length === 0 && (
-        <p className="text-sm text-gray-500">
-          None of this project&rsquo;s isometrics have spools yet. Run the extraction from the{" "}
-          <Link href={`/projects/${projectId}`} className="underline">
-            project page
-          </Link>
-          , or see the{" "}
-          <Link href={`/spooling?project=${projectId}`} className="underline">
-            spooling page
-          </Link>
-          .
-        </p>
+        <div className="card">
+          <EmptyState icon={<IconFile />} title="No spools yet">
+            {session.isDcc ? (
+              <>
+                None of this project&rsquo;s isometrics have spools yet. Run the extraction from the{" "}
+                <Link href={`/projects/${projectId}`} className="link">
+                  project page
+                </Link>
+                , or see the{" "}
+                <Link href={`/spooling?project=${projectId}`} className="link">
+                  spooling page
+                </Link>
+                .
+              </>
+            ) : (
+              <>
+                None of this project&rsquo;s isometrics have spools to show yet. If Document Control has just uploaded them, extraction
+                may still be running &mdash; see{" "}
+                <Link href={`/spooling?project=${projectId}`} className="link">
+                  Spooling
+                </Link>{" "}
+                for the detail.
+              </>
+            )}
+          </EmptyState>
+        </div>
       )}
 
       {perDoc.length > 0 && (
-        <p className="text-sm">
-          <span className="font-medium">{totalSpools}</span> spool{totalSpools === 1 ? "" : "s"} to ship
-          {withFieldWelds > 0 && (
-            <span className="text-amber-700">
-              {" · "}
-              {withFieldWelds} carr{withFieldWelds === 1 ? "ies" : "y"} a field weld, so ship 150mm longer
-            </span>
-          )}
-          . Sizes are worked out from the dimensions printed on the drawing &mdash; check each one against the lengths shown beneath it.
-        </p>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap gap-4">
+            <Stat label={totalSpools === 1 ? "Spool to ship" : "Spools to ship"} value={totalSpools} />
+            {withFieldWelds > 0 && (
+              <Stat
+                label={`Carr${withFieldWelds === 1 ? "ies" : "y"} a field weld`}
+                value={withFieldWelds}
+                tone="warning"
+                hint="ship 150mm longer"
+              />
+            )}
+          </div>
+          <p className="text-[0.8125rem] text-muted-foreground">
+            Sizes are worked out from the dimensions printed on the drawing &mdash; check each one against the lengths shown beneath it.
+          </p>
+        </div>
       )}
 
       {perDoc.map((doc) => (
-        <section key={doc.id}>
-          <h2 className="mb-2 font-medium">
-            {doc.fileName}{" "}
-            <Link href={`/projects/${projectId}/documents/${doc.id}`} className="text-sm font-normal text-gray-500 underline">
-              open drawing
+        <section key={doc.id} className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h2 className="section-title break-all">{doc.fileName}</h2>
+            <Link href={`/projects/${projectId}/documents/${doc.id}`} className="link text-[0.8125rem]">
+              Open drawing
             </Link>
-          </h2>
+          </div>
           <ContainerFit spools={doc.spools} />
         </section>
       ))}

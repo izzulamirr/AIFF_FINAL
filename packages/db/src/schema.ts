@@ -318,3 +318,51 @@ export const reportExports = pgTable(
   },
   (table) => [check("report_exports_format_check", sql`${table.format} in ('csv','pdf')`)]
 );
+
+// ---------------------------------------------------------------------------
+// Line progress: how far a project's ISO lines have been checked.
+//
+// Two tables of their own rather than columns on `projects`. Adding a column to
+// an existing table makes every query that reads it fail until the database has
+// the column; a new table is only ever touched by the code that uses it.
+// ---------------------------------------------------------------------------
+
+// How many line numbers a project's scope holds, as STATED by Document Control.
+// It is a figure someone enters, not one worked out from the documents: drawings
+// arrive over time, so the lines uploaded so far are usually fewer than the lines
+// there will be, and progress is measured against the whole.
+export const projectLineTotals = pgTable(
+  "project_line_totals",
+  {
+    projectId: uuid("project_id")
+      .primaryKey()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    totalLines: integer("total_lines").notNull(),
+    updatedBy: uuid("updated_by").references(() => authUsers.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [check("project_line_totals_total_check", sql`${table.totalLines} >= 0`)]
+);
+
+// A line number a checker has marked as reviewed. One row per line per project:
+// its presence IS "done", and reopening a line deletes it.
+//
+// `lineKey` is the normalized number lines are matched on everywhere else;
+// `lineNumber` is the number as printed, for showing. `reviewedByName` is a
+// snapshot taken at the time -- the name lives on the Supabase account, which
+// this schema does not own, and a review should keep saying who did it even if
+// the account later changes or goes.
+export const lineReviews = pgTable(
+  "line_reviews",
+  {
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    lineKey: text("line_key").notNull(),
+    lineNumber: text("line_number").notNull(),
+    reviewedBy: uuid("reviewed_by").references(() => authUsers.id, { onDelete: "set null" }),
+    reviewedByName: text("reviewed_by_name"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.lineKey] })]
+);

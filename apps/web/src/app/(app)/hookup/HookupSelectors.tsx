@@ -14,11 +14,17 @@ export function HookupSelectors({
   projectId,
   isos,
   isoId,
+  showProject = true,
+  line,
 }: {
   projects: Array<{ id: string; label: string }>;
   projectId: string;
   isos: Array<{ id: string; label: string }>;
   isoId: string;
+  /** Off for a plain user, who has already chosen the project -- see SpoolingSelectors. */
+  showProject?: boolean;
+  /** The ISO line the page is scoped to, kept across a change of ISO. */
+  line?: string;
 }) {
   const router = useRouter();
 
@@ -26,32 +32,42 @@ export function HookupSelectors({
   // overrides carried in the URL -- they are keyed to the ISO being checked.
   const go = (nextProject: string, nextIso: string) => {
     const params = new URLSearchParams({ project: nextProject });
+    // A line belongs to a project, so switching project drops it.
+    if (line && nextProject === projectId) params.set("line", line);
     if (nextIso) params.set("iso", nextIso);
     router.push(`/hookup?${params.toString()}`);
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded border p-4">
-      <label className="text-sm">
-        Project
+    <div className="card flex flex-wrap items-end gap-4 p-4">
+      {showProject && (
+        <div className="w-full sm:w-auto">
+          <label htmlFor="project-select" className="field-label">
+            Project
+          </label>
+          <select
+            id="project-select"
+            value={projectId}
+            onChange={(e) => go(e.target.value, "")}
+            className="input sm:min-w-64"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <div className="w-full sm:w-auto">
+        <label htmlFor="iso-select" className="field-label">
+          ISO to verify
+        </label>
         <select
-          value={projectId}
-          onChange={(e) => go(e.target.value, "")}
-          className="mt-1 block rounded border px-3 py-2"
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-sm">
-        ISO to verify
-        <select
+          id="iso-select"
           value={isoId}
           onChange={(e) => go(projectId, e.target.value)}
-          className="mt-1 block rounded border px-3 py-2"
+          className="input sm:min-w-72"
         >
           <option value="">-- select an ISO --</option>
           {isos.map((d) => (
@@ -60,8 +76,8 @@ export function HookupSelectors({
             </option>
           ))}
         </select>
-      </label>
-      {isos.length === 0 && <p className="text-sm text-gray-500">This project has no extracted ISO to verify.</p>}
+      </div>
+      {isos.length === 0 && <p className="text-sm text-muted-foreground">This project has no extracted ISO to verify.</p>}
     </div>
   );
 }

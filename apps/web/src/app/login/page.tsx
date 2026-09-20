@@ -1,33 +1,68 @@
-import { login, signup } from "./actions";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { AuthShell } from "@/components/auth/AuthShell";
+import { IconCheckCircle } from "@/components/ui/icons";
+import { Alert } from "@/components/ui/primitives";
+import { login } from "./actions";
+
+export const metadata: Metadata = { title: "Sign in" };
+
+const POINTS = [
+  "Structured data read from every P&ID, isometric and hook-up drawing",
+  "Bills of material and design basis cross-checked between documents",
+  "Spools, container loads and plate nests planned from the drawing",
+];
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; message?: string }> }) {
   const params = await searchParams;
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-4 p-6">
-      <h1 className="text-2xl font-semibold">Sign in to EASY</h1>
+    <AuthShell
+      panel={
+        <>
+          <h2 className="text-4xl font-semibold leading-tight tracking-tight text-sidebar-strong">Cross-document engineering review</h2>
+          <p className="mt-4 text-base leading-relaxed">Drawings go in; a consistent, checkable picture of the plant comes out.</p>
+          <ul className="mt-8 flex flex-col gap-3.5">
+            {POINTS.map((point) => (
+              <li key={point} className="flex items-start gap-3 text-sm leading-relaxed">
+                <IconCheckCircle size={18} className="mt-0.5 flex-none text-sidebar-accent" />
+                {point}
+              </li>
+            ))}
+          </ul>
+        </>
+      }
+    >
+      <h1 className="text-2xl font-semibold tracking-tight">Sign in to EASY</h1>
+      <p className="mt-1.5 text-sm text-muted-foreground">Enter your email and password to continue.</p>
 
-      {params.error && <p className="rounded bg-red-100 p-2 text-sm text-red-800">{params.error}</p>}
-      {params.message && <p className="rounded bg-blue-100 p-2 text-sm text-blue-800">{params.message}</p>}
+      <div className="mt-6 flex flex-col gap-3 empty:hidden">
+        {params.error && <Alert tone="danger">{params.error}</Alert>}
+        {params.message && <Alert tone="info">{params.message}</Alert>}
+      </div>
 
-      <form className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Email
-          <input name="email" type="email" required className="rounded border px-3 py-2" />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Password
-          <input name="password" type="password" required minLength={8} className="rounded border px-3 py-2" />
-        </label>
-        <div className="flex gap-2">
-          <button formAction={login} className="flex-1 rounded bg-black px-4 py-2 text-white">
-            Log in
-          </button>
-          <button formAction={signup} className="flex-1 rounded border px-4 py-2">
-            Sign up
-          </button>
+      <form action={login} className="mt-6 flex flex-col gap-4">
+        <div>
+          <label htmlFor="email" className="field-label">
+            Email
+          </label>
+          <input id="email" name="email" type="email" required autoComplete="email" className="input h-10" />
         </div>
+        <div>
+          <label htmlFor="password" className="field-label">
+            Password
+          </label>
+          <input id="password" name="password" type="password" required minLength={8} className="input h-10" />
+        </div>
+        <button className="btn btn-primary mt-2 h-10 w-full">Log in</button>
       </form>
-    </div>
+
+      <p className="mt-6 text-center text-sm text-muted-foreground">
+        Don&apos;t have an account?{" "}
+        <Link href="/signup" className="link font-medium">
+          Create one
+        </Link>
+      </p>
+    </AuthShell>
   );
 }

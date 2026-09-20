@@ -5,8 +5,14 @@ import { and, eq, inArray } from "drizzle-orm";
 import { cuttingPartQuantities, cuttingStockPlates, documents, extractedTags } from "@easy/db";
 import { nestTrueShapePlan, outlineExtentMm, type CutPart, type NestResult } from "@easy/shared";
 import { createClient } from "@/lib/supabase/server";
+import { isDcc } from "@/lib/roles";
 import { getDb } from "@/lib/db";
 import { requireProjectMembership } from "../projects/[id]/actions";
+
+// The cutting plan is Document Control's: cutting drawings are not ISOs, so a
+// plain user never reaches the page. These actions are callable directly all the
+// same, so each one refuses anyone else. The message says what to do, not just no.
+const DCC_ONLY = "Only Document Control (DCC) can use the cutting plan.";
 
 export interface StockPlateInput {
   lengthMm: number;
@@ -89,6 +95,7 @@ export async function saveCuttingStock(projectId: string, rows: StockPlateInput[
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "You are signed out -- sign in again and the numbers on screen will still be here." };
+  if (!isDcc(user)) return { ok: false, error: DCC_ONLY };
 
   let clean: StockPlateInput[];
   try {
@@ -157,6 +164,9 @@ export async function runTrueShapeNest(
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "You are signed out." };
+  // Running a nest changes nothing, but it reads the project's cutting drawings,
+  // which a plain user does not see -- so it is Document Control's like the rest.
+  if (!isDcc(user)) return { ok: false, error: DCC_ONLY };
   try {
     await requireProjectMembership(projectId, user.id);
   } catch (err) {
@@ -248,6 +258,7 @@ export async function saveCuttingQuantities(
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "You are signed out." };
+  if (!isDcc(user)) return { ok: false, error: DCC_ONLY };
   try {
     await requireProjectMembership(projectId, user.id);
   } catch (err) {

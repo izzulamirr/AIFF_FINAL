@@ -12,6 +12,8 @@ export function SpoolingSelectors({
   drawings,
   drawingId,
   basePath = "/spooling",
+  showProject = true,
+  line,
 }: {
   projects: Array<{ id: string; label: string }>;
   projectId: string;
@@ -19,30 +21,46 @@ export function SpoolingSelectors({
   drawingId: string;
   /** Which page to navigate within -- the container page reuses these. */
   basePath?: string;
+  /**
+   * Off for a plain user, who has already chosen the project (Organization ->
+   * Project -> here) and should see only that project's drawings -- a list of
+   * every other project would just be a way to wander out of it.
+   */
+  showProject?: boolean;
+  /** The ISO line the page is scoped to, kept across a change of drawing. */
+  line?: string;
 }) {
   const router = useRouter();
 
   const go = (nextProject: string, nextDrawing: string) => {
     const params = new URLSearchParams({ project: nextProject });
+    // A line belongs to a project, so switching project drops it.
+    if (line && nextProject === projectId) params.set("line", line);
     if (nextDrawing) params.set("drawing", nextDrawing);
     router.push(`${basePath}?${params.toString()}`);
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded border p-4">
-      <label className="text-sm">
-        Project
-        <select value={projectId} onChange={(e) => go(e.target.value, "")} className="mt-1 block rounded border px-3 py-2">
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-sm">
-        Isometric
-        <select value={drawingId} onChange={(e) => go(projectId, e.target.value)} className="mt-1 block rounded border px-3 py-2">
+    <div className="card flex flex-wrap items-end gap-4 p-4">
+      {showProject && (
+        <div className="w-full sm:w-auto">
+          <label htmlFor="project-select" className="field-label">
+            Project
+          </label>
+          <select id="project-select" value={projectId} onChange={(e) => go(e.target.value, "")} className="input sm:min-w-64">
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <div className="w-full sm:w-auto">
+        <label htmlFor="drawing-select" className="field-label">
+          Isometric
+        </label>
+        <select id="drawing-select" value={drawingId} onChange={(e) => go(projectId, e.target.value)} className="input sm:min-w-72">
           {/* A spool belongs to one drawing and is fabricated from it, so a
               single isometric is the unit of work -- but the default shows
               every one in the project so a shop can see the whole scope. */}
@@ -53,7 +71,7 @@ export function SpoolingSelectors({
             </option>
           ))}
         </select>
-      </label>
+      </div>
     </div>
   );
 }

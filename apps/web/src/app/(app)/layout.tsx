@@ -1,37 +1,86 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { signOut } from "./actions";
+import { AppShell } from "@/components/shell/AppShell";
+import { GuidedShell } from "@/components/shell/GuidedShell";
+import { OrganizationPicker } from "@/components/org/OrganizationPicker";
+import { IconLogOut } from "@/components/ui/icons";
+import { activeOrganization, memberOrganizationsOf } from "@/lib/access";
+import { ROLE_LABEL } from "@/lib/roles";
+import { getSessionUser } from "@/lib/session";
+import { leaveOrganization, signOut } from "./actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await getSessionUser();
+  if (!session) redirect("/login");
 
-  if (!user) redirect("/login");
+  const shellProps = { email: session.email, name: session.name, roleLabel: ROLE_LABEL[session.role] };
 
-  return (
-    <div className="min-h-screen">
-      <nav className="flex items-center justify-between border-b px-6 py-3">
-        <div className="flex gap-4">
-          <Link href="/dashboard" className="font-semibold">
-            EASY
-          </Link>
-          <Link href="/projects">Projects</Link>
-          <Link href="/hookup">Instrument Hookup</Link>
-          <Link href="/spooling">Spooling</Link>
-          <Link href="/containers">Container check</Link>
-          <Link href="/cutting">Cutting Plan</Link>
-        </div>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-gray-500">{user.email}</span>
+  // The bar with no sidebar carries a plain "Sign out" button; the sidebar has its own.
+  const barSignOut = (
+    <form action={signOut}>
+      <button type="submit" className="btn btn-ghost btn-sm">
+        <IconLogOut size={15} />
+        Sign out
+      </button>
+    </form>
+  );
+
+  if (session.isDcc) {
+    const organization = await activeOrganization(session);
+
+    // ORGANIZATION FIRST. Until Document Control has chosen the organization it is
+    // working in, it gets the picker and no sidebar -- in place of whatever page
+    // it asked for, so nothing is reachable, by link or by typed URL, before a
+    // choice is made. Choosing sets a cookie and the request that follows gets the
+    // sidebar, scoped to that organization (see lib/access.ts).
+    if (!organization) {
+      return (
+        <GuidedShell {...shellProps} readOnly={false} signOut={barSignOut}>
+          <OrganizationPicker organizations={await memberOrganizationsOf(session.id)} isDcc />
+        </GuidedShell>
+      );
+    }
+
+    return (
+      <AppShell
+        {...shellProps}
+        isDcc
+        organization={{
+          name: organization.name,
+          switcher: (
+            <form action={leaveOrganization}>
+              <button
+                type="submit"
+                title="Work in a different organization"
+                className="rounded-md px-2 py-1 text-xs font-medium text-sidebar-accent transition-colors hover:bg-sidebar-hover"
+              >
+                Switch
+              </button>
+            </form>
+          ),
+        }}
+        signOut={
           <form action={signOut}>
-            <button className="underline">Sign out</button>
+            <button
+              type="submit"
+              title="Sign out"
+              aria-label="Sign out"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-strong"
+            >
+              <IconLogOut size={16} />
+            </button>
           </form>
-        </div>
-      </nav>
-      <main className="p-6">{children}</main>
-    </div>
+        }
+      >
+        {children}
+      </AppShell>
+    );
+  }
+
+  // A plain user has no sidebar at all: Organization -> Project -> Line, each page
+  // with its own way back.
+  return (
+    <GuidedShell {...shellProps} signOut={barSignOut}>
+      {children}
+    </GuidedShell>
   );
 }

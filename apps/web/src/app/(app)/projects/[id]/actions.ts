@@ -7,6 +7,7 @@ import { documents, extractionJobs, findings, projects, organizationMembers } fr
 import { DOC_TYPES, type DocType } from "@easy/shared";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assertDcc } from "@/lib/roles";
 import { getDb } from "@/lib/db";
 import { getQueue, EXTRACT_DOCUMENT_QUEUE } from "@/lib/queue";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/uploadLimits";
@@ -40,6 +41,7 @@ export async function deleteDocument(projectId: string, documentId: string) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated.");
+  assertDcc(user, "delete documents");
   await requireProjectMembership(projectId, user.id);
 
   const db = getDb();
@@ -68,6 +70,7 @@ export async function uploadDocument(projectId: string, formData: FormData) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated.");
+  assertDcc(user, "upload documents");
   await requireProjectMembership(projectId, user.id);
 
   const file = formData.get("file") as File | null;

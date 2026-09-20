@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { roleOf } from "@/lib/roles";
 
 export async function login(formData: FormData) {
   const supabase = await createClient();
@@ -9,24 +10,13 @@ export async function login(formData: FormData) {
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
     redirect(`/login?error=${encodeURIComponent(error.message)}`);
   }
 
-  redirect("/dashboard");
-}
-
-export async function signup(formData: FormData) {
-  const supabase = await createClient();
-
-  const email = String(formData.get("email") ?? "");
-  const password = String(formData.get("password") ?? "");
-
-  const { error } = await supabase.auth.signUp({ email, password });
-  if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
-  }
-
-  redirect("/login?message=Check your email to confirm your account, then log in.");
+  // Document Control lands on its dashboard; a plain User goes straight into
+  // the guided Organization -> Project -> Features path, since it has no
+  // sidebar to reach the dashboard's tool grid from.
+  redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/organizations");
 }
