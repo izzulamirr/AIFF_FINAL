@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { desc, eq } from "drizzle-orm";
-import { documents, extractionResults, extractedTags } from "@easy/db";
+import { documents, extractionResults, extractedTags, projects } from "@easy/db";
 import { normalizeTagNumber } from "@easy/shared";
 import { getDb } from "@/lib/db";
+import { canReadOrganization } from "@/lib/access";
 import { getSessionUser } from "@/lib/session";
 import { buildIsoChecks } from "@/lib/isoChecks";
 import type { ValveMatchGroup } from "@/lib/verifyIso";
@@ -31,10 +32,19 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
   const [document] = await db.select().from(documents).where(eq(documents.id, docId)).limit(1);
   if (!document || document.projectId !== projectId) return <p>Document not found.</p>;
 
+  const session = await getSessionUser();
+  if (!session) return null;
+
+  // An account reads the organizations it is a member of and no others, and this
+  // page is reached by a typed URL as easily as by a link -- so the check is here
+  // and not only on the list that led to it. "Not found" either way: whose
+  // drawing this is is not something to tell somebody who may not see it.
+  const [project] = await db.select({ organizationId: projects.organizationId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project || !(await canReadOrganization(session, project.organizationId))) return <p>Document not found.</p>;
+
   // A plain user sees ISO documents only. Nothing links them to any other kind,
   // but a document's URL is guessable, so the page refuses it as well.
-  const session = await getSessionUser();
-  if (!session?.isDcc && document.docType !== "iso") redirect(`/projects/${projectId}`);
+  if (!session.isDcc && document.docType !== "iso") redirect(`/projects/${projectId}`);
 
   const [result] = await db
     .select()

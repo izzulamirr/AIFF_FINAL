@@ -53,8 +53,10 @@ export function OrganizationPicker({ organizations: orgs, isDcc }: { organizatio
 
       {orgs.length === 0 ? (
         <div className="card">
-          <EmptyState icon={<IconBuilding />} title={isDcc ? "You don't belong to an organization yet" : "No organizations yet"}>
-            {isDcc ? "Create one below to start adding projects." : "Document Control sets these up. They will appear here once there are some."}
+          <EmptyState icon={<IconBuilding />} title={isDcc ? "You don't belong to an organization yet" : "You're not in an organization yet"}>
+            {isDcc
+              ? "Create one below to start adding projects."
+              : "You see the organizations you have been added to. Ask Document Control to add you to yours, and its projects will appear here."}
           </EmptyState>
         </div>
       ) : (

@@ -24,8 +24,9 @@ export const metadata: Metadata = { title: "Library" };
 // Everybody can read and download; only Document Control adds and removes.
 //
 // Which organization? Document Control's is the one it chose to work in. A checker
-// has not chosen one (they read them all), so it comes from the project they
-// followed the link from, or from `?org=`.
+// has no such choice remembered, so it comes from the project they followed the
+// link from, or from `?org=` -- and is then checked against their memberships by
+// `canReadLibraryOf`, which is what stops a typed `?org=` reaching another one.
 export default async function LibraryPage({ searchParams }: { searchParams: Promise<{ project?: string; org?: string }> }) {
   const session = await getSessionUser();
   if (!session) return null;

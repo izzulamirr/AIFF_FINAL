@@ -12,7 +12,7 @@ import { summariseLine, type IsoDrawingChecks, type LineSummary } from "@/lib/li
 import { progressOfProject } from "@/lib/progress";
 import { ContainerFit } from "../../containers/ContainerFit";
 import { SpoolSheets } from "../../spooling/SpoolSheets";
-import { ReviewControl } from "./ReviewControl";
+import { MarkingNotSetUp, MarkingNotSetUpBadge, ReviewControl } from "./ReviewControl";
 
 // A project's ISO line numbers and, once one is chosen, every review of that line
 // -- each folded to a head of status badges, with the full data one click inside.
@@ -402,7 +402,9 @@ export async function LineReviewView({
                 review={progress.reviews.find((r) => r.lineKey === line.key)}
                 readOnly={!canMark}
               />
-            ) : undefined
+            ) : (
+              <MarkingNotSetUpBadge />
+            )
           }
           meta={
             <>
@@ -411,6 +413,10 @@ export async function LineReviewView({
             </>
           }
         />
+
+        {/* Where "Mark as done" would be. Saying why it is absent is the whole
+            point -- an empty header reads as "this app has no such feature". */}
+        {!progress && <MarkingNotSetUp canMark={canMark} />}
 
         {summary.drawings.length > 1 && (
           <p className="callout max-w-4xl">
@@ -497,6 +503,10 @@ export async function LineReviewView({
           </Link>
         }
       />
+
+      {/* The list is where somebody looks for progress first, so the reason it is
+          absent belongs here too, not only inside a line. */}
+      {!progress && lines.length > 0 && <MarkingNotSetUp canMark={canMark} />}
 
       {/* How far through the project the checkers are -- against the total Document
           Control stated, or, if it has not stated one, the lines uploaded so far. */}

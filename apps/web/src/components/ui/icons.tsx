@@ -251,6 +251,14 @@ export const IconAlert = (p: IconProps) => (
   </Svg>
 );
 
+// The bare tick, for a checkbox or a toggle -- IconCheckCircle is the same mark
+// in a ring, which reads as a status rather than as a thing you can switch.
+export const IconCheck = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m5 13 4 4 10-10" />
+  </Svg>
+);
+
 export const IconCheckCircle = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="10" />

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { documents, extractionJobs, projects } from "@easy/db";
 import { getDb } from "@/lib/db";
+import { canReadOrganization } from "@/lib/access";
 import { getSessionUser } from "@/lib/session";
 import { MAX_UPLOAD_MB } from "@/lib/uploadLimits";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -45,11 +46,19 @@ export default async function ProjectDetailPage({
   const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
   if (!project) return <p>Project not found.</p>;
 
+  const session = await getSessionUser();
+  if (!session) return null;
+
+  // A project URL is guessable, and this page is reached by it rather than through
+  // a list that was already filtered -- so the organization is checked here. Same
+  // answer for a project that does not exist and one that is not this account's:
+  // which organizations exist, and who is in them, is not this page's to disclose.
+  if (!(await canReadOrganization(session, project.organizationId))) return <p>Project not found.</p>;
+
   // A plain user sees a project as its ISO line numbers, not its documents --
   // see LineReviewView. Everything below is Document Control's, and the
   // actions behind its forms and buttons enforce that again on the server.
-  const session = await getSessionUser();
-  if (!session?.isDcc) {
+  if (!session.isDcc) {
     const { line } = await searchParams;
     return (
       <LineReviewView

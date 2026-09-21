@@ -47,12 +47,13 @@ export async function libraryItemsOf(organizationId: string, projectId: string |
 /**
  * May this person read this organization's library?
  *
- * The same rule as everywhere else that reads: a plain user reads every
- * organization (see visibleOrganizations in access.ts), Document Control reads the
- * ones it belongs to. Writing is stricter and is decided in the actions.
+ * The same rule as everywhere else that reads: MEMBERSHIP, whoever is asking
+ * (see visibleOrganizations in access.ts). A checker used to read every
+ * organization's library, because nothing could put an account in one; the users
+ * page can now, so a checker reads the libraries of the organizations it is in
+ * and no others. Writing is stricter and is decided in the actions.
  */
 export async function canReadLibraryOf(session: Pick<SessionUser, "id" | "isDcc">, organizationId: string): Promise<boolean> {
-  if (!session.isDcc) return true;
   const [row] = await getDb()
     .select({ userId: organizationMembers.userId })
     .from(organizationMembers)

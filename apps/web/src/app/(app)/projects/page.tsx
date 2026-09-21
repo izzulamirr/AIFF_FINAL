@@ -110,8 +110,8 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
               Projects belong to an organization.
             </EmptyState>
           ) : (
-            <EmptyState icon={<IconBuilding />} title="No projects yet">
-              Document Control creates the projects and uploads the drawings. They will appear here once there are some.
+            <EmptyState icon={<IconBuilding />} title="You're not in an organization yet">
+              Projects belong to an organization, and you see the ones you have been added to. Ask Document Control to add you to yours.
             </EmptyState>
           )}
         </div>
