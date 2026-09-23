@@ -68,8 +68,26 @@ export interface IsoDrawingChecks {
     routing: { rows: number; match: number; mismatch: number; isoOnly: number; notCompared: number };
     fittings: { components: number; match: number; countMismatch: number; isoOnly: number; pidOnly: number };
   };
-  /** The bill of material as extracted, ahead of a check against the admin specs. */
+  /** The bill of material as extracted, ahead of a check against the client and admin specs. */
   bom: { sheets: number; items: number; classes: number; unassigned: number; sheetData: IsoChecks["bomBySpec"] };
+  /**
+   * The same BOM, checked against the client's own piping spec and (where a
+   * real match exists) corroborated against the admin's own item list. Not
+   * `available` at all until a client pipe spec has been uploaded to the
+   * project's library -- see lib/isoChecks.ts's own mtoClientSpecAvailable.
+   */
+  mto: {
+    available: boolean;
+    /** Rows a class was actually resolved for -- excludes "Unassigned" rows, which have nothing to check against. */
+    checked: number;
+    /** In the client spec, and the admin item list (where one exists) does not contradict it. */
+    match: number;
+    /** In the client spec, but the admin item list states something that contradicts the BOM. */
+    deviations: number;
+    /** This size/type is not in the client spec's list at all. */
+    notInSpec: number;
+    sheetData: IsoChecks["mtoBySpec"];
+  };
 }
 
 export interface LineSummary {
@@ -156,7 +174,31 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
     sheetData: sheets,
   };
 
-  return { documentId: doc.id, fileName: doc.fileName, pll, pid, bom };
+  // ---- MTO: the same BOM, checked. A row counts as `checked` once it has a
+  // real result (its own class resolved to something -- "Unassigned" rows
+  // are skipped entirely, see lib/isoChecks.ts). Of those:
+  //   match       the client spec has it, and the admin item list (if any
+  //               exists) does not contradict it
+  //   deviations  the client spec has it, but the admin item list states
+  //               something that contradicts the BOM on this exact item --
+  //               a genuine three-way disagreement, not just a missing input
+  //   notInSpec   this size/type is not in the client spec's list at all
+  // A row whose class the client spec does not cover, or whose size could
+  // not be read, is neither a match nor a deviation -- it is shown on its
+  // own row with its own status, not folded into either count.
+  const mtoSheets = checks.mtoBySpec.filter((s) => lineKey(s.lineNumber) === key);
+  const mtoRows = mtoSheets.flatMap((s) => s.groups.flatMap((g) => g.rows));
+  const checkedRows = mtoRows.filter((r) => r.result != null);
+  const mto: IsoDrawingChecks["mto"] = {
+    available: checks.mtoClientSpecAvailable,
+    checked: checkedRows.length,
+    match: checkedRows.filter((r) => r.result!.status === "match" && r.adminMismatches.length === 0).length,
+    deviations: checkedRows.filter((r) => r.result!.status === "match" && r.adminMismatches.length > 0).length,
+    notInSpec: checkedRows.filter((r) => r.result!.status === "not_found").length,
+    sheetData: mtoSheets,
+  };
+
+  return { documentId: doc.id, fileName: doc.fileName, pll, pid, bom, mto };
 }
 
 export async function summariseLine(projectId: string, line: IsoLine): Promise<LineSummary> {

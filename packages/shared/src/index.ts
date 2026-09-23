@@ -16,3 +16,7 @@ export * from "./isoAxes";
 export * from "./spoolEnvelope";
 export * from "./spoolShape";
 export * from "./spoolTagClash";
+export * from "./revisions";
+export * from "./pipeSize";
+export * from "./specVariants";
+export * from "./specEvidence";

@@ -45,8 +45,8 @@ export default async function HookupPage({
   const canManage = session.isDcc;
 
   const db = getDb();
-  // The organizations this person can read: Document Control's own, or every
-  // one for a plain user (see lib/access.ts).
+  // The organizations this person can read: the ones they are a MEMBER of,
+  // whoever they are (see lib/access.ts).
   const orgIds = (await visibleOrganizations(session)).map((o) => o.id);
   // Ordered so a bare /hookup always lands on the same project. An unordered
   // select lets Postgres return the rows however it likes, and the fallback
@@ -62,7 +62,7 @@ export default async function HookupPage({
   // back to the start rather than land on a project they never chose. Document
   // Control arrives from the sidebar with none chosen, and gets the first plus
   // the picker. (Same rule as the spooling page.)
-  if (!requestedProject && !canManage) redirect("/organizations");
+  if (!requestedProject && !canManage) redirect("/clients");
   const projectId = requestedProject ?? myProjects[0]?.id;
   if (!projectId) {
     return (
@@ -106,7 +106,7 @@ export default async function HookupPage({
 
   async function handleUpload(formData: FormData) {
     "use server";
-    formData.set("docType", "hookup");
+    formData.set("uploadKind", "hookup");
     await uploadDocument(projectId!, formData);
   }
 

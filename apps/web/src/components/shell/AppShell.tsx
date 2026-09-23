@@ -3,18 +3,18 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BrandMark, IconBuilding, IconClipboard, IconClose, IconDashboard, IconFolder, IconLibrary, IconMenu, IconUsers } from "@/components/ui/icons";
+import { BrandMark, IconBuilding, IconClose, IconDashboard, IconMenu, IconUsers } from "@/components/ui/icons";
 
 // The frame around Document Control's pages: a top bar with the brand, the
-// organization it is working in, the pages, and who is signed in. On narrow
+// client it is working for, the pages, and who is signed in. On narrow
 // screens the pages fold into a menu.
 //
-// It matches the bar the organization picker and the checkers get (GuidedShell),
-// so choosing an organization does not change how the app looks.
+// It matches the bar the client picker and the checkers get (GuidedShell),
+// so choosing a client does not change how the app looks.
 //
 // It is a client component only because the bar highlights the page you are on
 // (usePathname) and the menu opens and closes. The auth check and the sign-out
-// and switch-organization actions stay in the server layout that renders this --
+// and switch-client actions stay in the server layout that renders this --
 // they arrive as props, already bound to their server actions.
 
 interface NavItem {
@@ -23,14 +23,20 @@ interface NavItem {
   icon: typeof IconDashboard;
 }
 
-// The places Document Control works from. The engineering tools are not here:
-// they open from the dashboard and from a project, already on the project being
-// worked on, rather than from a link that has to guess which one.
+// The places Document Control works FROM -- and there is no persistent way back
+// to "every project" except Dashboard.
+//
+// A "Projects" link used to sit here too, and it worked against the model the
+// rest of the bar follows: once a project is open, everything -- upload, ISO
+// checking, the Cutting Plan, Library -- stays scoped to it, and the ONLY
+// deliberate way out is Dashboard. A second, always-visible link to a plain list
+// of every project was one click back to "no project chosen" from anywhere,
+// which is exactly the slip Dashboard's own design is meant to prevent. Create
+// a project from Dashboard now; the `/projects` route still exists for a
+// checker's own flow (Organizations -> Projects -> Line), which never had this
+// bar to begin with.
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
-  { href: "/projects", label: "Projects", icon: IconFolder },
-  { href: "/review", label: "Line review", icon: IconClipboard },
-  { href: "/library", label: "Library", icon: IconLibrary },
   { href: "/users", label: "Users", icon: IconUsers },
 ];
 
@@ -44,7 +50,7 @@ interface Identity {
   isDcc: boolean;
 }
 
-// The organization Document Control is working in. `switcher` arrives already
+// The client Document Control is working for. `switcher` arrives already
 // bound to its server action, like `signOut`.
 interface Workspace {
   name: string;
@@ -79,7 +85,7 @@ function NavLinks({ vertical = false, onNavigate }: { vertical?: boolean; onNavi
   );
 }
 
-function OrganizationChip({ organization, className = "" }: { organization: Workspace; className?: string }) {
+function ClientChip({ organization, className = "" }: { organization: Workspace; className?: string }) {
   return (
     <div className={`items-center gap-2 rounded-lg border bg-muted/40 py-1 pl-2.5 pr-1 ${className}`}>
       <IconBuilding size={15} className="flex-none text-muted-foreground" />
@@ -165,7 +171,7 @@ export function AppShell({
             <span className="font-semibold tracking-wide">EASY</span>
           </Link>
 
-          {organization && <OrganizationChip organization={organization} className="ml-2 hidden lg:flex" />}
+          {organization && <ClientChip organization={organization} className="ml-2 hidden lg:flex" />}
 
           <nav aria-label="Main" className="ml-2 hidden lg:block">
             <NavLinks />
@@ -200,7 +206,7 @@ export function AppShell({
               </button>
             </div>
 
-            {organization && <OrganizationChip organization={organization} className="flex w-full" />}
+            {organization && <ClientChip organization={organization} className="flex w-full" />}
 
             <nav aria-label="Main">
               <NavLinks vertical onNavigate={close} />

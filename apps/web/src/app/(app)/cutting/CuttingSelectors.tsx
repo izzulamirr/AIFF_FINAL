@@ -2,24 +2,30 @@
 
 import { useRouter } from "next/navigation";
 
-// Project and drawing pickers that navigate as soon as they change -- same
-// reason as the hook-up page's: switching project is a navigation, and a
-// plain GET form left the page rendering the previous project's documents.
+// WHICH PARTS to nest, within the project already open.
+//
+// The project picker that used to sit beside this is gone. The project is chosen
+// one step earlier in the flow (login -> client -> dashboard -> project -> the
+// cutting plan) and arrives as `?project=`, so asking again here was a question
+// already answered -- and it made it possible to change project from a page
+// headed with a different project's name.
+//
+// It navigates as soon as it changes, rather than being a GET form with a
+// button: switching what is nested is a navigation, and a plain GET form left
+// the page rendering the previous selection's parts.
 export function CuttingSelectors({
-  projects,
   projectId,
   drawings,
   drawingId,
 }: {
-  projects: Array<{ id: string; label: string }>;
   projectId: string;
   drawings: Array<{ id: string; label: string }>;
   drawingId: string;
 }) {
   const router = useRouter();
 
-  const go = (nextProject: string, nextDrawing: string) => {
-    const params = new URLSearchParams({ project: nextProject });
+  const go = (nextDrawing: string) => {
+    const params = new URLSearchParams({ project: projectId });
     if (nextDrawing) params.set("drawing", nextDrawing);
     router.push(`/cutting?${params.toString()}`);
   };
@@ -27,22 +33,10 @@ export function CuttingSelectors({
   return (
     <div className="card flex flex-wrap items-end gap-4 p-4">
       <div className="w-full sm:w-auto">
-        <label htmlFor="project-select" className="field-label">
-          Project
-        </label>
-        <select id="project-select" value={projectId} onChange={(e) => go(e.target.value, "")} className="input sm:min-w-64">
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="w-full sm:w-auto">
         <label htmlFor="drawing-select" className="field-label">
           Parts to nest
         </label>
-        <select id="drawing-select" value={drawingId} onChange={(e) => go(projectId, e.target.value)} className="input sm:min-w-72">
+        <select id="drawing-select" value={drawingId} onChange={(e) => go(e.target.value)} className="input sm:min-w-72">
           {/* A job is cut from one stock of plate whatever it was drawn on, so
               nesting every cutting drawing in the project together is the
               default -- splitting the run per drawing only buys more plate. */}

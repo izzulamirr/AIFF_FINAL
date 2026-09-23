@@ -31,11 +31,23 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   // Route groups like (app) don't appear in the actual URL -- gate real
-  // path prefixes instead. /dashboard, /projects, /organizations, /review, /users
-  // and /library exist behind auth so far; add new protected prefixes here as they're built.
+  // path prefixes instead. Add new protected prefixes here as they're built.
   // (Every page under (app) also redirects unauthenticated visitors itself --
   // see (app)/layout.tsx -- this is defense-in-depth, not the only check.)
-  const isProtectedPath = ["/dashboard", "/projects", "/organizations", "/review", "/users", "/library"].some((prefix) => request.nextUrl.pathname.startsWith(prefix));
+  //
+  // `/organizations` is the old name for `/clients` and still redirects, so it
+  // is gated too -- otherwise the one path that survives the rename is the one
+  // that skips the check.
+  const isProtectedPath = [
+    "/dashboard",
+    "/projects",
+    "/clients",
+    "/organizations",
+    "/review",
+    "/cutting",
+    "/users",
+    "/library",
+  ].some((prefix) => request.nextUrl.pathname.startsWith(prefix));
 
   if (!user && isProtectedPath) {
     const loginUrl = request.nextUrl.clone();

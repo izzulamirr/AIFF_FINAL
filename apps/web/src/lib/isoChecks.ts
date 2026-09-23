@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { documents, extractionJobs, extractedTags } from "@easy/db";
+import { documents, documentPages, extractionJobs, extractedTags } from "@easy/db";
 import { normalizeTagNumber, enrichIsoLineAttrs } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import {
@@ -15,6 +15,10 @@ import {
   type DesignBasisRow,
   type RoutingFittingRow,
 } from "@/lib/verifyIso";
+import { kindOfDocument } from "@/lib/docTypes";
+import { extractSheetItems, narrowAdminMatches, type AdminAttributeMismatch, type SheetItem } from "@/lib/parseSheetPage";
+import { normalizeSpecClassCode, groupAdminItemsByClassRow } from "@/lib/verifySpecCrossCheck";
+import { crossCheckBomItem, classByMaterial, classByAdminList, crossCheckBomGasket, type BomCrossCheckResult } from "@/lib/verifyBomCrossCheck";
 
 // An ISO's cross-document checks: its design basis against the line list (PLL),
 // its routing and fittings against the project's P&IDs, and its bill of
@@ -28,6 +32,29 @@ type DocumentRow = typeof documents.$inferSelect;
 type TagRow = typeof extractedTags.$inferSelect;
 
 export type IsoChecks = Awaited<ReturnType<typeof buildIsoChecks>>;
+
+/** One BOM item, checked against the client spec and (where possible) the admin item list. */
+export interface MtoBomRow {
+  id: number;
+  itemNo: string;
+  componentType: string;
+  size: string;
+  quantity: string;
+  description: string;
+  itemCode: string;
+  /** Null for an "Unassigned" row -- there is no class to check it against. */
+  result: BomCrossCheckResult | null;
+  /**
+   * The admin item-list lines that back up `result`'s match, narrowed to the
+   * ones that actually apply to this one BOM item (see
+   * parseSheetPage.ts's narrowAdminMatches). Null when there is no admin
+   * spec to check against, or the client spec itself found no match to
+   * narrow.
+   */
+  adminMatches: SheetItem[] | null;
+  /** Attributes the BOM states that the admin's own matched lines contradict. */
+  adminMismatches: AdminAttributeMismatch[];
+}
 
 /**
  * `tags` are the ISO document's own extracted tags. Everything it is compared
@@ -73,6 +100,30 @@ export async function buildIsoChecks({
       items: Array<{ id: number; itemNo: string; description: string; itemCode: string; qty: string; basis: string }>;
     }>;
   }> = [];
+
+  // MTO: this same BOM checked against the client's own piping spec (a PDF,
+  // uploaded to the project's library -- see lib/docTypes.ts's admin/client
+  // split) and, where a real match exists, corroborated against the admin's
+  // own item-list export (an XLSX, uploaded on the project page). One row
+  // per BOM item, grouped the same way bomBySpec is -- by sheet, then by the
+  // class governing each item -- so the two views line up.
+  //
+  // `Unassigned` rows (the drawing does not say which side of a spec break
+  // they sit on) are never checked: there is no class to check them against,
+  // and reporting "class not in client spec" for every one of them would
+  // read as a data problem rather than the drafting ambiguity it is.
+  let mtoBySpec: Array<{
+    lineNumber: string;
+    sheetLabel: string;
+    page: number | null;
+    groups: Array<{ specClass: string; rows: MtoBomRow[] }>;
+  }> = [];
+  // Whether ANY client pipe spec exists for this project at all -- gates
+  // whether the MTO card shows real results or the "not set up yet"
+  // placeholder. A client spec that exists but does not cover THIS item's
+  // own class is a different, per-row state (BomCrossCheckResult's own
+  // "class_not_found"), not this flag.
+  let mtoClientSpecAvailable = false;
 
   const siblingDocs = await db
     .select()
@@ -135,6 +186,62 @@ export async function buildIsoChecks({
     });
   }
 
+  // The client's own piping specs, by class -- needed HERE, before the BOM is
+  // grouped, because an item that names a specific material (alloy 625 clad) is
+  // placed in the class whose spec carries that material. Also what the MTO
+  // check below reads. A PDF is the client's, an XLSX is ours (lib/docTypes.ts).
+  const clientSpecDocs = siblingDocs.filter((d) => d.docType === "spec_sheet" && kindOfDocument(d.docType, d.fileName)?.key === "client_spec");
+  mtoClientSpecAvailable = clientSpecDocs.length > 0;
+
+  const clientClassByNorm = new Map<string, Record<string, unknown>>();
+  if (clientSpecDocs.length > 0) {
+    const clientClassTags = await db
+      .select()
+      .from(extractedTags)
+      .where(and(inArray(extractedTags.documentId, clientSpecDocs.map((d) => d.id)), eq(extractedTags.tagType, "spec_class")));
+    // More than one client document can hold the same class code (e.g. a
+    // reissued spec) -- the richer extraction wins, same tie-break
+    // verifyBomCrossCheck.ts's own resolveClientAndAdminData uses, so the
+    // two never disagree about which one to trust.
+    const richness = (attrs: Record<string, unknown>) =>
+      (["pipes", "fittings", "flanges", "valves"] as const).reduce((n, k) => n + (Array.isArray(attrs[k]) ? (attrs[k] as unknown[]).length : 0), 0);
+    for (const t of clientClassTags) {
+      const norm = normalizeSpecClassCode(t.tagNumber);
+      const attrs = t.attributes as Record<string, unknown>;
+      const existing = clientClassByNorm.get(norm);
+      if (!existing || richness(attrs) > richness(existing)) clientClassByNorm.set(norm, attrs);
+    }
+  }
+
+  // The admin's own item list, one flat sheet whose every line names the class
+  // it belongs to. Read here, ahead of the BOM grouping, because it is what a
+  // BOM item is looked up in to find which class stocks it.
+  const adminSpecDocs = siblingDocs.filter((d) => d.docType === "spec_sheet" && kindOfDocument(d.docType, d.fileName)?.key === "admin_spec");
+  const adminItems: SheetItem[] = [];
+  if (adminSpecDocs.length > 0) {
+    const adminPages = await db
+      .select()
+      .from(documentPages)
+      .where(inArray(documentPages.documentId, adminSpecDocs.map((d) => d.id)));
+    for (const p of adminPages) adminItems.push(...extractSheetItems(p.pageText));
+  }
+
+  // The classes the P&ID gives this line's valves. A class the ISO extraction
+  // never listed (a segment between two spec breaks, read as part of a
+  // neighbour) still shows here, and it is a class an item may belong to.
+  const pidValveClasses: Array<{ lineNumber: unknown; specClass: string }> = [];
+  if (adminItems.length > 0 && pidOptions.length > 0) {
+    const pidValveTags = await db
+      .select()
+      .from(extractedTags)
+      .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), eq(extractedTags.tagType, "valve")));
+    for (const t of pidValveTags) {
+      const a = t.attributes as Record<string, unknown>;
+      const cls = typeof a.spec_class === "string" ? a.spec_class.trim().toUpperCase() : "";
+      if (cls) pidValveClasses.push({ lineNumber: a.line_number, specClass: cls });
+    }
+  }
+
   // One block per sheet, in sheet order -- including sheets with no break,
   // whose rows all sit under the title-block class. Only the "Unassigned"
   // group means the drawing didn't show which side a row is on.
@@ -148,6 +255,16 @@ export async function buildIsoChecks({
         location_note?: string;
       }>;
       const lineClass = typeof lineAttrs.spec_class === "string" ? lineAttrs.spec_class : "";
+
+      // Every class this line is known to run through: what the sheet's own
+      // callouts list, plus what the P&ID says of its valves.
+      const knownClasses = isoSpecClasses(lineAttrs);
+      const candidateClasses = [
+        ...new Set([
+          ...knownClasses,
+          ...pidValveClasses.filter((v) => matchesLineAcrossSpecBreak(v.lineNumber, line.tagNumber, knownClasses)).map((v) => v.specClass),
+        ]),
+      ];
 
       const norm = normalizeTagNumber(line.tagNumber);
       const items = tags.filter((t) => {
@@ -164,12 +281,19 @@ export async function buildIsoChecks({
         const a = item.attributes as Record<string, unknown>;
         // With no break on this sheet the title-block class governs every
         // row, so an unset class there is not an open question.
-        const own =
+        const placed =
           typeof a.item_spec_class === "string" && a.item_spec_class.trim()
             ? a.item_spec_class
             : breaks.length < 2 && lineClass
               ? lineClass
               : "Unassigned";
+        // An item the admin item list holds under ONE class is filed under that
+        // class, whatever position or rating said. Failing that, an item that
+        // names a specific material goes to the class whose client spec
+        // carries it.
+        const byAdmin = candidateClasses.length > 1 ? classByAdminList(a, placed, candidateClasses, adminItems) : null;
+        const byMaterial = !byAdmin && breaks.length > 1 ? classByMaterial(a, placed, breaks.map((b) => b.spec_class), clientClassByNorm) : null;
+        const own = byAdmin?.code ?? byMaterial?.code ?? placed;
         const list = byClass.get(own) ?? [];
         list.push({
           id: item.id,
@@ -181,11 +305,22 @@ export async function buildIsoChecks({
           description: String(a.description ?? ""),
           itemCode: String(a.item_code ?? "-"),
           qty: String(a.quantity ?? "-"),
-          basis: typeof a.item_spec_basis === "string" ? a.item_spec_basis : breaks.length < 2 ? "sheet has no spec break" : "",
+          basis: byAdmin
+            ? `admin list (only ${byAdmin.code} lists it)`
+            : byMaterial
+            ? `material (${byMaterial.markers.join(", ").toLowerCase()} is in ${byMaterial.code}'s spec)`
+            : typeof a.item_spec_basis === "string"
+              ? a.item_spec_basis
+              : breaks.length < 2
+                ? "sheet has no spec break"
+                : "",
         });
         byClass.set(own, list);
       }
-      const order = [...(breaks.length > 1 ? breaks.map((b) => b.spec_class) : [lineClass]), "Unassigned"];
+      // Break order first (upstream to downstream), then any class the admin list or
+      // P&ID brought in that the callouts never listed.
+      const printed = breaks.length > 1 ? breaks.map((b) => b.spec_class) : [lineClass];
+      const order = [...printed, ...candidateClasses.filter((c) => !printed.some((p) => p.toUpperCase() === c.toUpperCase())), "Unassigned"];
       const groups = [...byClass.entries()]
         .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
         // Printed order, not numeric order: the sheet's two materials
@@ -199,6 +334,85 @@ export async function buildIsoChecks({
       return { lineNumber: line.tagNumber, sheetLabel, page: line.sourcePage, breaks, groups };
     })
     .filter((v): v is NonNullable<typeof v> => v !== null);
+
+  // MTO: the same BOM items, checked against the CLIENT's own piping spec
+  // and, where a match exists, corroborated against the ADMIN's own item
+  // list. Both live as `spec_sheet` documents in this project; the format
+  // tells them apart (see lib/docTypes.ts) -- a PDF is the client's, an
+  // XLSX is ours. Resolved once, project-wide, rather than per BOM item:
+  // several items usually share a class, and an admin item list is read
+  // page by page regardless of how many items end up matching it.
+  // (The client specs and the admin item list are resolved above, ahead of the
+  // BOM grouping, which reads them.)
+  // Grouped once per class actually needed, not once per BOM item -- a class
+  // with thirty pipe items would otherwise re-scan the whole admin list
+  // thirty times over.
+  const adminGroupsByNorm = new Map<string, Map<string, SheetItem[]>>();
+
+  mtoBySpec = bomBySpec.map(({ lineNumber, sheetLabel, page, groups }) => ({
+    lineNumber,
+    sheetLabel,
+    page,
+    groups: groups.map(({ specClass, items }) => ({
+      specClass,
+      // `specClass` IS the resolved class every item in this group was
+      // grouped by -- built by the exact same fallback rule
+      // resolveBomItemSpecClass encodes (item_spec_class, else the sheet's
+      // own class where there is no break, else "Unassigned"), just
+      // computed once above rather than a second time here.
+      rows: items.map((displayItem): MtoBomRow => {
+        const tag = tags.find((t) => t.id === displayItem.id);
+        const a = (tag?.attributes as Record<string, unknown> | undefined) ?? {};
+
+        let result: BomCrossCheckResult | null = null;
+        let adminMatches: SheetItem[] | null = null;
+        let adminMismatches: AdminAttributeMismatch[] = [];
+
+        if (specClass !== "Unassigned") {
+          const norm = normalizeSpecClassCode(specClass);
+          const clientClass = clientClassByNorm.get(norm);
+          // A gasket is not a line in the client spec; the admin list is
+          // where one is found, by size.
+          const gasket = crossCheckBomGasket(a, specClass, adminItems);
+          result = gasket ? gasket.result : crossCheckBomItem(a, clientClass);
+          if (gasket) {
+            adminMatches = gasket.adminMatches;
+            adminMismatches = gasket.adminMismatches;
+          }
+
+          if (!gasket && adminItems.length > 0 && clientClass) {
+            let adminGroups = adminGroupsByNorm.get(norm);
+            if (!adminGroups) {
+              adminGroups = groupAdminItemsByClassRow(norm, clientClass, adminItems);
+              adminGroupsByNorm.set(norm, adminGroups);
+            }
+            adminMatches =
+              result.matchedCategory != null && result.matchedRowIndex != null
+                ? (adminGroups.get(`${result.matchedCategory}:${result.matchedRowIndex}`) ?? [])
+                : [];
+            if (adminMatches.length > 0) {
+              const narrowing = narrowAdminMatches(adminMatches, a);
+              adminMatches = narrowing.matches;
+              adminMismatches = narrowing.mismatches;
+            }
+          }
+        }
+
+        return {
+          id: displayItem.id,
+          itemNo: displayItem.itemNo,
+          componentType: String(a.component_type ?? "-"),
+          size: String(a.size ?? "-"),
+          quantity: displayItem.qty,
+          description: displayItem.description,
+          itemCode: displayItem.itemCode,
+          result,
+          adminMatches,
+          adminMismatches,
+        };
+      }),
+    })),
+  }));
 
 
   // Routing & fitting count, ISO vs the project's P&IDs -- same always-on
@@ -317,5 +531,5 @@ export async function buildIsoChecks({
     });
   }
 
-  return { designBasis, routingFittings, bomBySpec };
+  return { designBasis, routingFittings, bomBySpec, mtoBySpec, mtoClientSpecAvailable };
 }

@@ -45,6 +45,27 @@ export async function libraryItemsOf(organizationId: string, projectId: string |
 }
 
 /**
+ * Every "kept for reference" file of a client -- its shared library AND every
+ * project's own -- for the dashboard's roll-up. `libraryItemsOf` answers "one
+ * library"; this answers "everything this client has", which is a different
+ * question and would otherwise mean one call per project.
+ *
+ * Null when the table has not been created yet, same as `libraryItemsOf`.
+ */
+export async function libraryItemsOfClient(organizationId: string): Promise<LibraryItem[] | null> {
+  try {
+    return await getDb()
+      .select()
+      .from(libraryItems)
+      .where(eq(libraryItems.organizationId, organizationId))
+      .orderBy(desc(libraryItems.createdAt));
+  } catch (err) {
+    if (isMissingTable(err)) return null;
+    throw err;
+  }
+}
+
+/**
  * May this person read this organization's library?
  *
  * The same rule as everywhere else that reads: MEMBERSHIP, whoever is asking

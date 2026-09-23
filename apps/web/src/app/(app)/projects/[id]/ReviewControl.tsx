@@ -1,6 +1,6 @@
 import { Alert, Badge } from "@/components/ui/primitives";
 import { IconCheckCircle } from "@/components/ui/icons";
-import type { LineReview } from "@/lib/progress";
+import { lineStateOf, type LineReview } from "@/lib/progress";
 import { markLineReviewed, reopenLine } from "./progressActions";
 
 const when = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
@@ -47,6 +47,18 @@ export function MarkingNotSetUpBadge() {
 // they have, who did and when, with a way to take it back if it was a mistake.
 // Document Control sees the result on its dashboard.
 //
+// THREE states, not two, because of revisions:
+//
+//   open      nobody has checked this line
+//   done      checked against the drawing now in force
+//   recheck   checked, but against a drawing a later revision has replaced
+//
+// A revision does NOT erase the check. Who checked it and when are still true
+// and are still shown -- what changed is the drawing under them, so the line is
+// highlighted for RE-CHECK and the button comes back. Deleting the tick would
+// throw away a fact somebody earned and make progress lurch backwards for a
+// revision that may have altered one dimension.
+//
 // `readOnly` is for Document Control, which reviews a line the same way but does
 // not mark it -- only a checker's mark counts as progress. It sees where the line
 // stands and has no button to change it.
@@ -54,42 +66,72 @@ export function ReviewControl({
   projectId,
   lineNumber,
   review,
+  currentRevision,
   readOnly = false,
 }: {
   projectId: string;
   lineNumber: string;
   review: LineReview | undefined;
+  /** The revision in force, to judge the review against. */
+  currentRevision: string | null;
   readOnly?: boolean;
 }) {
-  const status = review ? (
-    <Badge tone="success" dot>
-      Done{review.reviewedByName ? ` by ${review.reviewedByName}` : ""} &middot; {when.format(review.reviewedAt)}
-    </Badge>
-  ) : (
-    <Badge>Not marked done by a checker yet</Badge>
+  const state = lineStateOf(review, currentRevision);
+
+  const mark = (label: string) => (
+    <form action={markLineReviewed.bind(null, projectId, lineNumber)}>
+      <button type="submit" className="btn btn-primary">
+        <IconCheckCircle size={16} />
+        {label}
+      </button>
+    </form>
   );
 
-  if (readOnly) return status;
+  if (state === "open") {
+    const status = <Badge>Not marked done by a checker yet</Badge>;
+    return readOnly ? status : mark("Mark as done");
+  }
 
-  if (review) {
-    return (
+  // Non-null from here: only a review can produce "done" or "recheck".
+  const checked = review!;
+  const who = checked.reviewedByName ? ` by ${checked.reviewedByName}` : "";
+
+  if (state === "recheck") {
+    // The revision is named on BOTH sides. "Needs re-checking" alone invites the
+    // question this badge exists to answer -- which drawing was checked, and
+    // which is in front of you now.
+    const status = (
+      <Badge tone="warning" dot title={`Checked${who} on ${when.format(checked.reviewedAt)}, against rev ${checked.revision}`}>
+        Re-check &middot; checked at rev {checked.revision}, now rev {currentRevision}
+      </Badge>
+    );
+    return readOnly ? (
+      status
+    ) : (
       <div className="flex flex-wrap items-center gap-3">
         {status}
-        <form action={reopenLine.bind(null, projectId, lineNumber)}>
-          <button type="submit" className="btn btn-secondary btn-sm">
-            Reopen
-          </button>
-        </form>
+        {mark(`Mark as done at rev ${currentRevision}`)}
       </div>
     );
   }
 
+  const status = (
+    <Badge tone="success" dot>
+      Done{who} &middot; {when.format(checked.reviewedAt)}
+      {checked.revision ? ` · rev ${checked.revision}` : ""}
+    </Badge>
+  );
+
+  if (readOnly) return status;
+
   return (
-    <form action={markLineReviewed.bind(null, projectId, lineNumber)}>
-      <button type="submit" className="btn btn-primary">
-        <IconCheckCircle size={16} />
-        Mark as done
-      </button>
-    </form>
+    <div className="flex flex-wrap items-center gap-3">
+      {status}
+      <form action={reopenLine.bind(null, projectId, lineNumber)}>
+        <button type="submit" className="btn btn-secondary btn-sm">
+          Reopen
+        </button>
+      </form>
+    </div>
   );
 }

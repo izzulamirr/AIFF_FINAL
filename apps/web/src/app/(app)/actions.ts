@@ -47,7 +47,7 @@ export async function selectOrganization(formData: FormData) {
 // Back to the picker, to work in a different organization.
 export async function leaveOrganization() {
   (await cookies()).delete(ACTIVE_ORG_COOKIE);
-  redirect("/organizations");
+  redirect("/clients");
 }
 
 export async function createOrganization(formData: FormData) {

@@ -363,6 +363,13 @@ export const lineReviews = pgTable(
     reviewedBy: uuid("reviewed_by").references(() => authUsers.id, { onDelete: "set null" }),
     reviewedByName: text("reviewed_by_name"),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }).notNull().defaultNow(),
+    // The drawing revision this check was made against, as printed in the title
+    // block. A later revision does not erase the check -- it marks it for
+    // RE-CHECK, which is what tells a checker their tick is against an older
+    // drawing. Null for a check recorded before revisions were tracked, and for
+    // a drawing whose REV box could not be read; neither is evidence of a
+    // change, so neither raises a re-check (see @easy/shared needsRecheck).
+    revision: text("revision"),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.lineKey] })]
 );

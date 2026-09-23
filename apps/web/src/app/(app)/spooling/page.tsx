@@ -38,8 +38,8 @@ export default async function SpoolingPage({
   if (!session) return null;
 
   const db = getDb();
-  // The organizations this person can read: Document Control's own, or every
-  // one for a plain user (see lib/access.ts).
+  // The organizations this person can read: the ones they are a MEMBER of,
+  // whoever they are (see lib/access.ts).
   const orgIds = (await visibleOrganizations(session)).map((o) => o.id);
   // Ordered by something that cannot change: an unordered select comes back in
   // whatever order Postgres likes, and the fallback here is "the first
@@ -60,7 +60,7 @@ export default async function SpoolingPage({
   // to "the first project" would put them somewhere they never chose -- so they
   // go back to the start. Document Control arrives from the sidebar with no
   // project chosen, and still gets the first one plus the picker.
-  if (!requestedProject && !session.isDcc) redirect("/organizations");
+  if (!requestedProject && !session.isDcc) redirect("/clients");
   const projectId = requestedProject ?? myProjects[0]?.id;
   if (!projectId) {
     return (

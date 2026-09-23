@@ -4,11 +4,11 @@ import { BrandMark } from "@/components/ui/icons";
 
 // The frame with no sidebar: a plain top bar and nothing else.
 //
-// A plain User's whole path through the app is Organization -> Project -> Line,
+// A checker's whole path through the app is client -> project -> line,
 // and each of those pages carries its own "back" link (see PageHeader's `back`
 // prop), so there is no second navigation system to keep in step with the first.
 //
-// Document Control gets it too, but only until it has chosen an organization --
+// Document Control gets it too, but only until it has chosen a client --
 // the picker comes first, and the sidebar (AppShell) opens once it has. See
 // (app)/layout.tsx.
 export function GuidedShell({
@@ -22,7 +22,7 @@ export function GuidedShell({
   email: string;
   name: string | null;
   roleLabel: string;
-  /** A plain user is read-only; Document Control, at the organization picker, is not. */
+  /** A checker is read-only; Document Control, at the client picker, is not. */
   readOnly?: boolean;
   signOut: ReactNode;
   children: ReactNode;
@@ -40,7 +40,7 @@ export function GuidedShell({
       </a>
 
       <header className="app-chrome sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-card px-4 sm:px-6 lg:px-10">
-        <Link href="/organizations" className="flex items-center gap-2.5">
+        <Link href="/clients" className="flex items-center gap-2.5">
           <BrandMark size={28} />
           <span className="font-semibold tracking-wide">EASY</span>
         </Link>

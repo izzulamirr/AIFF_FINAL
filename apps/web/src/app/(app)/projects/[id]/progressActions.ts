@@ -63,8 +63,17 @@ export async function setTotalLines(projectId: string, formData: FormData) {
 }
 
 // A checker marks a line done. It has to be a real line of the project -- one an
-// ISO actually carries -- so nothing can be marked that is not there. Marking a
-// line that is already done leaves the first review as it was.
+// ISO actually carries -- so nothing can be marked that is not there.
+//
+// The REVISION in force is recorded with the check, which is what lets a later
+// revision mark it for re-check instead of silently leaving a tick that says
+// nothing about the current drawing.
+//
+// `onConflictDoUpdate`, not `doNothing`: re-marking a line that is IN RE-CHECK
+// is the whole point of the re-check, and ignoring it would leave the line
+// flagged forever. Re-marking a line already done at the same revision rewrites
+// the same values, so it is harmless -- except that it moves `reviewedAt`, which
+// is correct: somebody looked again.
 export async function markLineReviewed(projectId: string, lineNumber: string) {
   const session = await requireSession();
   if (session.isDcc) throw new Error(CHECKERS_ONLY);
@@ -72,10 +81,17 @@ export async function markLineReviewed(projectId: string, lineNumber: string) {
   const line = findLine(await isoLinesOf(projectId), lineNumber);
   if (!line) throw new Error("That line is not in this project.");
 
+  const review = {
+    reviewedBy: session.id,
+    reviewedByName: session.name ?? session.email,
+    reviewedAt: new Date(),
+    revision: line.revision,
+  };
+
   await getDb()
     .insert(lineReviews)
-    .values({ projectId, lineKey: line.key, lineNumber: line.lineNumber, reviewedBy: session.id, reviewedByName: session.name ?? session.email })
-    .onConflictDoNothing();
+    .values({ projectId, lineKey: line.key, lineNumber: line.lineNumber, ...review })
+    .onConflictDoUpdate({ target: [lineReviews.projectId, lineReviews.lineKey], set: review });
   refresh(projectId);
 }
 

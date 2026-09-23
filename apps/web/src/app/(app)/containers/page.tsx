@@ -39,8 +39,8 @@ export default async function ContainersPage({
   if (!session) return null;
 
   const db = getDb();
-  // The organizations this person can read: Document Control's own, or every
-  // one for a plain user (see lib/access.ts). This used to ask for the
+  // The organizations this person can read: the ones they are a MEMBER of,
+  // whoever they are (see lib/access.ts). This used to ask for the
   // person's membership rows directly, which is empty for a User -- so a User
   // opening this page was told there were no projects at all.
   const orgIds = (await visibleOrganizations(session)).map((o) => o.id);
@@ -60,7 +60,7 @@ export default async function ContainersPage({
   // back to the start rather than land on a project they never chose. Document
   // Control arrives from the sidebar with none chosen, and gets the first plus
   // the picker. (Same rule as the spooling page.)
-  if (!requestedProject && !session.isDcc) redirect("/organizations");
+  if (!requestedProject && !session.isDcc) redirect("/clients");
   const projectId = requestedProject ?? myProjects[0]?.id;
   if (!projectId) {
     return (

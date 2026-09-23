@@ -38,11 +38,11 @@ export default async function CuttingPage({
   // Cutting drawings are not ISOs, so a plain user -- who sees only a project's
   // ISO lines -- has no part of this page. The upload, delete and save actions
   // enforce Document Control again on the server.
-  if (!session.isDcc) redirect("/organizations");
+  if (!session.isDcc) redirect("/clients");
 
   const db = getDb();
-  // The organizations this person can read: Document Control's own, or every
-  // one for a plain user (see lib/access.ts).
+  // The organizations this person can read: the ones they are a MEMBER of,
+  // whoever they are (see lib/access.ts).
   const orgIds = (await visibleOrganizations(session)).map((o) => o.id);
   // Ordered, and ordered by something that cannot change. Postgres returns an
   // unordered select in whatever order it likes, and the fallback below is
@@ -95,7 +95,7 @@ export default async function CuttingPage({
 
   async function handleUpload(formData: FormData) {
     "use server";
-    formData.set("docType", "cutting");
+    formData.set("uploadKind", "cutting");
     await uploadDocument(projectId!, formData);
   }
 
@@ -200,17 +200,16 @@ export default async function CuttingPage({
         description="A cutting-plate drawing says what has to be cut and how big each piece is; it does not say what plate to buy or where on it anything goes. This reads the parts off the drawing and arranges them on stock plate with the cutting allowances that keep each piece the size it was drawn — the kerf the torch burns away, plus a web of solid metal between cuts — on as few plates as the geometry allows."
       />
 
-      <CuttingSelectors
-        projects={myProjects.map((p) => ({
-          id: p.id,
-          // Project names are not unique across orgs, so a duplicated name is
-          // qualified rather than left ambiguous.
-          label: myProjects.filter((o) => o.name === p.name).length > 1 ? `${p.name} (${p.id.slice(0, 8)})` : p.name,
-        }))}
-        projectId={projectId}
-        drawings={cuttingDocs.map((d) => ({ id: d.id, label: d.fileName }))}
-        drawingId={drawingId ?? ""}
-      />
+      {/* Only where there is something to choose BETWEEN. With one cutting
+          drawing, or none, the sole option is "all of them" -- a control whose
+          every use is a no-op. */}
+      {cuttingDocs.length > 1 && (
+        <CuttingSelectors
+          projectId={projectId}
+          drawings={cuttingDocs.map((d) => ({ id: d.id, label: d.fileName }))}
+          drawingId={drawingId ?? ""}
+        />
+      )}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,30rem)_minmax(0,1fr)]">
         <form action={handleUpload} className="card flex flex-col gap-4">

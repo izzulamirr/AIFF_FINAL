@@ -30,8 +30,16 @@ create table if not exists line_reviews (
   reviewed_by uuid references auth.users(id) on delete set null,
   reviewed_by_name text,
   reviewed_at timestamptz not null default now(),
+  -- The drawing revision the check was made against, as printed in the title
+  -- block. A later revision marks the check for RE-CHECK rather than erasing
+  -- it. Null where the revision was not known, which never raises a re-check.
+  revision text,
   primary key (project_id, line_key)
 );
+
+-- Separate from the create above, so a database where line_reviews already
+-- exists gains the column too. Safe to run more than once.
+alter table line_reviews add column if not exists revision text;
 
 -- Row level security, the same model as rls.sql: readable by members of the
 -- owning organization, and nothing else. The app itself connects with a role that

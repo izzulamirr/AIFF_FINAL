@@ -104,11 +104,3 @@ export async function activeProjectsOf(session: Pick<SessionUser, "id" | "isDcc"
     .where(eq(projects.organizationId, organization.id))
     .orderBy(asc(projects.createdAt), asc(projects.id));
 }
-
-/** Project names for a picker. Two projects can share a name, so a repeated one carries part of its id. */
-export function projectOptions(list: Array<{ id: string; name: string }>): Array<{ id: string; label: string }> {
-  return list.map((p) => ({
-    id: p.id,
-    label: list.filter((o) => o.name === p.name).length > 1 ? `${p.name} (${p.id.slice(0, 8)})` : p.name,
-  }));
-}

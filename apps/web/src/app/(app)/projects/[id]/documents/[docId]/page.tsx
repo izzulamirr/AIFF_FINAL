@@ -1,9 +1,11 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { desc, eq } from "drizzle-orm";
 import { documents, extractionResults, extractedTags, projects } from "@easy/db";
 import { normalizeTagNumber } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { canReadOrganization } from "@/lib/access";
+import { labelForDocument } from "@/lib/docTypes";
 import { getSessionUser } from "@/lib/session";
 import { buildIsoChecks } from "@/lib/isoChecks";
 import type { ValveMatchGroup } from "@/lib/verifyIso";
@@ -13,16 +15,6 @@ import { Badge, EmptyState } from "@/components/ui/primitives";
 import { IconFile } from "@/components/ui/icons";
 import { ExtractedTagsTable, type TagGroup } from "./ExtractedTagsTable";
 
-const DOC_TYPE_LABELS: Record<string, string> = {
-  pid: "P&ID",
-  hmb: "H&MB",
-  pfd: "PFD",
-  spec_sheet: "Spec Sheet",
-  iso: "ISO",
-  ga: "GA",
-  pll: "Line List (PLL)",
-  pid_legend: "P&ID Legend",
-};
 
 
 export default async function DocumentDetailPage({ params }: { params: Promise<{ id: string; docId: string }> }) {
@@ -88,6 +80,13 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
     ? await buildIsoChecks({ projectId, docId, document, tags })
     : { designBasis: [], routingFittings: [], bomBySpec: [] };
 
+  // A spec sheet's own extracted classes -- pipes/fittings/flanges/valves
+  // per piping class -- each get a cross-check page of their own (admin item
+  // list, and an ISO's BOM, against this class's spec). See
+  // classes/[classCode]/page.tsx.
+  const isSpecSheet = document.docType === "spec_sheet";
+  const specClassTags = isSpecSheet ? tags.filter((t) => t.tagType === "spec_class") : [];
+
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
@@ -95,7 +94,7 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         back={{ href: `/projects/${projectId}`, label: "Back to project" }}
         meta={
           <>
-            <Badge>{DOC_TYPE_LABELS[document.docType] ?? document.docType}</Badge>
+            <Badge>{labelForDocument(document.docType, document.fileName)}</Badge>
             <Badge>{document.pageCount ?? "?"} pages</Badge>
           </>
         }
@@ -155,32 +154,29 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
             {routingFittings.some((r) => r.valveMatch && r.valveMatch.length > 0) && (
               <div>
-                <h3 id="fittings-match" className="section-title mb-3 scroll-mt-6">
+                <h3 id="fittings-match" className="section-title mb-4 scroll-mt-6">
                   Fittings match: ISO vs P&amp;ID
                 </h3>
-                <p className="callout mb-5 max-w-4xl">
-                  Every in-line component both documents show: valves, flanges (by type &mdash; a weld neck, a blind and an orifice
-                  flange are not interchangeable), spectacle blinds, reducers and instruments (named from their ISA tag, so FT-0003
-                  is a flow transmitter and PI-0004 a pressure indicator). Paired on component type and nominal size, since the ISO
-                  BOM aggregates by quantity and most P&amp;ID components are untagged, so neither side can be matched by tag. Left
-                  out as not comparable: butt-weld fittings a P&amp;ID does not itemise (elbows, tees, olets), consumables (gaskets,
-                  bolts), and instrument-loop accessories &mdash; only the primary device of a loop is a physical in-line item, so an
-                  indicator reading from a transmitter is not counted again. Disagreements are listed first.
-                </p>
                 {routingFittings
-                  .filter((r): r is typeof r & { valveMatch: ValveMatchGroup[] } => Boolean(r.valveMatch?.length))
-                  .map(({ lineNumber, valveMatch: groups }) => (
-                    <div key={lineNumber} className="mb-6 last:mb-0">
-                      <p className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-                        <span>Line</span>
-                        <span className="font-mono font-medium">{lineNumber}</span>
-                        <span className="text-muted-foreground">
-                          {groups.length > 1 ? `${groups.length} material classes along the run` : "single material class"}
-                        </span>
-                      </p>
-                      <FittingsMatchGroups groups={groups} />
-                    </div>
-                  ))}
+                  .filter((r) => (r.valveMatch?.length ?? 0) > 0)
+                  .map(({ lineNumber, valveMatch }) => {
+                    // Filtered above to a non-empty array, so this is real
+                    // data -- the `?? []` is only to satisfy the type
+                    // (valveMatch is declared optional on the row).
+                    const groups: ValveMatchGroup[] = valveMatch ?? [];
+                    return (
+                      <div key={lineNumber} className="mb-6 last:mb-0">
+                        <p className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                          <span>Line</span>
+                          <span className="font-mono font-medium">{lineNumber}</span>
+                          <span className="text-muted-foreground">
+                            {groups.length > 1 ? `${groups.length} material classes along the run` : "single material class"}
+                          </span>
+                        </p>
+                        <FittingsMatchGroups groups={groups} />
+                      </div>
+                    );
+                  })}
               </div>
             )}
 
@@ -192,6 +188,31 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
                 <BomSheets sheets={bomBySpec} />
               </div>
             )}
+          </div>
+        </section>
+      )}
+
+      {isSpecSheet && specClassTags.length > 0 && (
+        <section className="card card-flush">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">Piping classes</h2>
+              <p className="card-description">
+                Cross-check each class against the client&apos;s admin item list and an ISO&apos;s own bill of material.
+              </p>
+            </div>
+            <Badge className="ml-auto">{specClassTags.length}</Badge>
+          </div>
+          <div className="flex flex-wrap gap-2 p-5">
+            {specClassTags.map((t) => (
+              <Link
+                key={t.id}
+                href={`/projects/${projectId}/documents/${docId}/classes/${encodeURIComponent(t.tagNumber)}`}
+                className="rounded-full border px-3 py-1 text-sm font-medium text-link transition-colors hover:bg-muted"
+              >
+                {t.tagNumber}
+              </Link>
+            ))}
           </div>
         </section>
       )}

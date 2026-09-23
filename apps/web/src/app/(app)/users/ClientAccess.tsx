@@ -3,22 +3,22 @@
 import { useRef, useState, useTransition } from "react";
 import { IconBuilding, IconCheck } from "@/components/ui/icons";
 
-// One person's organizations, in the users table.
+// One person's clients, in the users table.
 //
 // The cell itself stays a quiet list of names -- it is read far more often than
 // it is changed, and a row of remove crosses and a dropdown on every line turned
-// the table into a form. Changing it opens a panel: every organization Document
+// the table into a form. Changing it opens a panel: every client Document
 // Control can hand out, in one list, each either on or off.
 //
 // The panel is a native <dialog>. A popover would have been clipped by
 // `.table-wrap`'s own horizontal scroll; the top layer is not.
 
-export interface OrgOption {
+export interface ClientOption {
   id: string;
   name: string;
 }
 
-export function OrganizationAccess({
+export function ClientAccess({
   personLabel,
   isSelf,
   memberOf,
@@ -28,27 +28,27 @@ export function OrganizationAccess({
   personLabel: string;
   /** Your own row: shown, never editable -- see the action for why. */
   isSelf: boolean;
-  memberOf: OrgOption[];
-  /** What Document Control may hand out: the organizations it is in itself. */
-  assignable: OrgOption[];
+  memberOf: ClientOption[];
+  /** What Document Control may hand out: the clients it is in itself. */
+  assignable: ClientOption[];
   /** Bound to this account by the page. */
-  setAccess: (organizationId: string, member: boolean) => Promise<void>;
+  setAccess: (clientId: string, member: boolean) => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [pending, startTransition] = useTransition();
   const [failed, setFailed] = useState<string | null>(null);
 
   const isMember = (id: string) => memberOf.some((o) => o.id === id);
-  // In an organization this account cannot hand out -- somebody else's, or one
+  // A client this account cannot hand out -- somebody else's, or one
   // Document Control has since left. Shown so the list is the whole truth, and
   // said to be unchangeable rather than quietly left out.
   const locked = memberOf.filter((o) => !assignable.some((a) => a.id === o.id));
 
-  function toggle(organizationId: string, next: boolean) {
+  function toggle(clientId: string, next: boolean) {
     setFailed(null);
     startTransition(async () => {
       try {
-        await setAccess(organizationId, next);
+        await setAccess(clientId, next);
       } catch (err) {
         setFailed(err instanceof Error ? err.message : "That did not save.");
       }
@@ -81,13 +81,13 @@ export function OrganizationAccess({
             <IconBuilding />
           </span>
           <div className="min-w-0">
-            <p className="modal-title">Organizations</p>
+            <p className="modal-title">Clients</p>
             <p className="truncate text-xs text-muted-foreground">{personLabel}</p>
           </div>
         </div>
 
         <p className="border-b px-5 py-3 text-xs leading-relaxed text-muted-foreground">
-          They see the projects, drawings and library of the organizations switched on here, and nothing else.
+          They see the projects, drawings and library of the clients switched on here, and nothing else.
         </p>
 
         <div className="modal-body">

@@ -7,7 +7,7 @@ import { ConfirmButton } from "@/components/ui/ConfirmButton";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert, Badge, EmptyState, Stat } from "@/components/ui/primitives";
 import { IconUsers } from "@/components/ui/icons";
-import { OrganizationAccess, type OrgOption } from "./OrganizationAccess";
+import { ClientAccess, type ClientOption } from "./ClientAccess";
 import { setOrganizationAccess, setUserRole } from "./actions";
 
 export const metadata: Metadata = { title: "Users" };
@@ -23,13 +23,13 @@ const day = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
 export default async function UsersPage() {
   const session = await getSessionUser();
   if (!session) return null;
-  if (!session.isDcc) redirect("/organizations");
+  if (!session.isDcc) redirect("/clients");
 
-  const organization = await activeOrganization(session);
+  const client = await activeOrganization(session);
 
-  // What Document Control can hand out: the organizations it is in itself. Only
+  // What Document Control can hand out: the clients it is in itself. Only
   // the id and the name cross to the client -- the rest of the row is the app's.
-  const assignable: OrgOption[] = (await memberOrganizationsOf(session.id)).map((o) => ({ id: o.id, name: o.name }));
+  const assignable: ClientOption[] = (await memberOrganizationsOf(session.id)).map((o) => ({ id: o.id, name: o.name }));
   const membershipsByUser = await organizationMembershipsByUser();
 
   let accounts: AccountRow[] = [];
@@ -63,7 +63,7 @@ export default async function UsersPage() {
             <Stat label="Document Control" value={dccCount} />
             <Stat label="Checkers" value={accounts.length - dccCount} />
             {unconfirmed > 0 && <Stat label="Email not confirmed" value={unconfirmed} tone="warning" hint="cannot sign in yet" />}
-            {unassigned > 0 && <Stat label="In no organization" value={unassigned} tone="warning" hint="they see an empty app" />}
+            {unassigned > 0 && <Stat label="Assigned to no client" value={unassigned} tone="warning" hint="they see an empty app" />}
           </div>
 
           <section className="card card-flush">
@@ -79,7 +79,7 @@ export default async function UsersPage() {
                   <tr>
                     <th>Person</th>
                     <th>Role</th>
-                    <th>Organizations</th>
+                    <th>Clients</th>
                     <th className="text-right">Lines</th>
                     <th>Activity</th>
                     <th className="w-px"></th>
@@ -88,7 +88,7 @@ export default async function UsersPage() {
                 <tbody>
                   {accounts.map((a) => {
                     const label = a.name ?? a.email;
-                    const memberOf: OrgOption[] = (membershipsByUser.get(a.id) ?? []).map((o) => ({ id: o.id, name: o.name }));
+                    const memberOf: ClientOption[] = (membershipsByUser.get(a.id) ?? []).map((o) => ({ id: o.id, name: o.name }));
                     return (
                       <tr key={a.id}>
                         {/* Only the EXCEPTION is shown. "Confirmed" on every row
@@ -114,7 +114,7 @@ export default async function UsersPage() {
                           )}
                         </td>
                         <td>
-                          <OrganizationAccess
+                          <ClientAccess
                             personLabel={label}
                             isSelf={a.id === session.id}
                             memberOf={memberOf}
@@ -142,7 +142,7 @@ export default async function UsersPage() {
                             <form action={setUserRole.bind(null, a.id, "dcc")}>
                               <ConfirmButton
                                 className="btn btn-secondary btn-xs"
-                                message={`Make ${label} Document Control?\n\nThey will be able to upload and delete documents and create projects${organization ? `, and will be added to ${organization.name}` : ""}.`}
+                                message={`Make ${label} Document Control?\n\nThey will be able to upload and delete documents and create projects${client ? `, and will be added to ${client.name}` : ""}.`}
                               >
                                 Make Document Control
                               </ConfirmButton>
@@ -165,27 +165,6 @@ export default async function UsersPage() {
               </table>
             </div>
           </section>
-
-          <div className="callout flex max-w-3xl flex-col gap-2">
-            <p>
-              <strong className="text-foreground">Organizations decide what somebody sees.</strong> An account reads the projects, drawings
-              and library of the organizations listed against it, and nothing else &mdash; so an account in none sees an empty app. You can
-              add someone to the organizations you belong to
-              {assignable.length > 0 ? (
-                <>
-                  {" "}
-                  (<span className="text-foreground">{assignable.map((o) => o.name).join(", ")}</span>)
-                </>
-              ) : null}
-              , and to no others.
-            </p>
-            <p>
-              A role takes effect on the person&apos;s next page load. Making someone Document Control also adds them to{" "}
-              {organization ? <strong className="text-foreground">{organization.name}</strong> : "the organization you are working in"},
-              since Document Control only sees the organizations it belongs to. Your own account, your own access, and the accounts fixed as
-              Document Control in the code cannot be changed here.
-            </p>
-          </div>
         </>
       )}
     </div>

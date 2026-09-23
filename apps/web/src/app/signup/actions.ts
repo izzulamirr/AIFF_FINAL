@@ -40,7 +40,7 @@ export async function signup(formData: FormData) {
   // Every new sign-up is a plain User (see lib/roles.ts) -- the "dcc" branch
   // only fires for the handful of addresses already listed there, in case one
   // of them registers before anyone has manually created its account.
-  if (data.session) redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/organizations");
+  if (data.session) redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/clients");
 
   redirect(`/login?message=${encodeURIComponent("Check your email to confirm your account, then log in.")}`);
 }

@@ -1,5 +1,6 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { lineReviews, projectLineTotals } from "@easy/db";
+import { needsRecheck } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { isoLinesOf } from "@/lib/isoLines";
 
@@ -24,6 +25,8 @@ export interface LineReview {
   lineNumber: string;
   reviewedByName: string | null;
   reviewedAt: Date;
+  /** The drawing revision this check was made against. Null if it was not known at the time. */
+  revision: string | null;
 }
 
 const toReview = (row: typeof lineReviews.$inferSelect): LineReview => ({
@@ -31,7 +34,60 @@ const toReview = (row: typeof lineReviews.$inferSelect): LineReview => ({
   lineNumber: row.lineNumber,
   reviewedByName: row.reviewedByName,
   reviewedAt: row.reviewedAt,
+  revision: row.revision,
 });
+
+/**
+ * How a line stands: checked against the drawing in force, checked against an
+ * older one, or not checked.
+ *
+ * A revision does NOT erase the check. The tick stays, with who made it and
+ * when, and the line is marked for RE-CHECK -- which is the honest state, since
+ * somebody did review that line, just not this drawing.
+ */
+export type LineState = "done" | "recheck" | "open";
+
+export function lineStateOf(review: LineReview | undefined, currentRevision: string | null): LineState {
+  if (!review) return "open";
+  return needsRecheck(review.revision, currentRevision) ? "recheck" : "done";
+}
+
+/** A review with the revision now in force beside the one it was made against. */
+export interface ClassifiedReview extends LineReview {
+  /** The revision in force for this line now. Null where it could not be read. */
+  currentRevision: string | null;
+  state: Exclude<LineState, "open">;
+}
+
+/**
+ * Judge each review against the drawing now in force.
+ *
+ * A review whose line is no longer in the project -- its drawing was deleted --
+ * has no current revision to compare with, so it stands. Absence of a drawing is
+ * not evidence of a revision.
+ */
+export function classifyReviews(reviews: LineReview[], lines: Array<{ key: string; revision: string | null }>): ClassifiedReview[] {
+  const revisionOf = new Map(lines.map((l) => [l.key, l.revision]));
+  return reviews.map((review) => {
+    const currentRevision = revisionOf.get(review.lineKey) ?? null;
+    return { ...review, currentRevision, state: needsRecheck(review.revision, currentRevision) ? "recheck" : "done" };
+  });
+}
+
+/**
+ * Split a project's reviews by whether they still stand.
+ *
+ * Counted rather than folded into one number, because "40 of 40 checked" while
+ * five of them were checked against superseded drawings is a figure that reads
+ * as finished and is not.
+ */
+export function countProgress(reviews: LineReview[], lines: Array<{ key: string; revision: string | null }>) {
+  const classified = classifyReviews(reviews, lines);
+  return {
+    done: classified.filter((r) => r.state === "done").length,
+    recheck: classified.filter((r) => r.state === "recheck").length,
+  };
+}
 
 /** One project: the total Document Control stated (null if it has not), and every line checked, newest first. */
 export interface ProjectLineProgress {
@@ -57,6 +113,12 @@ export interface ProjectProgress extends ProjectLineProgress {
   projectName: string;
   /** ISO lines uploaded so far -- usually fewer than the total, since drawings arrive over time. */
   uploaded: number;
+  /** Checked against the drawing now in force. */
+  done: number;
+  /** Checked, but against a drawing a later revision has replaced. */
+  recheck: number;
+  /** Every review, each judged against the revision now in force. */
+  classified: ClassifiedReview[];
 }
 
 /** Several projects at once, for the dashboard. Null when the progress tables have not been created yet. */
@@ -64,7 +126,9 @@ export async function progressOfProjects(projects: Array<{ id: string; name: str
   if (projects.length === 0) return [];
   const ids = projects.map((p) => p.id);
   // Not part of the tables that may be missing, so an error here is a real one.
-  const uploaded = await Promise.all(projects.map(async (p) => (await isoLinesOf(p.id)).length));
+  // The lines are kept, not just counted: each carries the revision now in force,
+  // which is what says whether a check still stands.
+  const linesOf = await Promise.all(projects.map((p) => isoLinesOf(p.id)));
 
   try {
     const db = getDb();
@@ -72,13 +136,20 @@ export async function progressOfProjects(projects: Array<{ id: string; name: str
     const rows = await db.select().from(lineReviews).where(inArray(lineReviews.projectId, ids)).orderBy(desc(lineReviews.reviewedAt));
     const totalOf = new Map(totals.map((t) => [t.projectId, t.totalLines]));
 
-    return projects.map((p, i) => ({
-      projectId: p.id,
-      projectName: p.name,
-      total: totalOf.get(p.id) ?? null,
-      uploaded: uploaded[i],
-      reviews: rows.filter((r) => r.projectId === p.id).map(toReview),
-    }));
+    return projects.map((p, i) => {
+      const reviews = rows.filter((r) => r.projectId === p.id).map(toReview);
+      const classified = classifyReviews(reviews, linesOf[i]);
+      return {
+        projectId: p.id,
+        projectName: p.name,
+        total: totalOf.get(p.id) ?? null,
+        uploaded: linesOf[i].length,
+        reviews,
+        classified,
+        done: classified.filter((r) => r.state === "done").length,
+        recheck: classified.filter((r) => r.state === "recheck").length,
+      };
+    });
   } catch (err) {
     if (isMissingTable(err)) return null;
     throw err;

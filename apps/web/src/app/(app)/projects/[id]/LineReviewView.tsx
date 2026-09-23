@@ -2,14 +2,14 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CollapsibleCard } from "@/components/ui/CollapsibleCard";
-import { Badge, EmptyState, Stat } from "@/components/ui/primitives";
-import { BomSheets, DesignBasisTable, FittingsMatchGroups, RoutingTable } from "@/components/checks/IsoCheckTables";
+import { Alert, Badge, EmptyState, Stat } from "@/components/ui/primitives";
+import { BomSheets, DesignBasisTable, FittingsMatchGroups, MtoSheets, RoutingTable } from "@/components/checks/IsoCheckTables";
 import { HookupResults } from "@/components/checks/HookupResults";
 import { IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconSpool, IconTable } from "@/components/ui/icons";
 import { ProgressBar } from "@/components/progress/ProgressBar";
-import { findLine, isoLinesOf } from "@/lib/isoLines";
+import { findLine, isoLinesOf, type IsoLine } from "@/lib/isoLines";
 import { summariseLine, type IsoDrawingChecks, type LineSummary } from "@/lib/lineSummary";
-import { progressOfProject } from "@/lib/progress";
+import { countProgress, lineStateOf, progressOfProject } from "@/lib/progress";
 import { ContainerFit } from "../../containers/ContainerFit";
 import { SpoolSheets } from "../../spooling/SpoolSheets";
 import { MarkingNotSetUp, MarkingNotSetUpBadge, ReviewControl } from "./ReviewControl";
@@ -39,11 +39,83 @@ export interface LineReviewLinks {
   line: (lineNumber: string) => string;
   /** Back from the list, if there is anywhere to go. */
   back?: { href: string; label: string };
+  /**
+   * This project's library, if this route should offer one.
+   *
+   * The CALLER decides, because the two routes are not in the same position. A
+   * checker has no sidebar at all, so on their route this button is their only
+   * way to the library and has to be here. Document Control reaches it from the
+   * sidebar and from the project page, so on `/review` it was a third copy
+   * sitting in the corner of a page about lines.
+   */
+  library?: string;
 }
 
 const Note = ({ children }: { children: ReactNode }) => <p className="text-sm text-muted-foreground">{children}</p>;
 
 const UNAVAILABLE = "This could not be worked out. Try again in a moment.";
+
+const uploaded = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
+
+// Earlier revisions of this line, and -- the case that matters more -- a warning
+// when the revisions could NOT be read.
+//
+// Nothing is deleted when a drawing is superseded: its extraction cost real
+// money to produce, and comparing what changed between two revisions is a normal
+// thing to want. It is only excluded from the checks, which is what "current"
+// means. So each one stays one click away.
+//
+// Where the REV boxes could not be read or ordered, EVERY drawing is left in
+// force (see lib/isoLines.ts) and this says so. That is the safe direction --
+// showing an extra drawing beats hiding the real one -- but silently merging two
+// revisions' spools and BOM is exactly the confusion this feature exists to end,
+// so it must not be quiet about it.
+function SupersededDrawings({ projectId, line }: { projectId: string; line: IsoLine }) {
+  const multipleUnordered = !line.revisionKnown && line.documentIds.length > 1;
+  if (line.superseded.length === 0 && !multipleUnordered) return null;
+
+  if (multipleUnordered) {
+    return (
+      <Alert tone="warning">
+        <strong>This line is carried by {line.documentIds.length} drawings and their revisions could not be read.</strong> Every one of
+        them is being checked, so a superseded drawing&apos;s spools and bill of material may be mixed in with the current one&apos;s. Check
+        the REV box on each drawing&apos;s title block.
+      </Alert>
+    );
+  }
+
+  return (
+    <section className="card card-flush">
+      <div className="card-header">
+        <h2 className="card-title">Earlier revisions</h2>
+        <Badge>{plural(line.superseded.length, "drawing")}</Badge>
+      </div>
+      <ul className="divide-y divide-border">
+        {line.superseded.map((d) => (
+          <li key={d.documentId}>
+            <Link
+              href={`/projects/${projectId}/documents/${d.documentId}`}
+              className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
+            >
+              <IconFile size={17} className="flex-none text-muted-foreground" />
+              <Badge>REV {d.revision}</Badge>
+              <span className="min-w-0 truncate text-sm">{d.fileName}</span>
+              <span className="ml-auto flex flex-none items-center gap-3">
+                <span className="text-xs text-muted-foreground">
+                  {plural(d.sheets, "sheet")} &middot; uploaded {uploaded.format(d.uploadedAt)}
+                </span>
+                <IconChevronRight size={16} className="text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <p className="border-t px-5 py-3 text-xs text-muted-foreground">
+        Superseded by rev {line.revision}. These are kept for comparison and are left out of every check on this page.
+      </p>
+    </section>
+  );
+}
 
 // A line carried by two drawings is reviewed in each, not added up -- the same item
 // in a full set and a partial one would count twice. With one drawing there is
@@ -329,36 +401,69 @@ function PidBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
   );
 }
 
-// ---- BOM vs admin specs: a TEMPLATE ---------------------------------------
-// The admin specs are not in the app yet, so there is nothing to check the bill of
-// material against. This shows the shape the result will take -- greyed, dashed,
-// no figures -- and, so the card is not just empty, the BOM as extracted, which
-// is what will be checked.
-function BomBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
+// ---- MTO: BOM vs client spec vs admin item list ---------------------------
+// Real once a client pipe spec has been uploaded to the project's library
+// (see lib/isoChecks.ts's mtoClientSpecAvailable) -- until then this is the
+// same template it always was: the shape the result will take, greyed and
+// dashed, plus the BOM as extracted so the card is not just empty.
+function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
+  const available = drawings.some((d) => d.mto.available);
   const withBom = drawings.filter((d) => d.bom.sheets > 0);
+  const withMto = drawings.filter((d) => d.mto.sheetData.length > 0);
+
+  const totals = drawings.reduce(
+    (acc, d) => ({
+      checked: acc.checked + d.mto.checked,
+      match: acc.match + d.mto.match,
+      deviations: acc.deviations + d.mto.deviations,
+      notInSpec: acc.notInSpec + d.mto.notInSpec,
+    }),
+    { checked: 0, match: 0, deviations: 0, notInSpec: 0 }
+  );
+
+  if (!available) {
+    return (
+      <div className="flex flex-col gap-6">
+        <p className="callout max-w-3xl">
+          No client pipe spec has been uploaded for this project yet. Once one is added to the project&apos;s library, every BOM item on
+          this line will be checked against the class it names, corroborated against the admin&apos;s own item list where one exists, and
+          the result will appear here.
+        </p>
+
+        {/* What the result will look like. Placeholders, not data. */}
+        <div aria-hidden="true" className="flex flex-wrap gap-4 opacity-60 [&_.stat]:border-dashed [&_.stat]:shadow-none">
+          <Stat label="BOM items checked" value="—" />
+          <Stat label="Match the spec" value="—" />
+          <Stat label="Deviations" value="—" />
+          <Stat label="Not in the spec" value="—" />
+        </div>
+
+        <div>
+          <p className="eyebrow mb-3">This line&apos;s BOM, as extracted</p>
+          {withBom.length === 0 ? (
+            <Note>No bill of material has been read for this line yet.</Note>
+          ) : (
+            <Drawings items={withBom.map((d) => ({ key: d.documentId, fileName: d.fileName, body: <BomSheets sheets={d.bom.sheetData} /> }))} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
-      <p className="callout max-w-3xl">
-        Admin specs have not been added to the app yet. Once they are, every BOM item on this line will be checked against the spec for its
-        material class, and the result will appear here.
-      </p>
-
-      {/* What the result will look like. Placeholders, not data. */}
-      <div aria-hidden="true" className="flex flex-wrap gap-4 opacity-60 [&_.stat]:border-dashed [&_.stat]:shadow-none">
-        <Stat label="BOM items checked" value="—" />
-        <Stat label="Match the spec" value="—" />
-        <Stat label="Deviations" value="—" />
-        <Stat label="Not in the spec" value="—" />
+      <div className="flex flex-wrap gap-4">
+        <Stat label="BOM items checked" value={totals.checked} />
+        <Stat label="Match the spec" value={totals.match} tone={totals.match > 0 ? "good" : "neutral"} />
+        <Stat label="Deviations" value={totals.deviations} tone={totals.deviations > 0 ? "warning" : "neutral"} />
+        <Stat label="Not in the spec" value={totals.notInSpec} tone={totals.notInSpec > 0 ? "danger" : "neutral"} />
       </div>
 
-      <div>
-        <p className="eyebrow mb-3">This line&apos;s BOM, as extracted</p>
-        {withBom.length === 0 ? (
-          <Note>No bill of material has been read for this line yet.</Note>
-        ) : (
-          <Drawings items={withBom.map((d) => ({ key: d.documentId, fileName: d.fileName, body: <BomSheets sheets={d.bom.sheetData} /> }))} />
-        )}
-      </div>
+      {withMto.length === 0 ? (
+        <Note>No bill of material has been read for this line yet.</Note>
+      ) : (
+        <Drawings items={withMto.map((d) => ({ key: d.documentId, fileName: d.fileName, body: <MtoSheets sheets={d.mto.sheetData} /> }))} />
+      )}
     </div>
   );
 }
@@ -366,12 +471,21 @@ function BomBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
 export async function LineReviewView({
   projectId,
   projectName,
+  listTitle,
   requestedLine,
   links,
   canMark,
 }: {
   projectId: string;
   projectName: string;
+  /**
+   * What to head the list of lines with. Defaults to the project's name, which
+   * is right where the back link goes somewhere ELSE -- a checker's "Projects".
+   * Where the back link goes to the project itself, the name would be printed
+   * twice, once as the way back and once as the title, so `/review` passes the
+   * name of the feature instead.
+   */
+  listTitle?: string;
   requestedLine: string | undefined;
   links: LineReviewLinks;
   /** Whether this person can mark a line done. Only a checker can; it is what counts as progress. */
@@ -383,6 +497,7 @@ export async function LineReviewView({
   // progress tables exist (see lib/progress.ts): the controls are then left off
   // rather than shown to fail.
   const progress = await progressOfProject(projectId);
+  const counts = countProgress(progress?.reviews ?? [], lines);
 
   if (line) {
     const summary = await summariseLine(projectId, line);
@@ -400,6 +515,7 @@ export async function LineReviewView({
                 projectId={projectId}
                 lineNumber={line.lineNumber}
                 review={progress.reviews.find((r) => r.lineKey === line.key)}
+                currentRevision={line.revision}
                 readOnly={!canMark}
               />
             ) : (
@@ -408,11 +524,18 @@ export async function LineReviewView({
           }
           meta={
             <>
+              {line.revision && (
+                <Badge tone="info" title="The revision printed in this drawing's title block">
+                  REV {line.revision}
+                </Badge>
+              )}
               <Badge>{plural(line.sheets, "sheet")}</Badge>
               {summary.drawings.length > 1 && <Badge>{summary.drawings.length} drawings</Badge>}
             </>
           }
         />
+
+        <SupersededDrawings projectId={projectId} line={line} />
 
         {/* Where "Mark as done" would be. Saying why it is absent is the whole
             point -- an empty header reads as "this app has no such feature". */}
@@ -441,14 +564,16 @@ export async function LineReviewView({
 
         <CollapsibleCard
           icon={IconClipboard}
-          title="MTO (admin specs vs BOM)"
-          text="This line's bill of material checked against the admin piping specs."
-          status={<Badge tone="info">Template</Badge>}
+          title="MTO (client & admin specs vs BOM)"
+          text="This line's bill of material checked against the client's piping spec, corroborated against the admin's item list."
+          // "Template" only while there is nothing to check against yet --
+          // once a client pipe spec exists for the project, this is real.
+          status={checks && !checks.some((d) => d.mto.available) ? <Badge tone="info">Template</Badge> : undefined}
           badges={
             checks && checks.some((d) => d.bom.items > 0) ? <Badge>{plural(most(checks.map((d) => d.bom.items)), "BOM item")}</Badge> : undefined
           }
         >
-          {checks ? <BomBody drawings={checks} /> : <Note>{UNAVAILABLE}</Note>}
+          {checks ? <MtoBody drawings={checks} /> : <Note>{UNAVAILABLE}</Note>}
         </CollapsibleCard>
 
         <CollapsibleCard
@@ -493,14 +618,16 @@ export async function LineReviewView({
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        title={projectName}
+        title={listTitle ?? projectName}
         back={links.back}
         description="Choose a line number to review its spools, hook-up and container check."
         actions={
-          <Link href={`/library?project=${projectId}`} className="btn btn-secondary">
-            <IconLibrary size={16} />
-            Library
-          </Link>
+          links.library && (
+            <Link href={links.library} className="btn btn-secondary">
+              <IconLibrary size={16} />
+              Library
+            </Link>
+          )
         }
       />
 
@@ -509,16 +636,21 @@ export async function LineReviewView({
       {!progress && lines.length > 0 && <MarkingNotSetUp canMark={canMark} />}
 
       {/* How far through the project the checkers are -- against the total Document
-          Control stated, or, if it has not stated one, the lines uploaded so far. */}
+          Control stated, or, if it has not stated one, the lines uploaded so far.
+          A line in re-check is NOT counted as checked: it was checked against a
+          drawing that has since been replaced, and a bar that counts it reads as
+          finished work that nobody has done. It is reported beside the bar
+          instead, so the number does not merely drop with no explanation. */}
       {progress && lines.length > 0 && (
         <div className="card flex flex-col gap-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="text-sm font-medium">Progress</p>
             <p className="text-sm text-muted-foreground">
-              {progress.reviews.length} of {progress.total ?? lines.length} {progress.total == null ? "uploaded " : ""}lines checked
+              {counts.done} of {progress.total ?? lines.length} {progress.total == null ? "uploaded " : ""}lines checked
+              {counts.recheck > 0 && <span className="text-warning"> &middot; {counts.recheck} need re-checking</span>}
             </p>
           </div>
-          <ProgressBar value={progress.reviews.length} max={progress.total ?? lines.length} label="Lines checked" />
+          <ProgressBar value={counts.done} max={progress.total ?? lines.length} label="Lines checked" />
         </div>
       )}
 
@@ -536,24 +668,39 @@ export async function LineReviewView({
             </h2>
           </div>
           <ul className="divide-y divide-border">
-            {lines.map((l) => (
-              <li key={l.key}>
-                <Link
-                  href={links.line(l.lineNumber)}
-                  className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
-                >
-                  <IconFile size={17} className="flex-none text-muted-foreground" />
-                  <span className="break-all font-mono text-[0.8125rem] font-medium">{l.lineNumber}</span>
-                  <Badge>{plural(l.sheets, "sheet")}</Badge>
-                  {progress?.reviews.some((r) => r.lineKey === l.key) && (
-                    <Badge tone="success" dot>
-                      Done
-                    </Badge>
-                  )}
-                  <IconChevronRight size={16} className="ml-auto flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                </Link>
-              </li>
-            ))}
+            {lines.map((l) => {
+              // A line checked against a superseded drawing must NOT read "Done"
+              // here -- the list is what a checker works down, and a green tick
+              // is exactly what stops them opening it.
+              const state = progress ? lineStateOf(progress.reviews.find((r) => r.lineKey === l.key), l.revision) : "open";
+              return (
+                <li key={l.key}>
+                  <Link
+                    href={links.line(l.lineNumber)}
+                    className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
+                  >
+                    <IconFile size={17} className="flex-none text-muted-foreground" />
+                    <span className="break-all font-mono text-[0.8125rem] font-medium">{l.lineNumber}</span>
+                    {l.revision && <Badge tone="info">REV {l.revision}</Badge>}
+                    <Badge>{plural(l.sheets, "sheet")}</Badge>
+                    {state === "done" && (
+                      <Badge tone="success" dot>
+                        Done
+                      </Badge>
+                    )}
+                    {state === "recheck" && (
+                      <Badge tone="warning" dot title="Checked against an earlier revision of this drawing">
+                        Re-check
+                      </Badge>
+                    )}
+                    <IconChevronRight
+                      size={16}
+                      className="ml-auto flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5"
+                    />
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}

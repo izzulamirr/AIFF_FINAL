@@ -19,10 +19,10 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const db = getDb();
 
   const orgs = await visibleOrganizations(session);
-  // Step 2 of a User's guided path (Organization -> Project -> Features)
-  // arrives with ?org=<id> from the organization card just clicked, and shows
-  // only that one. Without it -- Document Control's sidebar link -- every
-  // organization it belongs to is listed, as before.
+  // Step 3 of a checker's path (client -> PROJECT -> the line) arrives with
+  // ?org=<id> from the client card just clicked, and shows only that client.
+  // Without it -- Document Control's sidebar link -- every client it belongs to
+  // is listed, as before.
   const scopedOrgs = orgFilter ? orgs.filter((o) => o.id === orgFilter) : orgs;
 
   const projectRows = await db.select().from(projects);
@@ -35,13 +35,13 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     <div className="flex flex-col gap-8">
       <PageHeader
         title={orgFilter ? (scopedOrgs[0]?.name ?? "Projects") : "Projects"}
-        description={orgFilter ? "Choose a project to open its documents and review tools." : "Drawings and their extraction results, grouped by project."}
-        back={orgFilter ? { href: "/organizations", label: "Organizations" } : undefined}
+        description={orgFilter ? "Choose a project to open its drawings, ISO checking and cutting plan." : "Every project, grouped by client."}
+        back={orgFilter ? { href: "/clients", label: "Clients" } : undefined}
       />
 
       {orgFilter && scopedOrgs.length === 0 && (
         <div className="card">
-          <EmptyState icon={<IconBuilding />} title="Organization not found">
+          <EmptyState icon={<IconBuilding />} title="Client not found">
             It may have been removed, or you may not have access to it.
           </EmptyState>
         </div>
@@ -49,7 +49,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
 
       {projectsByOrg.map(({ organization, projects: orgProjects }) => (
         <section key={organization.id} className="card card-flush">
-          {/* Scoped to one organization, the page title already names it -- a
+          {/* Scoped to one client, the page title already names it -- a
               second heading here would just repeat it. */}
           {!orgFilter && (
             <div className="card-header">
@@ -100,18 +100,18 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
           {session.isDcc ? (
             <EmptyState
               icon={<IconBuilding />}
-              title="You need an organization first"
+              title="You need a client first"
               action={
-                <Link href="/organizations" className="btn btn-primary btn-sm mt-1">
+                <Link href="/clients" className="btn btn-primary btn-sm mt-1">
                   Choose or create one
                 </Link>
               }
             >
-              Projects belong to an organization.
+              Projects belong to a client.
             </EmptyState>
           ) : (
-            <EmptyState icon={<IconBuilding />} title="You're not in an organization yet">
-              Projects belong to an organization, and you see the ones you have been added to. Ask Document Control to add you to yours.
+            <EmptyState icon={<IconBuilding />} title="You're not assigned to a client yet">
+              Projects belong to a client, and you see the clients you have been added to. Ask Document Control to add you to yours.
             </EmptyState>
           )}
         </div>

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/shell/AppShell";
 import { GuidedShell } from "@/components/shell/GuidedShell";
-import { OrganizationPicker } from "@/components/org/OrganizationPicker";
+import { ClientPicker } from "@/components/client/ClientPicker";
 import { IconLogOut } from "@/components/ui/icons";
 import { activeOrganization, memberOrganizationsOf } from "@/lib/access";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -27,15 +27,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (session.isDcc) {
     const organization = await activeOrganization(session);
 
-    // ORGANIZATION FIRST. Until Document Control has chosen the organization it is
+    // CLIENT FIRST. Until Document Control has chosen the client it is
     // working in, it gets the picker and no navigation -- in place of whatever page
     // it asked for, so nothing is reachable, by link or by typed URL, before a
     // choice is made. Choosing sets a cookie and the request that follows gets the
-    // full top bar, scoped to that organization (see lib/access.ts).
+    // full top bar, scoped to that client (see lib/access.ts).
     if (!organization) {
       return (
         <GuidedShell {...shellProps} readOnly={false} signOut={barSignOut}>
-          <OrganizationPicker organizations={await memberOrganizationsOf(session.id)} isDcc />
+          <ClientPicker organizations={await memberOrganizationsOf(session.id)} isDcc />
         </GuidedShell>
       );
     }
@@ -50,7 +50,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <form action={leaveOrganization}>
               <button
                 type="submit"
-                title="Work in a different organization"
+                title="Work for a different client"
                 className="rounded-md px-2 py-1 text-xs font-medium text-link transition-colors hover:bg-primary-soft"
               >
                 Switch
@@ -65,7 +65,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     );
   }
 
-  // A plain user has no sidebar at all: Organization -> Project -> Line, each page
+  // A checker has no sidebar at all: client -> project -> line, each page
   // with its own way back.
   return (
     <GuidedShell {...shellProps} signOut={barSignOut}>

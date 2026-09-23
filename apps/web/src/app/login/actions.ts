@@ -18,5 +18,5 @@ export async function login(formData: FormData) {
   // Document Control lands on its dashboard; a plain User goes straight into
   // the guided Organization -> Project -> Features path, since it has no
   // sidebar to reach the dashboard's tool grid from.
-  redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/organizations");
+  redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/clients");
 }
