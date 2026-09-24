@@ -5,7 +5,7 @@ import { adminVariant, normalizeTagNumber, type AdminVariant } from "@easy/share
 import { getDb } from "@/lib/db";
 import { canReadOrganization } from "@/lib/access";
 import { getSessionUser } from "@/lib/session";
-import { extractSheetItems, combineAdminText, narrowAdminMatches, type AdminAttributeMismatch, type SheetItem } from "@/lib/parseSheetPage";
+import { extractSheetItems, combineAdminText, narrowAdminMatches, closestAdminLines, type AdminAttributeMismatch, type SheetItem } from "@/lib/parseSheetPage";
 import {
   normalizeSpecClassCode,
   formatNpsInches,
@@ -302,7 +302,17 @@ export default async function ClassDetailPage({
         const allSpecClassTags = await db
           .select()
           .from(extractedTags)
-          .where(and(inArray(extractedTags.documentId, siblings.map((d) => d.id)), eq(extractedTags.tagType, "spec_class")));
+          // Never an admin workbook's classes: those are built from the admin list itself, so
+          // checking a BOM item against them would be the admin list agreeing with itself.
+          .where(
+            and(
+              inArray(
+                extractedTags.documentId,
+                siblings.filter((d) => !d.fileName.toLowerCase().endsWith(".xlsx")).map((d) => d.id)
+              ),
+              eq(extractedTags.tagType, "spec_class")
+            )
+          );
         clientClass = allSpecClassTags.find((t) => normalizeSpecClassCode(t.tagNumber) === normalizedSelected)?.attributes as Record<string, unknown> | undefined;
       }
 
@@ -339,7 +349,7 @@ export default async function ClassDetailPage({
                 quantity: String(item.quantity ?? "-"),
                 description: String(item.description ?? "-"),
                 result,
-                adminMatches: adminNarrowing?.matches ?? null,
+                adminMatches: adminNarrowing ? closestAdminLines(adminNarrowing.matches, String(item.description ?? "")) : null,
                 adminMismatches: adminNarrowing?.mismatches ?? [],
               };
             })

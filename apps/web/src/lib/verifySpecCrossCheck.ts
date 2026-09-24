@@ -1,4 +1,5 @@
 import type { SheetItem } from "./parseSheetPage";
+import { dnToNpsInches } from "@easy/shared";
 import { parseNpsInches } from "@easy/shared";
 
 // Ported from the sibling AIFF_LATEST project. This is the piece that fills
@@ -89,77 +90,9 @@ export function normalizeSpecClassCode(raw: string): string {
   return spurious ? spurious[1] : code;
 }
 
-// Nominal pipe size (DN, mm) -> NPS (inches) per ASME B36.10/B16 standard
-// designations. This is a lookup, not a unit conversion -- DN50 is
-// nominally 2", not 50/25.4=1.97" -- so non-standard sizes must fail the
-// lookup rather than be computed.
-// Exported (not just the lookup functions below) so the UI can render this
-// table itself as a plain NPS<->DN reference legend, using the exact same
-// canonical mapping every size comparison in this app already goes through.
-export const DN_TO_NPS_INCHES: Record<number, number> = {
-  6: 0.125,
-  8: 0.25,
-  10: 0.375, // 1/8", 1/4", 3/8" -- below the 1/2" this table previously started at
-  15: 0.5,
-  20: 0.75,
-  25: 1,
-  32: 1.25,
-  40: 1.5,
-  50: 2,
-  65: 2.5,
-  80: 3,
-  90: 3.5,
-  100: 4,
-  115: 4.5, // 4 1/2" -- was missing entirely, not just an extension of the small-bore range
-  125: 5,
-  150: 6,
-  200: 8,
-  250: 10,
-  300: 12,
-  350: 14,
-  400: 16,
-  450: 18,
-  500: 20,
-  550: 22,
-  600: 24,
-  650: 26,
-  700: 28,
-  750: 30,
-  800: 32,
-  850: 34,
-  900: 36,
-  950: 38,
-  1000: 40,
-  1050: 42,
-  1100: 44,
-  1150: 46,
-  1200: 48,
-};
-
-// Exported so the item list's mm/inch size toggle can convert an admin
-// Excel row's Size P1-P3 (DN, mm) the same way crossCheckItem itself does --
-// same lookup-not-arithmetic reasoning as the module comment above.
-export function dnToNpsInches(mmValue: string): number | null {
-  const mm = Number(mmValue);
-  if (!Number.isFinite(mm)) return null;
-  return DN_TO_NPS_INCHES[Math.round(mm)] ?? null;
-}
-
-// The reverse direction, for display: a decimal NPS value (e.g. 1.5) back
-// into this project's own fraction notation (e.g. "1 1/2", matching how
-// parseNpsInches reads it and how every other size cell in this app already
-// shows it). Standard NPS sizes are always eighths or simpler, so reducing
-// to eighths and simplifying the fraction covers every size this table's
-// own DN_TO_NPS_INCHES lookup can produce.
-export function formatNpsInches(value: number): string {
-  const whole = Math.floor(value + 1e-9);
-  const eighths = Math.round((value - whole) * 8);
-  if (eighths === 0) return String(whole);
-  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
-  const divisor = gcd(eighths, 8);
-  const fraction = `${eighths / divisor}/${8 / divisor}`;
-  return whole > 0 ? `${whole} ${fraction}` : fraction;
-}
+// The DN (mm) <-> NPS (inches) table and its lookups live in @easy/shared (pipeSize.ts),
+// where the worker can use them too. Re-exported so this file's importers do not change.
+export { DN_TO_NPS_INCHES, dnToNpsInches, formatNpsInches } from "@easy/shared";
 
 export type SpecCategory = "pipes" | "fittings" | "flanges" | "valves";
 
@@ -467,9 +400,16 @@ function extractEndType(text: string): string | null {
   return tokens.find((t) => t !== "RF") ?? tokens[0] ?? null;
 }
 
+// Some admin exports lose the decimal point in an ASME designation: "B36 10" for
+// B36.10. Read as the same standard, or a pipe line reads as stating no standard at all.
+// Only the ASME series that carry a decimal (B1.x, B16.x, B31.x, B36.x) are restored, so
+// a bolt grade such as "B7" followed by a number is never mistaken for one.
+const DOTLESS_ASME = /\bB(1|16|31|36)\s(\d{1,3})\b/gi;
+
 function extractStandards(text: string): Set<string> {
   const out = new Set<string>();
   for (const pattern of STANDARD_PATTERNS) for (const t of extractTokens(text, pattern)) out.add(t);
+  for (const m of text.matchAll(DOTLESS_ASME)) out.add(`B${m[1]}.${m[2]}`);
   return out;
 }
 

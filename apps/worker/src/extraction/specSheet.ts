@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { buildSpecClassesFromItemList, extractSheetItems } from "@easy/shared";
 import {
   LOCATE_SPEC_SECTIONS_TOOL,
   SPEC_CLASS_INDEX_TOOL,
@@ -43,7 +44,43 @@ interface SpecBranchTablesResult {
 
 const SYSTEM_PROMPT = buildSystemPrompt("Piping Material Specification");
 
-export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, onProgress) => {
+// An admin item-list workbook is already structured -- every line names its class, its
+// component type and its size -- so its classes are built straight from those columns.
+// Sending it through the extraction below costs several passes over the whole workbook on
+// a top-tier model to re-derive what the columns already say. A workbook that is NOT an
+// item list (no lines recognised) falls through to the model as before.
+function specClassesFromWorkbook(pages: Array<{ pageNumber: number; pageText: string | null }>, fileName: string) {
+  const items = pages.flatMap((p) => extractSheetItems(p.pageText));
+  if (items.length === 0) return null;
+  // A workbook that is one class per file leaves Spec-of blank: name the class for the file.
+  const fallback = fileName.replace(/\.[^.]+$/, "").trim();
+  const classes = buildSpecClassesFromItemList(items, fallback);
+  return classes.length > 0 ? { items: items.length, classes } : null;
+}
+
+export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, onProgress, _pdfBuffer, context) => {
+  if (context?.fileName.toLowerCase().endsWith(".xlsx")) {
+    const built = specClassesFromWorkbook(pages, context.fileName);
+    if (built) {
+      onProgress?.({ phase: "class_detail", current: built.classes.length, total: built.classes.length });
+      return {
+        rawJson: {
+          source: "item_list_workbook",
+          note: "Classes built from the workbook's own columns; no model call.",
+          items: built.items,
+          classes: built.classes.map((c) => ({
+            class_code: c.class_code,
+            pipes: (c.attributes.pipes as unknown[]).length,
+            fittings: (c.attributes.fittings as unknown[]).length,
+            flanges: (c.attributes.flanges as unknown[]).length,
+            valves: (c.attributes.valves as unknown[]).length,
+          })),
+        },
+        tags: built.classes.map((c) => ({ tagType: "spec_class" as const, tagNumber: c.class_code, attributes: c.attributes })),
+      };
+    }
+  }
+
   const client = new Anthropic({ apiKey });
   const pageList = pages.map((p) => ({ pageNumber: p.pageNumber, pageText: p.pageText }));
   const fullText = buildNumberedText(pageList);

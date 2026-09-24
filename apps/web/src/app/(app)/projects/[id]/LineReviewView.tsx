@@ -401,11 +401,11 @@ function PidBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
   );
 }
 
-// ---- MTO: BOM vs client spec vs admin item list ---------------------------
-// Real once a client pipe spec has been uploaded to the project's library
-// (see lib/isoChecks.ts's mtoClientSpecAvailable) -- until then this is the
-// same template it always was: the shape the result will take, greyed and
-// dashed, plus the BOM as extracted so the card is not just empty.
+// ---- MTO: BOM vs admin item list ------------------------------------------
+// Real once an admin item list has been uploaded to the project (see
+// lib/isoChecks.ts's mtoAdminAvailable) -- until then this is the shape the
+// result will take, greyed and dashed, plus the BOM as extracted so the card is
+// not just empty.
 function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
   const available = drawings.some((d) => d.mto.available);
   const withBom = drawings.filter((d) => d.bom.sheets > 0);
@@ -413,29 +413,29 @@ function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
 
   const totals = drawings.reduce(
     (acc, d) => ({
-      checked: acc.checked + d.mto.checked,
+      items: acc.items + d.mto.items,
       match: acc.match + d.mto.match,
       deviations: acc.deviations + d.mto.deviations,
-      notInSpec: acc.notInSpec + d.mto.notInSpec,
+      notInList: acc.notInList + d.mto.notInList,
+      notChecked: acc.notChecked + d.mto.notChecked,
     }),
-    { checked: 0, match: 0, deviations: 0, notInSpec: 0 }
+    { items: 0, match: 0, deviations: 0, notInList: 0, notChecked: 0 }
   );
 
   if (!available) {
     return (
       <div className="flex flex-col gap-6">
         <p className="callout max-w-3xl">
-          No client pipe spec has been uploaded for this project yet. Once one is added to the project&apos;s library, every BOM item on
-          this line will be checked against the class it names, corroborated against the admin&apos;s own item list where one exists, and
-          the result will appear here.
+          No admin item list has been uploaded for this project yet. Once one is added, every BOM item on this line will be looked up in it
+          under the class it belongs to, and the result will appear here.
         </p>
 
         {/* What the result will look like. Placeholders, not data. */}
         <div aria-hidden="true" className="flex flex-wrap gap-4 opacity-60 [&_.stat]:border-dashed [&_.stat]:shadow-none">
-          <Stat label="BOM items checked" value="—" />
-          <Stat label="Match the spec" value="—" />
+          <Stat label="BOM items" value="—" />
+          <Stat label="Match" value="—" />
           <Stat label="Deviations" value="—" />
-          <Stat label="Not in the spec" value="—" />
+          <Stat label="Not in admin list" value="—" />
         </div>
 
         <div>
@@ -451,12 +451,13 @@ function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-wrap gap-4">
-        <Stat label="BOM items checked" value={totals.checked} />
-        <Stat label="Match the spec" value={totals.match} tone={totals.match > 0 ? "good" : "neutral"} />
+        <Stat label="BOM items" value={totals.items} />
+        <Stat label="Match" value={totals.match} tone={totals.match > 0 ? "good" : "neutral"} />
         <Stat label="Deviations" value={totals.deviations} tone={totals.deviations > 0 ? "warning" : "neutral"} />
-        <Stat label="Not in the spec" value={totals.notInSpec} tone={totals.notInSpec > 0 ? "danger" : "neutral"} />
+        <Stat label="Not in admin list" value={totals.notInList} tone={totals.notInList > 0 ? "danger" : "neutral"} />
+        <Stat label="Not checked" value={totals.notChecked} />
       </div>
 
       {withMto.length === 0 ? (
@@ -510,17 +511,24 @@ export async function LineReviewView({
           back={{ href: links.list, label: projectName }}
           description="Every review for this line. Open one to see all of its data."
           actions={
-            progress ? (
-              <ReviewControl
-                projectId={projectId}
-                lineNumber={line.lineNumber}
-                review={progress.reviews.find((r) => r.lineKey === line.key)}
-                currentRevision={line.revision}
-                readOnly={!canMark}
-              />
-            ) : (
-              <MarkingNotSetUpBadge />
-            )
+            <div className="flex flex-wrap items-center gap-2">
+              {/* The errors on this line, laid out to hand to the designer. */}
+              <Link href={`/projects/${projectId}/report?line=${encodeURIComponent(line.lineNumber)}`} className="btn btn-secondary">
+                <IconClipboard size={16} />
+                Error report
+              </Link>
+              {progress ? (
+                <ReviewControl
+                  projectId={projectId}
+                  lineNumber={line.lineNumber}
+                  review={progress.reviews.find((r) => r.lineKey === line.key)}
+                  currentRevision={line.revision}
+                  readOnly={!canMark}
+                />
+              ) : (
+                <MarkingNotSetUpBadge />
+              )}
+            </div>
           }
           meta={
             <>
@@ -564,10 +572,10 @@ export async function LineReviewView({
 
         <CollapsibleCard
           icon={IconClipboard}
-          title="MTO (client & admin specs vs BOM)"
-          text="This line's bill of material checked against the client's piping spec, corroborated against the admin's item list."
+          title="MTO (BOM vs admin item list)"
+          text="This line's bill of material looked up in the admin's item list, class by class."
           // "Template" only while there is nothing to check against yet --
-          // once a client pipe spec exists for the project, this is real.
+          // once an admin item list exists for the project, this is real.
           status={checks && !checks.some((d) => d.mto.available) ? <Badge tone="info">Template</Badge> : undefined}
           badges={
             checks && checks.some((d) => d.bom.items > 0) ? <Badge>{plural(most(checks.map((d) => d.bom.items)), "BOM item")}</Badge> : undefined

@@ -1,5 +1,5 @@
 import { classByMaterialEvidence, materialMarkers, parsePressureRating, textCarriesMarkers } from "@easy/shared";
-import { combineAdminText, narrowAdminMatches, type AdminAttributeMismatch, type SheetItem } from "./parseSheetPage";
+import { closestAdminLines, combineAdminText, narrowAdminMatches, type AdminAttributeMismatch, type SheetItem } from "./parseSheetPage";
 import { normalizeNominalSize, normalizeSpecClass } from "./verifyIso";
 import {
   rowMatchesTypeHint,
@@ -335,9 +335,83 @@ export function crossCheckBomGasket(
   });
   return {
     result: { status: "match", label: "Match", note: "A gasket of this size is in the admin item list." },
-    adminMatches,
+    adminMatches: closestAdminLines(adminMatches, description),
     adminMismatches: mismatches,
   };
+}
+
+export type AdminCheckStatus = "match" | "deviation" | "missing" | "no_list" | "skipped";
+
+/** One BOM item checked against the admin item list alone. */
+export interface AdminCheck {
+  status: AdminCheckStatus;
+  label: string;
+  note: string | null;
+  /** The admin line(s) the item was matched to -- the closest one, not every twin. */
+  adminMatches: SheetItem[];
+  /** Attributes the BOM states that the admin's lines contradict. */
+  adminMismatches: AdminAttributeMismatch[];
+}
+
+export const ADMIN_STATUS_TONE: Record<AdminCheckStatus, "success" | "warning" | "danger" | "neutral"> = {
+  match: "success",
+  deviation: "warning",
+  missing: "danger",
+  no_list: "neutral",
+  skipped: "neutral",
+};
+
+const ADMIN_STATUS_LABEL: Record<AdminCheckStatus, string> = {
+  match: "Match",
+  deviation: "Deviation",
+  missing: "Not in admin list",
+  no_list: "No admin list",
+  skipped: "Not checked",
+};
+
+function adminCheck(status: AdminCheckStatus, note: string | null, adminMatches: SheetItem[] = [], adminMismatches: AdminAttributeMismatch[] = []): AdminCheck {
+  return { status, label: ADMIN_STATUS_LABEL[status], note, adminMatches, adminMismatches };
+}
+
+/**
+ * Does the admin item list carry this BOM item, in the class the item is filed under?
+ *
+ * The admin list is the only thing consulted. A line matches when it is the same kind
+ * of component at the same size and nothing the BOM states about its schedule, angle,
+ * construction or pressure class is contradicted:
+ *   match      an admin line agrees on everything the BOM states
+ *   deviation  the admin has the component at that size, but a stated attribute differs
+ *   missing    the admin list has no such component, or none at this size
+ *   no_list    no admin lines at all for this class
+ *   skipped    not something the admin list itemises (supports, instruments, control
+ *              valves, stud bolts), or the item has no class
+ */
+export function crossCheckBomAdmin(item: Record<string, unknown>, classCode: string, adminItems: SheetItem[]): AdminCheck {
+  if (classCode === "Unassigned") return adminCheck("skipped", "The drawing doesn't show which class this sits in.");
+
+  const norm = normalizeBomSpecClass(classCode);
+  if (!adminItems.some((a) => a.specCode.trim() && normalizeBomSpecClass(a.specCode) === norm)) {
+    return adminCheck("no_list", `The admin item list has no lines for class "${classCode}".`);
+  }
+
+  const gasket = crossCheckBomGasket(item, classCode, adminItems);
+  if (gasket) {
+    if (gasket.result.status !== "match") return adminCheck("missing", gasket.result.note);
+    return adminCheck(gasket.adminMismatches.length > 0 ? "deviation" : "match", gasket.result.note, gasket.adminMatches, gasket.adminMismatches);
+  }
+
+  const classification = classifyBomItem(item);
+  if (!classification) return adminCheck("skipped", "Supports, instruments, control valves and stud bolts aren't lines in the admin item list.");
+
+  const pool = adminPoolFor(classification, norm, adminItems);
+  if (pool.length === 0) return adminCheck("missing", `The admin item list has no ${classification.category} of this type in class "${classCode}".`);
+
+  const narrowed = narrowAdminMatches(pool, item);
+  const size = narrowed.mismatches.find((m) => m.attribute === "size");
+  if (size) return adminCheck("missing", `The admin item list has this component in ${size.found.join(" / ")}, but not ${size.wanted}.`);
+
+  const lines = closestAdminLines(narrowed.matches, String(item.description ?? ""));
+  return narrowed.mismatches.length > 0 ? adminCheck("deviation", null, lines, narrowed.mismatches) : adminCheck("match", null, lines);
 }
 
 const typeHintsAgree =(a: string | undefined, b: string | undefined): boolean => {
@@ -347,6 +421,15 @@ const typeHintsAgree =(a: string | undefined, b: string | undefined): boolean =>
   const tee = (x: string) => x === "tee" || x === "straight" || x === "reduced";
   return tee(a) && tee(b) && (a === "tee" || b === "tee");
 };
+
+/** The admin lines of one class that are the same KIND of component as this BOM item. */
+function adminPoolFor(classification: BomClassification, normClass: string, adminItems: SheetItem[]): SheetItem[] {
+  return adminItems.filter((a) => {
+    if (!a.specCode.trim() || normalizeBomSpecClass(a.specCode) !== normClass) return false;
+    const hint = adminItemHint(a);
+    return hint != null && hint.category === classification.category && typeHintsAgree(classification.hint.typeHint, hint.typeHint);
+  });
+}
 
 /**
  * The class whose ADMIN item list actually contains this BOM item, or null to leave
@@ -374,15 +457,18 @@ export function classByAdminList(
   if (!classification || adminItems.length === 0) return null;
 
   const wantedMarkers = materialMarkers(String(item.description ?? ""));
-  const holding: Array<{ code: string; matched: number }> = [];
+  // NACE service is what separates a class that is otherwise a twin of another:
+  // AC03N and AC03U list the same carbon-steel pipe, fittings and flanges, but
+  // AC03N's lines all say "NACE MR0175/ISO 15156" and AC03U's say nothing. A BOM
+  // item that states NACE is therefore the NACE class's, and one that does not
+  // is the plain class's.
+  const isNace = (text: string) => /\bNACE\b/i.test(text);
+  const bomNace = isNace(String(item.description ?? ""));
+  const holding: Array<{ code: string; matched: number; nace: "nace" | "plain" | "mixed" }> = [];
 
   for (const code of candidateClasses) {
     const norm = normalizeBomSpecClass(code);
-    const pool = adminItems.filter((a) => {
-      if (!a.specCode.trim() || normalizeBomSpecClass(a.specCode) !== norm) return false;
-      const hint = adminItemHint(a);
-      return hint != null && hint.category === classification.category && typeHintsAgree(classification.hint.typeHint, hint.typeHint);
-    });
+    const pool = adminPoolFor(classification, norm, adminItems);
     if (pool.length === 0) continue;
 
     const narrowed = narrowAdminMatches(pool, item);
@@ -391,11 +477,15 @@ export function classByAdminList(
     // a plain version of this item, not this one.
     const carriers = wantedMarkers.length === 0 ? narrowed.matches : narrowed.matches.filter((m) => textCarriesMarkers(combineAdminText(m), wantedMarkers));
     if (carriers.length === 0) continue;
-    holding.push({ code, matched: carriers.length });
+    const texts = carriers.map((m) => isNace(combineAdminText(m)));
+    holding.push({ code, matched: carriers.length, nace: texts.every(Boolean) ? "nace" : texts.some(Boolean) ? "mixed" : "plain" });
   }
 
-  if (holding.length !== 1) return null;
-  return normalizeBomSpecClass(holding[0].code) === normalizeBomSpecClass(placedClass) ? null : holding[0];
+  // A class whose lines are all NACE (or all plain) only holds the item if the item
+  // says the same. A class that lists both kinds tells nothing either way.
+  const agreeing = holding.filter((h) => h.nace === "mixed" || (h.nace === "nace") === bomNace);
+  if (agreeing.length !== 1) return null;
+  return normalizeBomSpecClass(agreeing[0].code) === normalizeBomSpecClass(placedClass) ? null : { code: agreeing[0].code, matched: agreeing[0].matched };
 }
 
 export type ValveClientStatus = "match" | "not_found" | "size_unrecognized" | "no_client_data";

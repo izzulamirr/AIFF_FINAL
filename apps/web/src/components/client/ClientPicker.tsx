@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { organizations } from "@easy/db";
-import { createOrganization, selectOrganization } from "@/app/(app)/actions";
+import { createOrganization, renameOrganization, selectOrganization } from "@/app/(app)/actions";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge, EmptyState } from "@/components/ui/primitives";
 import { IconArrowRight, IconBuilding, IconPlus } from "@/components/ui/icons";
@@ -75,12 +75,26 @@ export function ClientPicker({ organizations: clients, isDcc }: { organizations:
           {clients.map((client) => (
             <li key={client.id}>
               {isDcc ? (
-                <form action={selectOrganization}>
-                  <input type="hidden" name="organizationId" value={client.id} />
-                  <button type="submit" className={cardClass}>
-                    <ClientCard client={client} />
-                  </button>
-                </form>
+                <>
+                  <form action={selectOrganization}>
+                    <input type="hidden" name="organizationId" value={client.id} />
+                    <button type="submit" className={cardClass}>
+                      <ClientCard client={client} />
+                    </button>
+                  </form>
+                  {/* A separate form beside the card, not inside it: the card is one
+                      big button that opens the client. */}
+                  <details className="group/rename mt-1.5 px-1">
+                    <summary className="w-fit cursor-pointer list-none text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                      Rename
+                    </summary>
+                    <form action={renameOrganization} className="mt-2 flex items-center gap-2">
+                      <input type="hidden" name="organizationId" value={client.id} />
+                      <input name="name" defaultValue={client.name} required maxLength={120} aria-label={`New name for ${client.name}`} className="input input-sm" />
+                      <button className="btn btn-secondary btn-sm">Save</button>
+                    </form>
+                  </details>
+                </>
               ) : (
                 <Link href={`/projects?org=${client.id}`} className={cardClass}>
                   <ClientCard client={client} />

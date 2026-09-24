@@ -1,6 +1,7 @@
 "use server";
 
 import { cookies } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { organizations, organizationMembers, projects } from "@easy/db";
@@ -68,6 +69,26 @@ export async function createOrganization(formData: FormData) {
   // Creating an organization is choosing it: the next thing to do is work in it.
   (await cookies()).set(ACTIVE_ORG_COOKIE, org.id, activeOrgCookie);
   redirect("/dashboard");
+}
+
+// Document Control renames a client it belongs to. Only the name changes: the
+// projects, drawings and memberships hang off the id, so nothing else moves. Same
+// rule as choosing one -- an account can only touch a client it is a member of.
+export async function renameOrganization(formData: FormData) {
+  const session = await getSessionUser();
+  if (!session) redirect("/login");
+  if (!session.isDcc) throw new Error("Only Document Control renames a client.");
+
+  const organizationId = String(formData.get("organizationId") ?? "");
+  const name = String(formData.get("name") ?? "").trim().replace(/\s+/g, " ");
+  if (!organizationId || !name || name.length > 120) return;
+
+  const member = await memberOrganizationsOf(session.id);
+  if (!member.some((o) => o.id === organizationId)) throw new Error("Not a member of this organization.");
+
+  await getDb().update(organizations).set({ name }).where(eq(organizations.id, organizationId));
+  // The name is printed in the sidebar, the dashboard and the project lists.
+  revalidatePath("/", "layout");
 }
 
 export async function createProject(formData: FormData) {

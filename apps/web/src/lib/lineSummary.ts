@@ -68,24 +68,25 @@ export interface IsoDrawingChecks {
     routing: { rows: number; match: number; mismatch: number; isoOnly: number; notCompared: number };
     fittings: { components: number; match: number; countMismatch: number; isoOnly: number; pidOnly: number };
   };
-  /** The bill of material as extracted, ahead of a check against the client and admin specs. */
+  /** The bill of material as extracted, ahead of a check against the admin item list. */
   bom: { sheets: number; items: number; classes: number; unassigned: number; sheetData: IsoChecks["bomBySpec"] };
   /**
-   * The same BOM, checked against the client's own piping spec and (where a
-   * real match exists) corroborated against the admin's own item list. Not
-   * `available` at all until a client pipe spec has been uploaded to the
-   * project's library -- see lib/isoChecks.ts's own mtoClientSpecAvailable.
+   * The same BOM, looked up in the admin's own item list. Not `available` at all
+   * until an admin item list has been uploaded to the project -- see
+   * lib/isoChecks.ts's mtoAdminAvailable.
    */
   mto: {
     available: boolean;
-    /** Rows a class was actually resolved for -- excludes "Unassigned" rows, which have nothing to check against. */
-    checked: number;
-    /** In the client spec, and the admin item list (where one exists) does not contradict it. */
+    /** Every BOM row on the line. */
+    items: number;
+    /** The admin list has a line for it and nothing the BOM states is contradicted. */
     match: number;
-    /** In the client spec, but the admin item list states something that contradicts the BOM. */
+    /** The admin list has the component at that size, but a stated attribute differs. */
     deviations: number;
-    /** This size/type is not in the client spec's list at all. */
-    notInSpec: number;
+    /** The admin list has no such component, or none at this size. */
+    notInList: number;
+    /** Not looked up: supports, instruments, control valves, stud bolts, no class, or no admin lines for the class. */
+    notChecked: number;
     sheetData: IsoChecks["mtoBySpec"];
   };
 }
@@ -144,7 +145,21 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
       pid.state = "compared";
       pid.against = routing.pidDocNames;
       pid.routingRows = routing.rows;
-      pid.fittingGroups = routing.valveMatch ?? [];
+      // Valves and instruments only. A P&ID does not draw flanges or gaskets, so a flange
+      // row can only ever read "on the ISO, none on the P&ID" -- a comparison with nothing
+      // on one side. Left out here, at the source, so the card, its counts and the error
+      // report all agree.
+      pid.fittingGroups = (routing.valveMatch ?? [])
+        .map((g) => {
+          const rows = g.rows.filter((r) => !/flange|gasket/i.test(String(r.category)));
+          return {
+            ...g,
+            rows,
+            isoTotal: rows.reduce((n, r) => n + r.isoCount, 0),
+            pidTotal: rows.reduce((n, r) => n + r.pidCount, 0),
+          };
+        })
+        .filter((g) => g.rows.length > 0);
       pid.routing = {
         rows: routing.rows.length,
         match: count(routing.rows, "match"),
@@ -152,7 +167,7 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
         isoOnly: count(routing.rows, "iso only"),
         notCompared: count(routing.rows, "not compared"),
       };
-      const fittingRows = (routing.valveMatch ?? []).flatMap((g) => g.rows);
+      const fittingRows = pid.fittingGroups.flatMap((g) => g.rows);
       pid.fittings = {
         components: fittingRows.length,
         match: count(fittingRows, "match"),
@@ -177,24 +192,22 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
   // ---- MTO: the same BOM, checked. A row counts as `checked` once it has a
   // real result (its own class resolved to something -- "Unassigned" rows
   // are skipped entirely, see lib/isoChecks.ts). Of those:
-  //   match       the client spec has it, and the admin item list (if any
-  //               exists) does not contradict it
-  //   deviations  the client spec has it, but the admin item list states
-  //               something that contradicts the BOM on this exact item --
-  //               a genuine three-way disagreement, not just a missing input
-  //   notInSpec   this size/type is not in the client spec's list at all
-  // A row whose class the client spec does not cover, or whose size could
-  // not be read, is neither a match nor a deviation -- it is shown on its
-  // own row with its own status, not folded into either count.
+  //   match       the admin item list has a line for it and agrees
+  //   deviations  the admin item list has the component at that size, but
+  //               something the BOM states (schedule, angle, construction,
+  //               pressure class) differs
+  //   notInList   the admin item list has no such component, or none at this size
+  //   notChecked  not something the admin list itemises, or nothing to look it up in
   const mtoSheets = checks.mtoBySpec.filter((s) => lineKey(s.lineNumber) === key);
   const mtoRows = mtoSheets.flatMap((s) => s.groups.flatMap((g) => g.rows));
-  const checkedRows = mtoRows.filter((r) => r.result != null);
+  const countOf = (...statuses: string[]) => mtoRows.filter((r) => statuses.includes(r.check.status)).length;
   const mto: IsoDrawingChecks["mto"] = {
-    available: checks.mtoClientSpecAvailable,
-    checked: checkedRows.length,
-    match: checkedRows.filter((r) => r.result!.status === "match" && r.adminMismatches.length === 0).length,
-    deviations: checkedRows.filter((r) => r.result!.status === "match" && r.adminMismatches.length > 0).length,
-    notInSpec: checkedRows.filter((r) => r.result!.status === "not_found").length,
+    available: checks.mtoAdminAvailable,
+    items: mtoRows.length,
+    match: countOf("match"),
+    deviations: countOf("deviation"),
+    notInList: countOf("missing"),
+    notChecked: countOf("skipped", "no_list"),
     sheetData: mtoSheets,
   };
 
