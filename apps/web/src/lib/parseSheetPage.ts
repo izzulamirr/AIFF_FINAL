@@ -113,7 +113,7 @@ export function narrowAdminMatches(matches: SheetItem[], bomItem: { size?: unkno
   //    writes "STD x SCH80" -- but a BARE NUMBER never is, since "200 x 80"
   //    is a size; requiring the SCH prefix on numeric parts keeps the two
   //    apart. XXS is listed before XS so the longer token wins.
-  const PART = "(?:SCH\\s*\\.?\\s*\\d+|XXS|XS|STD)";
+  const PART = "(?:SCH\\s*\\.?\\s*\\d+(?:\\.\\d+)?|XXS|XS|STD)";
   const COMPOUND_SCHEDULE = new RegExp(`\\b(${PART})\\s*[xX]\\s*(${PART})\\b`, "i");
   const SINGLE_SCHEDULE = new RegExp(`\\b${PART}\\b`, "i");
   const normPart = (p: string) => p.replace(/[\s.]/g, "").toUpperCase();
@@ -141,6 +141,44 @@ export function narrowAdminMatches(matches: SheetItem[], bomItem: { size?: unkno
   const constructionOf = (text: string) => CONSTRUCTIONS.find((c) => text.includes(c)) ?? null;
   const bomConstruction = constructionOf(bomText);
   if (bomConstruction) refine("construction", bomConstruction, (m) => constructionOf(textOf(m)));
+
+  // 5. MATERIAL GRADE. "ASTM A216 GR WPB" and "A216 WCB" are different materials: WPB is a wrought
+  //    fitting grade, WCB the cast valve body grade. Only where BOTH sides name a grade -- an admin
+  //    line that names none is silent, not in conflict. "GR", "GR." and spacing are noise.
+  const GRADE = /\bA\s?(\d{3})[\s-]*(?:GR\.?\s*)?([A-Z]{1,3}\d{0,2}[A-Z]?|\d{1,2}[A-Z]?)\b/g;
+  const gradesOf = (text: string) =>
+    new Set(
+      [...text.matchAll(GRADE)]
+        .filter((g) => !/^(?:MM|IN|NS|DN|SCH|GR)$/.test(g[2]))
+        .map((g) => `A${g[1]} ${g[2]}`)
+    );
+  const bomGrades = gradesOf(bomText);
+  if (bomGrades.size > 0) {
+    const wantedGrade = [...bomGrades].join(" / ");
+    refine("material", wantedGrade, (m) => {
+      const found = gradesOf(textOf(m));
+      if (found.size === 0) return null;
+      return [...found].some((g) => bomGrades.has(g)) ? wantedGrade : [...found].join(" / ");
+    });
+  }
+
+  // 6. VALVE DESIGN. A gate valve is a size and a class to the type match, and the admin list has
+  //    several: solid wedge, flexible wedge, double disc. Where both name a design they must agree.
+  const DESIGNS: Array<[string, RegExp]> = [
+    ["solid wedge", /\bSOLID\s+WEDGE\b/],
+    ["flexible wedge", /\bFLEXIBLE\s+WEDGE\b/],
+    ["double disc", /\bDOUBLE\s+DISC\b/],
+    ["parallel slide", /\bPARALLEL\s+SLIDE\b/],
+    ["trunnion ball", /\bTRUNNION\b/],
+    ["floating ball", /\bFLOATING\b/],
+    ["swing", /\bSWING\b/],
+    ["dual plate", /\bDUAL\s+PLATE\b/],
+    ["piston", /\bPISTON\b/],
+    ["lift", /\bLIFT\b/],
+  ];
+  const designOf = (text: string) => DESIGNS.find(([, re]) => re.test(text))?.[0] ?? null;
+  const bomDesign = designOf(bomText);
+  if (bomDesign) refine("valve design", bomDesign, (m) => designOf(textOf(m)));
 
   // Rows identical once combined add nothing but length.
   const seen = new Set<string>();

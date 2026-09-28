@@ -1,4 +1,4 @@
-import { classByMaterialEvidence, materialMarkers, parsePressureRating, textCarriesMarkers } from "@easy/shared";
+import { formatStudSize, parsePressureRating, studNutCounts, studOrderSize } from "@easy/shared";
 import { closestAdminLines, combineAdminText, narrowAdminMatches, type AdminAttributeMismatch, type SheetItem } from "./parseSheetPage";
 import { normalizeNominalSize, normalizeSpecClass } from "./verifyIso";
 import {
@@ -248,26 +248,27 @@ export function crossCheckBomItem(item: Record<string, unknown>, clientClass: Re
   };
 }
 
-/**
- * The class this BOM item's own named material points at, among the classes a
- * sheet's spec breaks list -- or null to leave it where it was placed.
- *
- * Each candidate class is asked what ITS spec says about this item (the same
- * row crossCheckBomItem resolves), and the item goes to the class whose spec
- * text carries the material the item names. See packages/shared/src/
- * specEvidence.ts for why only specific materials count.
- */
-export function classByMaterial(
-  item: Record<string, unknown>,
-  placedClass: string,
-  candidateClasses: string[],
-  clientClassByNorm: Map<string, Record<string, unknown>>
-): { code: string; markers: string[] } | null {
-  const evidence = candidateClasses.map((code) => {
-    const result = crossCheckBomItem(item, clientClassByNorm.get(normalizeBomSpecClass(code)));
-    return { code, specText: result.status === "match" ? (result.clientDescription ?? null) : null };
-  });
-  return classByMaterialEvidence(String(item.description ?? ""), placedClass, evidence, (a, b) => normalizeBomSpecClass(a) === normalizeBomSpecClass(b));
+// What makes one gasket a different gasket from another: its TYPE (spiral wound, flat ring, ring
+// joint) and what it is made of (the winding, the filler, the insert, the outer ring). A 200 mm
+// 150# spiral wound gasket is not a 200 mm 150# flat ring gasket, so matching on size and pressure
+// class alone let one stand in for the other.
+const GASKET_MARKERS: Array<[string, RegExp]> = [
+  ["spiral wound", /SPIRAL\s*(?:WD|WOUND)/],
+  ["flat ring", /FLAT\s*RING/],
+  ["ring joint", /RING\s*JOINT|\bRTJ\b/],
+  ["SS316", /\bSS\s*316L?\b/],
+  ["316 insert", /316\s*INSERT/],
+  ["non metal", /NON[\s-]*METAL/],
+  ["tanged graphite", /TANGED\s*GRAPHITE/],
+  ["graphite", /GRAPHITE/],
+  ["alloy 625", /ALLOY[R]?\s*625/],
+  ["cs outer ring", /CS\s*OUTER\s*RING|CARBON\s*STEEL/],
+  ["ptfe", /PTFE/],
+];
+
+function gasketMarkers(text: string): string[] {
+  const upper = text.toUpperCase();
+  return GASKET_MARKERS.filter(([, re]) => re.test(upper)).map(([name]) => name);
 }
 
 /**
@@ -326,6 +327,22 @@ export function crossCheckBomGasket(
     }
   }
 
+  // Type and material: the admin line has to be the same KIND of gasket, made of what the BOM
+  // says, not merely one of the right size and class.
+  const wantedMarkers = gasketMarkers(description);
+  if (wantedMarkers.length > 0) {
+    const carrying = lines.filter((m) => {
+      const has = gasketMarkers(combineAdminText(m));
+      return wantedMarkers.every((w) => has.includes(w));
+    });
+    if (carrying.length > 0) lines = carrying;
+    else {
+      const nearest = closestAdminLines(lines, description);
+      const found = [...new Set(nearest.flatMap((m) => gasketMarkers(combineAdminText(m))))];
+      mismatches.push({ attribute: "gasket type / material", wanted: wantedMarkers.join(", "), found: found.length > 0 ? found : ["none"] });
+    }
+  }
+
   const seen = new Set<string>();
   const adminMatches = lines.filter((m) => {
     const key = combineAdminText(m);
@@ -340,13 +357,66 @@ export function crossCheckBomGasket(
   };
 }
 
-export type AdminCheckStatus = "match" | "deviation" | "missing" | "no_list" | "skipped";
+const STUD_TEXT = /\bstud\s*bolt\b|\bbolt\s*set\b/i;
+
+/**
+ * A stud bolt against the admin list.
+ *
+ * The admin export has no diameter or length on its stud lines -- each is a coded reference
+ * ("AC03N/150RF-FAMA-Z") and a description ending "WITH 2 NUTS" or "WITH 3 NUTS" -- so what a
+ * stud CAN be matched on is that the class has a stud line stating the same nut count. The size
+ * is shown as what to order (the diameter as the BOM states it, the length up to the next 5 mm,
+ * which is the step the admin's studs are made to) and is not compared.
+ */
+function checkStudBolt(item: Record<string, unknown>, classCode: string, norm: string, adminItems: SheetItem[]): AdminCheck | null {
+  const description = String(item.description ?? "");
+  if (!STUD_TEXT.test(`${item.component_type ?? ""} ${description}`)) return null;
+
+  const size = studOrderSize(item.size);
+  const detail = size
+    ? `Order size ${formatStudSize(size)} mm (BOM ${size.diameterMm}X${size.lengthMm}, length up to the next 5 mm)`
+    : null;
+
+  const lines = adminItems.filter((a) => a.specCode.trim() && normalizeBomSpecClass(a.specCode) === norm && adminItemHint(a)?.typeHint === "bolt");
+  if (lines.length === 0) return { ...adminCheck("missing", `The admin item list has no stud bolt lines in class "${classCode}".`), detail };
+
+  const wanted = studNutCounts(description);
+  const nutsOf = (a: SheetItem) => studNutCounts(combineAdminText(a));
+  const agreeing = wanted.length === 0 ? lines : lines.filter((a) => nutsOf(a).some((n) => wanted.includes(n)));
+
+  const distinct = (rows: SheetItem[]) => {
+    const seen = new Set<string>();
+    return rows.filter((r) => {
+      const key = combineAdminText(r);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  if (agreeing.length > 0) return { ...adminCheck("match", null, distinct(agreeing)), detail };
+
+  const found = [...new Set(lines.flatMap(nutsOf))].sort((x, y) => x - y);
+  return {
+    ...adminCheck("deviation", null, distinct(lines).slice(0, 1), [{ attribute: "nuts", wanted: `${wanted.join(" / ")}`, found: found.map(String) }]),
+    detail,
+  };
+}
+
+export type AdminCheckStatus = "match" | "wrong_spec" | "deviation" | "missing" | "no_list" | "skipped";
 
 /** One BOM item checked against the admin item list alone. */
 export interface AdminCheck {
   status: AdminCheckStatus;
   label: string;
   note: string | null;
+  /** Something worth saying beside a verdict, whatever it is (a stud's order size). */
+  detail?: string | null;
+  /**
+   * Set when the item does not match the class it is filed under but DOES match another spec on
+   * its sheet: the classes it matches instead. The item is not moved -- the class is the
+   * extraction's -- the wrong spec is reported.
+   */
+  wrongSpec?: string[];
   /** The admin line(s) the item was matched to -- the closest one, not every twin. */
   adminMatches: SheetItem[];
   /** Attributes the BOM states that the admin's lines contradict. */
@@ -355,6 +425,7 @@ export interface AdminCheck {
 
 export const ADMIN_STATUS_TONE: Record<AdminCheckStatus, "success" | "warning" | "danger" | "neutral"> = {
   match: "success",
+  wrong_spec: "danger",
   deviation: "warning",
   missing: "danger",
   no_list: "neutral",
@@ -363,11 +434,23 @@ export const ADMIN_STATUS_TONE: Record<AdminCheckStatus, "success" | "warning" |
 
 const ADMIN_STATUS_LABEL: Record<AdminCheckStatus, string> = {
   match: "Match",
+  wrong_spec: "Wrong spec",
   deviation: "Deviation",
   missing: "Not in admin list",
   no_list: "No admin list",
   skipped: "Not checked",
 };
+
+/** The same admin line reached by two parts of a merged row is one line. */
+function distinctLines(lines: SheetItem[]): SheetItem[] {
+  const seen = new Set<string>();
+  return lines.filter((l) => {
+    const key = combineAdminText(l);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function adminCheck(status: AdminCheckStatus, note: string | null, adminMatches: SheetItem[] = [], adminMismatches: AdminAttributeMismatch[] = []): AdminCheck {
   return { status, label: ADMIN_STATUS_LABEL[status], note, adminMatches, adminMismatches };
@@ -386,7 +469,202 @@ function adminCheck(status: AdminCheckStatus, note: string | null, adminMatches:
  *   skipped    not something the admin list itemises (supports, instruments, control
  *              valves, stud bolts), or the item has no class
  */
-export function crossCheckBomAdmin(item: Record<string, unknown>, classCode: string, adminItems: SheetItem[]): AdminCheck {
+/** One verdict for the parts of a cell that landed in the same class. */
+function combineChecks(checks: AdminCheck[]): AdminCheck {
+  if (checks.length === 1) return checks[0];
+  const checked = checks.filter((c) => c.status !== "skipped");
+  if (checked.length === 0) return checks[0];
+  const failing = checked.filter((c) => c.status !== "match");
+  const lines = distinctLines(checked.flatMap((c) => c.adminMatches));
+  if (failing.length === 0) {
+    const detail = checked.map((c) => c.detail).filter(Boolean).join("; ");
+    return { ...adminCheck("match", null, lines), ...(detail ? { detail } : {}) };
+  }
+  return { ...failing[0], adminMatches: lines, adminMismatches: failing.flatMap((c) => c.adminMismatches) };
+}
+
+const failed = (c: AdminCheck) => c.status === "deviation" || c.status === "missing" || c.status === "no_list";
+
+/**
+ * One BOM item against the admin list, under the class the extraction filed it under.
+ *
+ * The item is NOT moved. The class is what the drawing says, and a BOM that is filed under the
+ * wrong spec is a fault in the extraction or the design, not something to quietly repair. So:
+ *   - it matches its own class          -> match
+ *   - it does not, but it matches another spec on its sheet identically (same pressure class,
+ *     NACE service, schedule and named material, carried by the admin line and not merely
+ *     unstated)                          -> "Wrong spec", naming the spec it matches
+ *   - it matches no spec on the sheet   -> the deviation or missing line it is
+ *
+ * A BOM cell that holds several items is judged part by part, so a plain pipe matching does not
+ * hide the clad pipe beside it -- but it stays one row, under one class.
+ */
+export function checkBomItem(item: Record<string, unknown>, ownClass: string, sheetClasses: string[], adminItems: SheetItem[]): AdminCheck {
+  const description = String(item.description ?? "");
+  const own = normalizeBomSpecClass(ownClass);
+  const segments = splitMergedRow(description);
+
+  // Every class the admin list has, not only the ones this sheet's BOM is filed under: the spec an
+  // item really belongs to may be one the drawing never mentions (AC03U on a sheet of AC03N/BC70N).
+  const candidates = [...new Set([...sheetClasses, ...adminItems.map((a) => a.specCode.trim()).filter(Boolean)].map(normalizeBomSpecClass))]
+    .filter((c) => c !== own);
+  const hasNace = (t: string) => /\bNACE\b/i.test(t);
+  const lineText = (l: SheetItem) => `${l.description} ${l.material}`;
+
+  const parts = segments.map((text) => {
+    const part = { ...item, description: text };
+    const here = checkAgainstClass(part, ownClass, adminItems);
+    const elsewhere: Array<{ code: string; lines: SheetItem[]; why: "match" | "service" }> = [];
+    let serviceNote: string | null = null;
+    if (failed(here)) {
+      for (const c of candidates) {
+        const there = checkAgainstClass(part, c, adminItems);
+        if (there.status === "match" && agreesOutright(part, there.adminMatches)) elsewhere.push({ code: c, lines: there.adminMatches, why: "match" });
+      }
+      // NACE is the service the whole class is written for, not a detail of one line. A BOM that
+      // states no NACE against a class whose lines are all NACE (or the reverse) is the wrong spec
+      // whatever else differs; the classes that carry the item in the BOM's own service are named.
+      const bomNace = hasNace(text);
+      if (elsewhere.length === 0 && here.adminMatches.length > 0 && here.adminMatches.every((l) => hasNace(lineText(l)) !== bomNace)) {
+        serviceNote = bomNace
+          ? `states NACE but ${ownClass}'s admin line is not NACE service`
+          : `states no NACE but ${ownClass}'s admin line is NACE MR0175 service`;
+        for (const c of candidates) {
+          const there = checkAgainstClass(part, c, adminItems);
+          if ((there.status === "match" || there.status === "deviation") && there.adminMatches.some((l) => hasNace(lineText(l)) === bomNace)) {
+            elsewhere.push({ code: c, lines: there.adminMatches, why: "service" });
+          }
+        }
+        if (elsewhere.length === 0) elsewhere.push({ code: "", lines: here.adminMatches, why: "service" });
+      }
+    }
+    return { text, here, elsewhere, serviceNote };
+  });
+
+  const wrong = parts.filter((p) => failed(p.here) && p.elsewhere.length > 0);
+  if (wrong.length > 0) {
+    const classes = [...new Set(wrong.flatMap((p) => p.elsewhere.map((e) => e.code).filter(Boolean)))];
+    const short = (t: string) => (t.length > 70 ? `${t.slice(0, 70)}...` : t);
+    const said = wrong
+      .map((p) => {
+        const subject = segments.length > 1 ? `"${short(p.text)}" ` : "";
+        const codes = p.elsewhere.map((e) => e.code).filter(Boolean).join(" / ");
+        if (p.serviceNote) return `${subject}${p.serviceNote}${codes ? `; ${codes} lists it ${p.serviceNote.startsWith("states NACE") ? "with" : "without"} NACE service` : "; no other spec in the admin list carries it either"}`;
+        return `${subject}matches ${codes}'s admin list`;
+      })
+      .join("; ");
+    const onlyService = wrong.every((p) => p.serviceNote);
+    // A cell of several items: say which part is right, or the row reads as though all of it is wrong.
+    const fine = parts.filter((p) => !wrong.includes(p) && p.here.status === "match");
+    const rest =
+      segments.length > 1 && fine.length > 0
+        ? ` The other ${fine.length === 1 ? "item" : `${fine.length} items`} in this cell ${fine.length === 1 ? "matches" : "match"} ${ownClass}.`
+        : "";
+    return {
+      ...adminCheck(
+        "wrong_spec",
+        `${onlyService ? `${said}. This item is filed under the wrong spec.` : `${said}, not ${ownClass}'s. This item is filed under the wrong spec.`}${rest}`,
+        distinctLines(wrong.flatMap((p) => p.elsewhere.flatMap((e) => e.lines))),
+        wrong.flatMap((p) => p.here.adminMismatches)
+      ),
+      wrongSpec: classes,
+    };
+  }
+  return combineChecks(parts.map((p) => p.here));
+}
+
+// Sorting an item into another class is a claim, and a class whose admin lines merely SAY NOTHING
+// about an attribute the item states has not shown it carries the item. So beyond the ordinary match,
+// the other class's lines must positively agree with the BOM on what it states: the same NACE
+// service (present on both or on neither -- AC03N's lines all say NACE, AC03U's none), the same
+// pressure class, and a schedule where the BOM states one.
+function agreesOutright(item: Record<string, unknown>, lines: SheetItem[]): boolean {
+  if (lines.length === 0) return false;
+  const description = String(item.description ?? "");
+  const textOf = (l: SheetItem) => `${l.description} ${l.material}`;
+
+  const bomNace = /\bNACE\b/i.test(description);
+  if (!lines.some((l) => /\bNACE\b/i.test(textOf(l)) === bomNace)) return false;
+
+  const ratings = new Set([...description.matchAll(/\b(\d{3,4})\s*(?:#|LBS?\b)/gi)].map((m) => m[1]));
+  if (ratings.size > 0) {
+    const stated = lines.map((l) => parsePressureRating(textOf(l))).filter((r): r is number => r != null);
+    if (!stated.some((r) => ratings.has(String(r)))) return false;
+  }
+
+  if (/\bSCH\s?\d/i.test(description) && !lines.some((l) => /\bSCH\s?\d/i.test(textOf(l)))) return false;
+
+  const markers = materialMarkers(description);
+  if (markers.length > 0 && !lines.some((l) => carriesMarkers(textOf(l), markers))) return false;
+  return true;
+}
+
+// A specific material the BOM names -- alloy 625, clad, overlay, inconel, duplex, stainless -- is
+// part of what the item IS. Size, schedule and construction agreeing does not make a plain pipe
+// the clad pipe, so where the BOM names one, the matched admin line has to carry it too.
+const MATERIAL_MARKERS: RegExp[] = [
+  /\bALLOY\s*-?\s*\d{3,4}\b/g,
+  /\bCLAD(?:DING)?\b/g,
+  /\bOVERLAY\b/g,
+  /\bINCONEL(?:\s*\d{3,4})?\b/g,
+  /\bMONEL(?:\s*\d{3})?\b/g,
+  /\bHASTELLOY\b/g,
+  /\bDUPLEX\b/g,
+  /\bUNS\s*[A-Z]\d{5}\b/g,
+];
+const squash = (s: string) => s.toUpperCase().replace(/[\s.\-]+/g, "");
+function materialMarkers(text: string): string[] {
+  const upper = text.toUpperCase();
+  const found = new Set<string>();
+  for (const re of MATERIAL_MARKERS) for (const m of upper.matchAll(re)) found.add(squash(m[0]));
+  return [...found];
+}
+const carriesMarkers = (text: string, markers: string[]) => {
+  const haystack = squash(text);
+  return markers.every((m) => haystack.includes(m));
+};
+
+// Row-splitting: the words an item's description opens with. A row is merged when the same one
+// opens it more than once ("PIPE ... PIPE ...", "FLANGE ... FLANGE ...", "GASKET ... GASKET ...").
+const ITEM_HEADS = ["PIPE", "FLANGE", "GASKET", "STUD BOLT", "ELBOW", "REDU", "REDUCER", "REDUCING TEE", "TEE", "WELDOLET", "SPECTACLE BLIND"];
+
+/** The items a merged BOM cell holds, or the one description when it is not merged. */
+export function splitMergedRow(description: string): string[] {
+  const text = description.trim();
+  const head = ITEM_HEADS.find((h) => new RegExp(`^(?:\\d+\\s+)?${h}\\b`, "i").test(text));
+  if (!head) return [text];
+  const starts: number[] = [];
+  for (const m of text.matchAll(new RegExp(`\\b${head}\\b`, "gi"))) {
+    const at = m.index ?? 0;
+    // "TO MATCH PIPE", "BORE TO MATCH FLANGE": mentioned, not starting an item.
+    if (at > 0 && /\b(?:MATCH|TO|WITH|OF)\s*$/i.test(text.slice(Math.max(0, at - 12), at))) continue;
+    // A stud's length leads its description: "110 STUD BOLT ...".
+    const lead = /(\d+\s+)$/.exec(text.slice(0, at));
+    starts.push(lead && at > 0 ? at - lead[1].length : at);
+  }
+  if (starts.length < 2 || starts[0] !== 0) return [text];
+  const segments = starts.map((s, i) => text.slice(s, starts[i + 1] ?? text.length).trim());
+  // Two short fragments are a description that happens to repeat a word, not two items.
+  return segments.every((s) => s.length >= 25) ? segments : [text];
+}
+
+function checkAgainstClass(item: Record<string, unknown>, classCode: string, adminItems: SheetItem[]): AdminCheck {
+  const result = checkWithinClass(item, classCode, adminItems);
+  if (result.status !== "match") return result;
+  const markers = materialMarkers(String(item.description ?? ""));
+  if (markers.length === 0 || result.adminMatches.some((l) => carriesMarkers(`${l.description} ${l.material}`, markers))) return result;
+  return {
+    ...result,
+    status: "deviation",
+    label: ADMIN_STATUS_LABEL.deviation,
+    adminMismatches: [
+      ...result.adminMismatches,
+      { attribute: "material", wanted: markers.map((m) => m.replace(/([A-Z])(\d)/, "$1 $2")).join(" ").toLowerCase(), found: ["none"] },
+    ],
+  };
+}
+
+function checkWithinClass(item: Record<string, unknown>, classCode: string, adminItems: SheetItem[]): AdminCheck {
   if (classCode === "Unassigned") return adminCheck("skipped", "The drawing doesn't show which class this sits in.");
 
   const norm = normalizeBomSpecClass(classCode);
@@ -399,6 +677,9 @@ export function crossCheckBomAdmin(item: Record<string, unknown>, classCode: str
     if (gasket.result.status !== "match") return adminCheck("missing", gasket.result.note);
     return adminCheck(gasket.adminMismatches.length > 0 ? "deviation" : "match", gasket.result.note, gasket.adminMatches, gasket.adminMismatches);
   }
+
+  const stud = checkStudBolt(item, classCode, norm, adminItems);
+  if (stud) return stud;
 
   const classification = classifyBomItem(item);
   if (!classification) return adminCheck("skipped", "Supports, instruments, control valves and stud bolts aren't lines in the admin item list.");
@@ -429,63 +710,6 @@ function adminPoolFor(classification: BomClassification, normClass: string, admi
     const hint = adminItemHint(a);
     return hint != null && hint.category === classification.category && typeHintsAgree(classification.hint.typeHint, hint.typeHint);
   });
-}
-
-/**
- * The class whose ADMIN item list actually contains this BOM item, or null to leave
- * the item where it was placed.
- *
- * The admin list is one flat sheet whose every line names the class it belongs to
- * (Spec-of column), so "which class is this item" can be answered by looking the item
- * up: same component, same size, and none of its stated schedule / angle / construction
- * / named material contradicted by the class's lines (narrowAdminMatches). A class
- * whose lines hold the item is a candidate; the item moves only when exactly ONE
- * candidate does. Two classes that both carry it -- AC03N and AC03U sharing their 150#
- * flanges -- say nothing about which side of the break it sits, so it stays where the
- * drawing's position or rating put it.
- *
- * `candidateClasses` is what bounds this: the classes the ISO and its P&ID actually
- * involve, so an item is never filed under an unrelated class that happens to stock it.
- */
-export function classByAdminList(
-  item: Record<string, unknown>,
-  placedClass: string,
-  candidateClasses: string[],
-  adminItems: SheetItem[]
-): { code: string; matched: number } | null {
-  const classification = classifyBomItem(item);
-  if (!classification || adminItems.length === 0) return null;
-
-  const wantedMarkers = materialMarkers(String(item.description ?? ""));
-  // NACE service is what separates a class that is otherwise a twin of another:
-  // AC03N and AC03U list the same carbon-steel pipe, fittings and flanges, but
-  // AC03N's lines all say "NACE MR0175/ISO 15156" and AC03U's say nothing. A BOM
-  // item that states NACE is therefore the NACE class's, and one that does not
-  // is the plain class's.
-  const isNace = (text: string) => /\bNACE\b/i.test(text);
-  const bomNace = isNace(String(item.description ?? ""));
-  const holding: Array<{ code: string; matched: number; nace: "nace" | "plain" | "mixed" }> = [];
-
-  for (const code of candidateClasses) {
-    const norm = normalizeBomSpecClass(code);
-    const pool = adminPoolFor(classification, norm, adminItems);
-    if (pool.length === 0) continue;
-
-    const narrowed = narrowAdminMatches(pool, item);
-    if (narrowed.matches.length === 0 || narrowed.mismatches.length > 0) continue;
-    // A named material has to be in the lines that matched, or the class holds
-    // a plain version of this item, not this one.
-    const carriers = wantedMarkers.length === 0 ? narrowed.matches : narrowed.matches.filter((m) => textCarriesMarkers(combineAdminText(m), wantedMarkers));
-    if (carriers.length === 0) continue;
-    const texts = carriers.map((m) => isNace(combineAdminText(m)));
-    holding.push({ code, matched: carriers.length, nace: texts.every(Boolean) ? "nace" : texts.some(Boolean) ? "mixed" : "plain" });
-  }
-
-  // A class whose lines are all NACE (or all plain) only holds the item if the item
-  // says the same. A class that lists both kinds tells nothing either way.
-  const agreeing = holding.filter((h) => h.nace === "mixed" || (h.nace === "nace") === bomNace);
-  if (agreeing.length !== 1) return null;
-  return normalizeBomSpecClass(agreeing[0].code) === normalizeBomSpecClass(placedClass) ? null : { code: agreeing[0].code, matched: agreeing[0].matched };
 }
 
 export type ValveClientStatus = "match" | "not_found" | "size_unrecognized" | "no_client_data";

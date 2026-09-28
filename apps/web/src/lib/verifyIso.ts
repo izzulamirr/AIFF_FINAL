@@ -7,6 +7,7 @@ import {
   normalizeSlope,
   parsePressureRating,
   higherRating,
+  formatNpsInches,
   type SpecBreakEntry,
 } from "@easy/shared";
 import { getDb } from "./db";
@@ -1150,6 +1151,26 @@ export function isaTagOf(text: unknown): string | null {
   return `${match[1]}-${match[2]}`;
 }
 
+// The text an ISO BOM row is classified and tag-matched on.
+//
+// An instrument's BOM row often carries nothing but its tag, and printed WITHOUT the hyphen
+// the P&ID uses: "FT0003" where the P&ID says "FT-0003". Every tag test in this file is
+// hyphen-anchored on purpose (it is what keeps "SS316L" and "ASME B16.5" from decoding as
+// instruments), so a bare "FT0003" was read as a generic "instrument (other)" with no tag --
+// never the same component as the P&ID's flow transmitter, and reported missing from both
+// drawings. Where the WHOLE description is one ISA tag, restore the hyphen and say so once;
+// anything else is left exactly as written, so the hyphen rule keeps doing its job.
+export function isoBomRowText(item: Record<string, unknown>): string {
+  const type = String(item.component_type ?? "");
+  const description = String(item.description ?? "");
+  const bare = /^([A-Z]{2,4})(\d{2,}[A-Z]?)$/.exec(description.trim().toUpperCase());
+  if (bare && !NON_INSTRUMENT_PREFIXES.has(bare[1])) {
+    const tag = `${bare[1]}-${bare[2]}`;
+    if (classifyInstrument(tag) !== null) return `${type} ${tag}`;
+  }
+  return `${type} ${description}`;
+}
+
 // A category is an instrument category exactly when the instrument
 // classifier recognises it -- they are generated from the ISA letters, so
 // there is no list to test against.
@@ -1330,10 +1351,16 @@ export function normalizeNominalSize(value: unknown, defaultUnit: "mm" | "in" = 
   return num <= 48 ? asDn() : Math.round(num);
 }
 
+// A size in the notation piping drawings use: inches as a fraction, then the DN it came
+// from -- 1/2" (DN15), 1 1/2" (DN40) -- not the decimal 0.5". A DN with no standard NPS
+// (DN12, a tapping bore) is shown as the nearest eighth of an inch; the DN beside it says
+// which size it really is.
 export function formatNominalSize(dn: number | null): string {
   if (dn == null) return "unsized";
   const nps = DN_TO_NPS.get(dn);
-  return nps ? `${nps}" (DN${dn})` : `DN${dn}`;
+  if (nps) return `${formatNpsInches(Number(nps))}" (DN${dn})`;
+  const eighths = Math.round((dn / 25.4) * 8) / 8;
+  return eighths > 0 ? `${formatNpsInches(eighths)}" (DN${dn})` : `DN${dn}`;
 }
 
 // Line classes are written with the insulation/service suffix attached in
@@ -1445,7 +1472,7 @@ export function buildValveMatch(
   const isoInstrumentByCategory = new Map<ComponentCategory, { spec: string; dn: number | null } | "ambiguous">();
 
   for (const item of isoBom) {
-    const text = `${item.component_type ?? ""} ${item.description ?? ""}`;
+    const text = isoBomRowText(item);
     const category = classifyComponent(text);
     if (!category) continue;
     const spec = normalizeSpecClass(item.item_spec_class) ?? "unassigned";

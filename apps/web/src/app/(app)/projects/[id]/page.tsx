@@ -13,6 +13,7 @@ import { deleteDocument, moveDocumentToLibrary, uploadDocument } from "./actions
 import { DeleteDocumentButton } from "./DeleteDocumentButton";
 import { DocumentUploadCard } from "./DocumentUploadCard";
 import { LineReviewView } from "./LineReviewView";
+import { ProjectHub } from "./ProjectHub";
 
 // TWO features, the same two the dashboard offers -- hook-up, spooling and the
 // container check are checks ON an ISO and live inside ISO checking, on the
@@ -33,7 +34,7 @@ export default async function ProjectDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ line?: string }>;
+  searchParams: Promise<{ line?: string; feature?: string }>;
 }) {
   const { id } = await params;
   const db = getDb();
@@ -50,11 +51,13 @@ export default async function ProjectDetailPage({
   // which organizations exist, and who is in them, is not this page's to disclose.
   if (!(await canReadOrganization(session, project.organizationId))) return <p>Project not found.</p>;
 
-  // A plain user sees a project as its ISO line numbers, not its documents --
-  // see LineReviewView. Everything below is Document Control's, and the
-  // actions behind its forms and buttons enforce that again on the server.
+  // A plain user sees a project as three things to do -- ISO checking, pipe specs, cutting
+  // plate -- and picks one (see ProjectHub). ISO checking is its line numbers, and is what
+  // a link to a single line opens. Everything below is Document Control's, and the actions
+  // behind its forms and buttons enforce that again on the server.
   if (!session.isDcc) {
-    const { line } = await searchParams;
+    const { line, feature } = await searchParams;
+    if (!line && feature !== "iso") return <ProjectHub projectId={id} projectName={project.name} libraryHref={`/library?project=${id}`} />;
     return (
       <LineReviewView
         projectId={id}
@@ -62,9 +65,9 @@ export default async function ProjectDetailPage({
         requestedLine={line}
         canMark
         links={{
-          list: `/projects/${id}`,
-          line: (lineNumber) => `/projects/${id}?line=${encodeURIComponent(lineNumber)}`,
-          back: { href: `/projects?org=${project.organizationId}`, label: "Projects" },
+          list: `/projects/${id}?feature=iso`,
+          line: (lineNumber) => `/projects/${id}?feature=iso&line=${encodeURIComponent(lineNumber)}`,
+          back: { href: `/projects/${id}`, label: project.name },
           // A checker has no sidebar, so this is their only way to the library.
           library: `/library?project=${id}`,
         }}

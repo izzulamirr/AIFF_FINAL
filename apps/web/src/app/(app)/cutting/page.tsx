@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { documents, extractedTags, extractionJobs, projects } from "@easy/db";
 import { outlineExtentMm, type CutPart, type CutShape } from "@easy/shared";
@@ -35,10 +34,10 @@ export default async function CuttingPage({
   const params = await searchParams;
   const session = await getSessionUser();
   if (!session) return null;
-  // Cutting drawings are not ISOs, so a plain user -- who sees only a project's
-  // ISO lines -- has no part of this page. The upload, delete and save actions
-  // enforce Document Control again on the server.
-  if (!session.isDcc) redirect("/clients");
+  // Anyone who can read a project can look at its cutting plan. Document Control alone
+  // uploads, deletes and saves; the actions enforce that again on the server, and a plain
+  // user is shown the page without those controls.
+  const canEdit = session.isDcc;
 
   const db = getDb();
   // The organizations this person can read: the ones they are a MEMBER of,
@@ -68,9 +67,11 @@ export default async function CuttingPage({
             icon={<IconFolder />}
             title="You need a project first"
             action={
-              <Link href="/projects" className="btn btn-primary btn-sm mt-1">
-                Create one
-              </Link>
+              canEdit ? (
+                <Link href="/projects" className="btn btn-primary btn-sm mt-1">
+                  Create one
+                </Link>
+              ) : undefined
             }
           />
         </div>
@@ -211,7 +212,8 @@ export default async function CuttingPage({
         />
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,30rem)_minmax(0,1fr)]">
+      <div className={canEdit ? "grid gap-4 lg:grid-cols-[minmax(0,30rem)_minmax(0,1fr)]" : "grid gap-4"}>
+        {canEdit && (
         <form action={handleUpload} className="card flex flex-col gap-4">
           <div>
             <h2 className="card-title">Upload cutting drawings</h2>
@@ -246,6 +248,7 @@ export default async function CuttingPage({
             Upload
           </button>
         </form>
+        )}
 
         <div className="card card-flush">
           <div className="card-header">
@@ -267,15 +270,17 @@ export default async function CuttingPage({
                       <td>
                         <JobStatus job={job} errorMaxChars={80} />
                       </td>
-                      <td className="text-right">
-                        <DeleteDocumentButton
-                          fileName={doc.fileName}
-                          onDelete={async () => {
-                            "use server";
-                            await deleteDocument(projectId!, doc.id);
-                          }}
-                        />
-                      </td>
+                      {canEdit && (
+                        <td className="text-right">
+                          <DeleteDocumentButton
+                            fileName={doc.fileName}
+                            onDelete={async () => {
+                              "use server";
+                              await deleteDocument(projectId!, doc.id);
+                            }}
+                          />
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -314,6 +319,7 @@ export default async function CuttingPage({
 
       <CuttingPlanner
         key={projectId}
+        readOnly={!canEdit}
         projectId={projectId}
         projectName={myProjects.find((p) => p.id === projectId)?.name ?? "project"}
         drawingId={drawingId ?? null}

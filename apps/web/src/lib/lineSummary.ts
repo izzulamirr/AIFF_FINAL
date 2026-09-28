@@ -205,7 +205,7 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
     available: checks.mtoAdminAvailable,
     items: mtoRows.length,
     match: countOf("match"),
-    deviations: countOf("deviation"),
+    deviations: countOf("deviation", "wrong_spec"),
     notInList: countOf("missing"),
     notChecked: countOf("skipped", "no_list"),
     sheetData: mtoSheets,

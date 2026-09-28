@@ -17,8 +17,7 @@ import {
 } from "@/lib/verifyIso";
 import { kindOfDocument } from "@/lib/docTypes";
 import { extractSheetItems, type SheetItem } from "@/lib/parseSheetPage";
-import { normalizeSpecClassCode } from "@/lib/verifySpecCrossCheck";
-import { classByMaterial, classByAdminList, crossCheckBomAdmin, type AdminCheck } from "@/lib/verifyBomCrossCheck";
+import { checkBomItem, type AdminCheck } from "@/lib/verifyBomCrossCheck";
 
 // An ISO's cross-document checks: its design basis against the line list (PLL),
 // its routing and fittings against the project's P&IDs, and its bill of
@@ -171,35 +170,9 @@ export async function buildIsoChecks({
     });
   }
 
-  // The client's own piping specs, by class -- needed HERE, before the BOM is
-  // grouped, because an item that names a specific material (alloy 625 clad) is
-  // placed in the class whose spec carries that material. Also what the MTO
-  // check below reads. A PDF is the client's, an XLSX is ours (lib/docTypes.ts).
-  const clientSpecDocs = siblingDocs.filter((d) => d.docType === "spec_sheet" && kindOfDocument(d.docType, d.fileName)?.key === "client_spec");
-
-  const clientClassByNorm = new Map<string, Record<string, unknown>>();
-  if (clientSpecDocs.length > 0) {
-    const clientClassTags = await db
-      .select()
-      .from(extractedTags)
-      .where(and(inArray(extractedTags.documentId, clientSpecDocs.map((d) => d.id)), eq(extractedTags.tagType, "spec_class")));
-    // More than one client document can hold the same class code (e.g. a
-    // reissued spec) -- the richer extraction wins, same tie-break
-    // verifyBomCrossCheck.ts's own resolveClientAndAdminData uses, so the
-    // two never disagree about which one to trust.
-    const richness = (attrs: Record<string, unknown>) =>
-      (["pipes", "fittings", "flanges", "valves"] as const).reduce((n, k) => n + (Array.isArray(attrs[k]) ? (attrs[k] as unknown[]).length : 0), 0);
-    for (const t of clientClassTags) {
-      const norm = normalizeSpecClassCode(t.tagNumber);
-      const attrs = t.attributes as Record<string, unknown>;
-      const existing = clientClassByNorm.get(norm);
-      if (!existing || richness(attrs) > richness(existing)) clientClassByNorm.set(norm, attrs);
-    }
-  }
-
   // The admin's own item list, one flat sheet whose every line names the class
-  // it belongs to. Read here, ahead of the BOM grouping, because it is what a
-  // BOM item is looked up in to find which class stocks it.
+  // it belongs to. What each BOM item is looked up in, under the class the
+  // extraction gave that item.
   const adminSpecDocs = siblingDocs.filter((d) => d.docType === "spec_sheet" && kindOfDocument(d.docType, d.fileName)?.key === "admin_spec");
   const adminItems: SheetItem[] = [];
   if (adminSpecDocs.length > 0) {
@@ -210,22 +183,6 @@ export async function buildIsoChecks({
     for (const p of adminPages) adminItems.push(...extractSheetItems(p.pageText));
   }
   mtoAdminAvailable = adminItems.length > 0;
-
-  // The classes the P&ID gives this line's valves. A class the ISO extraction
-  // never listed (a segment between two spec breaks, read as part of a
-  // neighbour) still shows here, and it is a class an item may belong to.
-  const pidValveClasses: Array<{ lineNumber: unknown; specClass: string }> = [];
-  if (adminItems.length > 0 && pidOptions.length > 0) {
-    const pidValveTags = await db
-      .select()
-      .from(extractedTags)
-      .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), eq(extractedTags.tagType, "valve")));
-    for (const t of pidValveTags) {
-      const a = t.attributes as Record<string, unknown>;
-      const cls = typeof a.spec_class === "string" ? a.spec_class.trim().toUpperCase() : "";
-      if (cls) pidValveClasses.push({ lineNumber: a.line_number, specClass: cls });
-    }
-  }
 
   // One block per sheet, in sheet order -- including sheets with no break,
   // whose rows all sit under the title-block class. Only the "Unassigned"
@@ -240,16 +197,6 @@ export async function buildIsoChecks({
         location_note?: string;
       }>;
       const lineClass = typeof lineAttrs.spec_class === "string" ? lineAttrs.spec_class : "";
-
-      // Every class this line is known to run through: what the sheet's own
-      // callouts list, plus what the P&ID says of its valves.
-      const knownClasses = isoSpecClasses(lineAttrs);
-      const candidateClasses = [
-        ...new Set([
-          ...knownClasses,
-          ...pidValveClasses.filter((v) => matchesLineAcrossSpecBreak(v.lineNumber, line.tagNumber, knownClasses)).map((v) => v.specClass),
-        ]),
-      ];
 
       const norm = normalizeTagNumber(line.tagNumber);
       const items = tags.filter((t) => {
@@ -266,19 +213,16 @@ export async function buildIsoChecks({
         const a = item.attributes as Record<string, unknown>;
         // With no break on this sheet the title-block class governs every
         // row, so an unset class there is not an open question.
-        const placed =
+        // The class the EXTRACTION gave this item -- what the drawing says, read where the
+        // item sits on the sheet. With no break on the sheet the title-block class governs
+        // every row, so an unset class there is not an open question. Nothing here
+        // re-files an item under another class.
+        const own =
           typeof a.item_spec_class === "string" && a.item_spec_class.trim()
             ? a.item_spec_class
             : breaks.length < 2 && lineClass
               ? lineClass
               : "Unassigned";
-        // An item the admin item list holds under ONE class is filed under that
-        // class, whatever position or rating said. Failing that, an item that
-        // names a specific material goes to the class whose client spec
-        // carries it.
-        const byAdmin = candidateClasses.length > 1 ? classByAdminList(a, placed, candidateClasses, adminItems) : null;
-        const byMaterial = !byAdmin && breaks.length > 1 ? classByMaterial(a, placed, breaks.map((b) => b.spec_class), clientClassByNorm) : null;
-        const own = byAdmin?.code ?? byMaterial?.code ?? placed;
         const list = byClass.get(own) ?? [];
         list.push({
           id: item.id,
@@ -290,22 +234,11 @@ export async function buildIsoChecks({
           description: String(a.description ?? ""),
           itemCode: String(a.item_code ?? "-"),
           qty: String(a.quantity ?? "-"),
-          basis: byAdmin
-            ? `admin list (only ${byAdmin.code} lists it)`
-            : byMaterial
-            ? `material (${byMaterial.markers.join(", ").toLowerCase()} is in ${byMaterial.code}'s spec)`
-            : typeof a.item_spec_basis === "string"
-              ? a.item_spec_basis
-              : breaks.length < 2
-                ? "sheet has no spec break"
-                : "",
+          basis: typeof a.item_spec_basis === "string" ? a.item_spec_basis : breaks.length < 2 ? "sheet has no spec break" : "",
         });
         byClass.set(own, list);
       }
-      // Break order first (upstream to downstream), then any class the admin list or
-      // P&ID brought in that the callouts never listed.
-      const printed = breaks.length > 1 ? breaks.map((b) => b.spec_class) : [lineClass];
-      const order = [...printed, ...candidateClasses.filter((c) => !printed.some((p) => p.toUpperCase() === c.toUpperCase())), "Unassigned"];
+      const order = [...(breaks.length > 1 ? breaks.map((b) => b.spec_class) : [lineClass]), "Unassigned"];
       const groups = [...byClass.entries()]
         .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
         // Printed order, not numeric order: the sheet's two materials
@@ -323,29 +256,34 @@ export async function buildIsoChecks({
   // MTO: the same BOM items, looked up in the ADMIN's item list under the class
   // each is filed under. (The client specs and the admin item list are read
   // above, ahead of the BOM grouping, which reads them.)
-  mtoBySpec = bomBySpec.map(({ lineNumber, sheetLabel, page, groups }) => ({
-    lineNumber,
-    sheetLabel,
-    page,
-    groups: groups.map(({ specClass, items }) => ({
-      specClass,
-      // `specClass` IS the resolved class every item in this group was grouped by.
-      rows: items.map((displayItem): MtoBomRow => {
-        const tag = tags.find((t) => t.id === displayItem.id);
-        const a = (tag?.attributes as Record<string, unknown> | undefined) ?? {};
-        return {
-          id: displayItem.id,
-          itemNo: displayItem.itemNo,
-          componentType: String(a.component_type ?? "-"),
-          size: String(a.size ?? "-"),
-          quantity: displayItem.qty,
-          description: displayItem.description,
-          itemCode: displayItem.itemCode,
-          check: crossCheckBomAdmin(a, specClass, adminItems),
-        };
-      }),
-    })),
-  }));
+  mtoBySpec = bomBySpec.map(({ lineNumber, sheetLabel, page, groups }) => {
+    // The specs THIS SHEET has: the classes its BOM items are filed under (AC03N and BC70N on
+    // sheet 5). An item that fails its own class is only ever compared with these.
+    const sheetClasses = groups.map((g) => g.specClass).filter((c) => c !== "Unassigned");
+    return {
+      lineNumber,
+      sheetLabel,
+      page,
+      // Every item stays under the class the extraction gave it.
+      groups: groups.map(({ specClass, items }) => ({
+        specClass,
+        rows: items.map((displayItem): MtoBomRow => {
+          const tag = tags.find((t) => t.id === displayItem.id);
+          const a = (tag?.attributes as Record<string, unknown> | undefined) ?? {};
+          return {
+            id: displayItem.id,
+            itemNo: displayItem.itemNo,
+            componentType: String(a.component_type ?? "-"),
+            size: String(a.size ?? "-"),
+            quantity: displayItem.qty,
+            description: displayItem.description,
+            itemCode: displayItem.itemCode,
+            check: checkBomItem(a, specClass, sheetClasses, adminItems),
+          };
+        }),
+      })),
+    };
+  });
 
 
   // Routing & fitting count, ISO vs the project's P&IDs -- same always-on

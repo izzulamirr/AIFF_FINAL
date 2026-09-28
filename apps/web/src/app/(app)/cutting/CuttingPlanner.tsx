@@ -111,6 +111,7 @@ export function CuttingPlanner({
   savedQuantities,
   initialStock,
   drawingStock,
+  readOnly = false,
 }: {
   projectId: string;
   projectName: string;
@@ -123,6 +124,12 @@ export function CuttingPlanner({
   savedQuantities: Record<string, number>;
   initialStock: SavedStock[];
   drawingStock?: DrawingStock | null;
+  /**
+   * Anyone who can read the project can look at the plan and try stock sizes; only Document
+   * Control writes. The three buttons below call actions that refuse anyone else, so they
+   * are switched off here rather than left to fail.
+   */
+  readOnly?: boolean;
 }) {
   const [stock, setStock] = useState<StockRow[]>(() =>
     initialStock.length
@@ -534,11 +541,12 @@ export function CuttingPlanner({
         <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4">
           <button
             onClick={save}
-            disabled={saving || !dirty}
+            disabled={readOnly || saving || !dirty}
             className="btn btn-primary"
           >
             {saving ? "Saving..." : "Save stock for this project"}
           </button>
+          {readOnly && <span className="text-xs text-muted-foreground">View only &mdash; Document Control saves stock and quantities.</span>}
           {saveError ? (
             <span className="text-xs text-danger">{saveError}</span>
           ) : dirty ? (
@@ -632,7 +640,7 @@ export function CuttingPlanner({
             <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4">
               <button
                 onClick={saveQuantities}
-                disabled={savingQty || !qtyDirty}
+                disabled={readOnly || savingQty || !qtyDirty}
                 className="btn btn-primary"
               >
                 {savingQty ? "Saving..." : "Save quantities and re-nest"}
@@ -669,7 +677,7 @@ export function CuttingPlanner({
                 <div className="flex flex-wrap items-center gap-3">
                   <button
                     onClick={runShapeNest}
-                    disabled={shaping}
+                    disabled={readOnly || shaping}
                     className="btn btn-primary"
                   >
                     {shaping ? "Nesting to the true shapes..." : shapeNest && !shapeStale ? "Re-run true-shape nest" : "Nest to the true shapes"}

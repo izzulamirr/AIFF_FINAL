@@ -34,7 +34,7 @@ export interface BomIssue {
    * deviation: the admin list has it but disagrees. missing: it has no such line.
    * notChecked: not looked up at all -- for information, not an error.
    */
-  kind: "deviation" | "missing" | "notChecked";
+  kind: "deviation" | "missing" | "wrongSpec" | "notChecked";
   /** What is wrong, in a sentence. */
   problem: string;
   /** The admin line the BOM was compared with, where there is one. */
@@ -156,14 +156,16 @@ function bomIssues(sheets: IsoDrawingChecks["mto"]["sheetData"]): BomIssue[] {
         if (check.status === "match") continue;
         const unlisted = check.status === "skipped" ? unlistedKind(row.description, row.componentType) : "other";
         if (unlisted === "support" || unlisted === "instrument") continue;
-        const kind = check.status === "deviation" ? "deviation" : check.status === "missing" ? "missing" : "notChecked";
+        const kind = check.status === "wrong_spec" ? "wrongSpec" : check.status === "deviation" ? "deviation" : check.status === "missing" ? "missing" : "notChecked";
         const adminLine = check.adminMatches[0] ? combineAdminText(check.adminMatches[0]) : null;
-        const problem =
-          check.status === "deviation"
+        const said =
+          check.status === "wrong_spec"
+            ? [check.note, ...check.adminMismatches.map((m) => `${sentence(m.attribute)}: BOM says ${m.wanted}, ${check.wrongSpec ? "the filed spec's" : ""} admin list has ${m.found.join(" / ")}`)].filter(Boolean).join(" ")
+            : check.status === "deviation"
             ? check.adminMismatches.map((m) => `${sentence(m.attribute)}: BOM says ${m.wanted}, admin list has ${m.found.join(" / ")}`).join("; ")
-            : unlisted === "stud"
-              ? "Stud bolt calculation is not completed yet."
-              : (check.note ?? "Not in the admin item list");
+            : (check.note ?? "Not in the admin item list");
+        // A stud's order size travels with its verdict.
+        const problem = check.detail ? `${said}. ${check.detail}.` : said;
         out.push({
           sheet: sheet.sheetLabel || (sheet.page != null ? `page ${sheet.page}` : "?"),
           specClass: group.specClass,
@@ -250,7 +252,7 @@ function hookupIssues(drawing: NonNullable<LineSummary["hookup"]>["drawings"][nu
         instrument: r.instrumentTag,
         label: r.instrumentLabel,
         missing: [],
-        noTypical: `No hook-up typical covers a ${r.measuredVariable ?? "?"} instrument${r.service ? ` on ${r.service} service` : ""}, so its piping could not be checked.`,
+        noTypical: `No hook-up typical covers a ${r.measuredVariable ?? "?"} instrument${r.service ? ` on ${r.service} service` : ""}, so its piping could not be checked.${r.noTypicalReason ? ` ${r.noTypicalReason}` : ""}`,
       });
     }
   }

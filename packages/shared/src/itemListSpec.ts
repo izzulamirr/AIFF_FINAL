@@ -84,7 +84,7 @@ function placementOf(item: SheetItem): Placement | null {
 }
 
 const END_TYPE = /\b(BW|SW|SCRD|THRD|THD|LJ|SO|PE|BE|TE|FE)\b/i;
-const SCHEDULE = /\bSCH(?:EDULE)?\.?\s?(\d+S?|XXS|XS|STD)(?:\s?[xX]\s?(?:SCH(?:EDULE)?\.?\s?)?(\d+S?|XXS|XS|STD))?\b/i;
+const SCHEDULE = /\bSCH(?:EDULE)?\.?\s?(\d+(?:\.\d+)?S?|XXS|XS|STD)(?:\s?[xX]\s?(?:SCH(?:EDULE)?\.?\s?)?(\d+(?:\.\d+)?S?|XXS|XS|STD))?\b/i;
 
 function scheduleOf(t: string): string | null {
   const m = SCHEDULE.exec(t);

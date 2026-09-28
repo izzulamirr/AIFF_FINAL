@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { boardOf, CHECK_LABEL, DOC_LABEL, namesOf, overviewOf, type ProjectOverview } from "@/lib/dashboardData";
+import { MonitoringBoard } from "@/components/dashboard/MonitoringBoard";
 import { getSessionUser } from "@/lib/session";
 import { activeOrganization, activeProjectsOf } from "@/lib/access";
 import { progressOfProjects, type ProjectProgress } from "@/lib/progress";
 import { ProgressBar } from "@/components/progress/ProgressBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert, Badge, EmptyState } from "@/components/ui/primitives";
-import { IconBuilding, IconChevronRight, IconFolder, IconLibrary, IconPlus } from "@/components/ui/icons";
+import { IconBuilding, IconChevronRight, IconDownload, IconFolder, IconLibrary, IconPlus } from "@/components/ui/icons";
 import { createProject } from "../actions";
 import { TotalLinesForm } from "../projects/[id]/TotalLinesForm";
 
@@ -30,24 +32,6 @@ export const metadata: Metadata = { title: "Dashboard" };
 
 const when = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
-/**
- * A project with no progress data to show -- the tables in
- * supabase/line-progress.sql have not been run yet. Still a real row: opening a
- * project cannot depend on a migration that has nothing to do with reaching it,
- * and the alert above already says why the numbers are missing.
- */
-function ProjectRow({ project }: { project: { id: string; name: string } }) {
-  return (
-    <li className="px-5 py-4">
-      <Link href={`/projects/${project.id}`} className="group flex items-center gap-2 font-medium">
-        <IconFolder size={17} className="flex-none text-muted-foreground" />
-        <span className="truncate">{project.name}</span>
-        <IconChevronRight size={16} className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-      </Link>
-    </li>
-  );
-}
-
 /** Create a project for this client, without leaving Dashboard. */
 function NewProjectForm({ organizationId, className = "" }: { organizationId: string; className?: string }) {
   return (
@@ -59,6 +43,176 @@ function NewProjectForm({ organizationId, className = "" }: { organizationId: st
         Create project
       </button>
     </form>
+  );
+}
+
+/** Every line that has errors, worst first, each opening its error report. */
+function LinesNeedingAttention({ overview }: { overview: ProjectOverview[] }) {
+  const rows = overview
+    .flatMap((o) => o.results.map((r) => ({ ...r, projectId: o.id, project: o.name })))
+    .filter((r) => r.errors > 0)
+    .sort((a, b) => b.errors - a.errors)
+    .slice(0, 12);
+  if (rows.length === 0) return null;
+  return (
+    <section className="card card-flush">
+      <div className="card-header">
+        <h2 className="card-title">Lines with errors</h2>
+      </div>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Line</th>
+              <th>Project</th>
+              <th>Rev</th>
+              <th>Where the errors are</th>
+              <th className="w-24 text-right">Errors</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.projectId}-${r.lineNumber}-${i}`}>
+                <td>
+                  <Link
+                    href={`/projects/${r.projectId}/report?line=${encodeURIComponent(r.lineNumber)}`}
+                    className="font-mono text-xs font-medium underline-offset-2 hover:underline"
+                  >
+                    {r.lineNumber}
+                  </Link>
+                </td>
+                <td>{r.project}</td>
+                <td className="tabular-nums">{r.revision ?? "-"}</td>
+                <td className="text-xs text-muted-foreground">
+                  {CHECK_LABEL.filter(([k]) => r.byCheck[k] > 0)
+                    .map(([k, label]) => `${label} ${r.byCheck[k]}`)
+                    .join(" · ")}
+                </td>
+                <td className="text-right">
+                  <Badge tone="danger" dot>
+                    {r.errors}
+                  </Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function OverviewRow({ project }: { project: ProjectOverview }) {
+  const errorLines = project.results.filter((r) => r.errors > 0).length;
+  return (
+    <li className="flex flex-col gap-2 px-5 py-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Link href={`/projects/${project.id}`} className="group flex min-w-0 items-center gap-2 font-medium">
+          <IconFolder size={17} className="flex-none text-muted-foreground" />
+          <span className="truncate">{project.name}</span>
+          <IconChevronRight size={16} className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+        </Link>
+        <span className="ml-auto flex flex-wrap items-center gap-2">
+          {errorLines > 0 && (
+            <Badge tone="danger" dot>
+              {errorLines} line{errorLines === 1 ? "" : "s"} with errors
+            </Badge>
+          )}
+          <Badge tone={project.isoLines === 0 ? "warning" : errorLines === 0 ? "success" : "neutral"} dot={project.isoLines > 0 && errorLines === 0}>
+            {project.isoLines} ISO line{project.isoLines === 1 ? "" : "s"} read
+          </Badge>
+        </span>
+      </div>
+      {project.isoLines > 0 && <ProgressBar value={project.isoLines - errorLines} max={project.isoLines} label={`${project.name} lines with no errors`} />}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {project.byType.length > 0 ? (
+          project.byType.map(([type, n]) => (
+            <span key={type}>
+              {n} {DOC_LABEL[type] ?? type}
+            </span>
+          ))
+        ) : (
+          <span>no documents uploaded yet</span>
+        )}
+        {project.lastUpload && <span className="ml-auto">last upload {when.format(project.lastUpload)}</span>}
+      </div>
+    </li>
+  );
+}
+
+/** Headline numbers across every project of the client -- the "where does the job stand" answer. */
+function MonitoringSummary({ progress }: { progress: ProjectProgress[] }) {
+  const done = progress.reduce((n, p) => n + p.done, 0);
+  const recheck = progress.reduce((n, p) => n + p.recheck, 0);
+  const lines = progress.reduce((n, p) => n + (p.total ?? p.uploaded), 0);
+  const uploaded = progress.reduce((n, p) => n + p.uploaded, 0);
+  const pct = lines > 0 ? Math.min(100, Math.round((done / lines) * 100)) : 0;
+  const tiles = [
+    { label: "Lines checked", value: `${done} / ${lines}`, hint: `${pct}% of the client's lines`, tone: "" },
+    { label: "To re-check", value: String(recheck), hint: "checked against a replaced drawing", tone: recheck > 0 ? "text-warning" : "" },
+    { label: "Not yet checked", value: String(Math.max(0, lines - done - recheck)), hint: "still to review", tone: "" },
+    { label: "ISO lines read", value: String(uploaded), hint: `across ${progress.length} project${progress.length === 1 ? "" : "s"}`, tone: "" },
+  ];
+  return (
+    <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {tiles.map((t) => (
+        <div key={t.label} className="card flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">{t.label}</span>
+          <span className={`text-2xl font-semibold tabular-nums ${t.tone}`}>{t.value}</span>
+          <span className="text-xs text-muted-foreground">{t.hint}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/** The latest checks across every project: who ticked which line, when, and whether it still stands. */
+function RecentChecks({ progress }: { progress: ProjectProgress[] }) {
+  const recent = progress
+    .flatMap((p) => p.classified.map((r) => ({ ...r, project: p.projectName })))
+    .sort((a, b) => b.reviewedAt.getTime() - a.reviewedAt.getTime())
+    .slice(0, 8);
+  if (recent.length === 0) return null;
+  return (
+    <section className="card card-flush">
+      <div className="card-header">
+        <h2 className="card-title">Recent checks</h2>
+      </div>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Line</th>
+              <th>Project</th>
+              <th>Checked by</th>
+              <th>When</th>
+              <th className="w-32">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recent.map((r, i) => (
+              <tr key={`${r.project}-${r.lineKey}-${i}`}>
+                <td className="font-mono text-xs">{r.lineNumber}</td>
+                <td>{r.project}</td>
+                <td>{r.reviewedByName ?? "-"}</td>
+                <td className="whitespace-nowrap text-xs text-muted-foreground">{when.format(r.reviewedAt)}</td>
+                <td>
+                  {r.state === "recheck" ? (
+                    <Badge tone="warning" dot title={`Checked against revision ${r.revision ?? "?"}; now ${r.currentRevision ?? "?"}`}>
+                      Re-check
+                    </Badge>
+                  ) : (
+                    <Badge tone="success" dot>
+                      Checked
+                    </Badge>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -113,6 +267,9 @@ export default async function DashboardPage() {
   const clientProjects = await activeProjectsOf(session);
   // Null means the progress tables do not exist yet (see lib/progress.ts).
   const progress = await progressOfProjects(clientProjects);
+  // Without the progress tables, still show what is really there.
+  const overview = await overviewOf(clientProjects);
+  const names = await namesOf([...new Set(overview.flatMap((o) => o.uploaders.map((u) => u.userId)))]);
 
   const totals = (progress ?? []).reduce(
     (acc, p) => ({ done: acc.done + p.done, recheck: acc.recheck + p.recheck, lines: acc.lines + (p.total ?? p.uploaded) }),
@@ -139,10 +296,17 @@ export default async function DashboardPage() {
           // the job stand" at a glance. Kept off the hub and reached by a
           // click instead, the same move already made for ISO checking and
           // the Cutting Plan.
-          <Link href="/dashboard/libraries" className="btn btn-secondary">
-            <IconLibrary size={16} />
-            Overall libraries
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* A plain link, not next/link: it downloads a file rather than opening a page. */}
+            <a href="/dashboard/export" className="btn btn-secondary">
+              <IconDownload size={16} />
+              Export to Excel
+            </a>
+            <Link href="/dashboard/libraries" className="btn btn-secondary">
+              <IconLibrary size={16} />
+              Overall libraries
+            </Link>
+          </div>
         }
       />
 
@@ -166,9 +330,13 @@ export default async function DashboardPage() {
             <Alert tone="warning">
               Progress tracking needs a one-time database update before it can store anything. Run{" "}
               <span className="font-mono">supabase/line-progress.sql</span> in the Supabase SQL editor; it only adds two tables and is
-              safe to run more than once. Every project below still opens.
+              safe to run more than once. Until then the figures below come from the checks themselves (what each ISO line&apos;s error report finds), and every project opens.
             </Alert>
           )}
+
+          {progress !== null && <MonitoringSummary progress={progress} />}
+          <MonitoringBoard data={boardOf(overview, progress, names)} />
+          <LinesNeedingAttention overview={overview} />
 
           <section className="card card-flush">
             <div className="card-header">
@@ -191,7 +359,7 @@ export default async function DashboardPage() {
             <ul className="divide-y divide-border">
               {progress !== null
                 ? progress.map((p) => <ProjectProgressRow key={p.projectId} project={p} />)
-                : clientProjects.map((p) => <ProjectRow key={p.id} project={p} />)}
+                : overview.map((o) => <OverviewRow key={o.id} project={o} />)}
             </ul>
 
             {/* Creating a project is the other half of what the removed
@@ -199,6 +367,8 @@ export default async function DashboardPage() {
                 the list it adds to, rather than on a page of its own. */}
             {client && <NewProjectForm organizationId={client.id} className="border-t bg-muted/40" />}
           </section>
+
+          {progress !== null && <RecentChecks progress={progress} />}
         </>
       )}
     </div>

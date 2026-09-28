@@ -19,6 +19,6 @@ export * from "./spoolTagClash";
 export * from "./revisions";
 export * from "./pipeSize";
 export * from "./specVariants";
-export * from "./specEvidence";
 export * from "./sheetItems";
 export * from "./itemListSpec";
+export * from "./studSize";

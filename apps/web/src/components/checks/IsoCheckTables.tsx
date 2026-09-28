@@ -229,8 +229,8 @@ export function BomSheets({ sheets }: { sheets: BomSheet[] }) {
 // states, the verdict, and the admin line that verdict rests on (or, where there is
 // none, why not).
 function tally(rows: Array<{ check: { status: string } }>) {
-  const n = (s: string) => rows.filter((r) => r.check.status === s).length;
-  return { match: n("match"), deviation: n("deviation"), missing: n("missing") };
+  const n = (...s: string[]) => rows.filter((r) => s.includes(r.check.status)).length;
+  return { match: n("match"), deviation: n("deviation", "wrong_spec"), missing: n("missing") };
 }
 
 function CountBadges({ rows }: { rows: Array<{ check: { status: string } }> }) {
@@ -299,7 +299,7 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                     const { check } = row;
                     const muted = check.status === "skipped" || check.status === "no_list";
                     return (
-                      <tr key={row.id}>
+                      <tr key={row.id} className={check.status === "wrong_spec" ? "bg-danger-soft/40" : ""}>
                         <td className="tabular-nums text-muted-foreground">{row.itemNo}</td>
                         <td className="whitespace-nowrap tabular-nums">{row.size}</td>
                         <td className="tabular-nums">{row.quantity}</td>
@@ -328,6 +328,8 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                           ) : (
                             <span className="text-muted-foreground">-</span>
                           )}
+                          {check.status === "wrong_spec" && check.note && <p className="mt-0.5 font-medium text-danger">{check.note}</p>}
+                          {check.detail && <p className="mt-0.5 font-medium">{check.detail}</p>}
                         </td>
                       </tr>
                     );

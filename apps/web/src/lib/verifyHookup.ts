@@ -82,6 +82,8 @@ export interface HookupInstrumentCheck {
   service: string | null;
   /** null when no typical in the set covers this instrument. */
   sheet: HookupSheet | null;
+  /** Why no typical was chosen, in words -- what the hook-up set does and does not hold. Null when one was. */
+  noTypicalReason: string | null;
   checks: HookupItemCheck[];
   missingCount: number;
 }
@@ -236,6 +238,26 @@ export function matchHookupSheet(
   // applies. Several equally valid candidates is not a match to be guessed;
   // returning null asks the reviewer, which is the only correct answer.
   return candidates.length === 1 ? candidates[0] : null;
+}
+
+/**
+ * Says why no typical was picked, from what the set actually holds. "No typical covers X" alone
+ * leaves the reader unable to tell a gap in the hook-up drawing from a fault on the ISO.
+ */
+export function noTypicalReasonOf(sheets: HookupSheet[], measuredVariable: string | null, service: string | null, label: string | null): string {
+  const variables = [...new Set(sheets.map((s) => s.measuredVariable).filter((v): v is string => !!v))];
+  const held = variables.length > 0 ? ` The hook-up set holds typicals for: ${variables.join(", ")}.` : "";
+  if (!measuredVariable) return `The instrument could not be identified from its tag, so no typical could be chosen.${held}`;
+  const sameVariable = sheets.filter((s) => s.measuredVariable === measuredVariable);
+  if (sameVariable.length === 0) {
+    return `The hook-up drawing has no ${measuredVariable} typical at all, so this is a gap in the hook-up set, not a fault on the ISO.${held}`;
+  }
+  const services = [...new Set(sameVariable.map((s) => s.service).filter((v): v is string => !!v))];
+  const has = `${measuredVariable} typicals exist${services.length > 0 ? ` (${services.join("; ")})` : ""}`;
+  const named = label ? ` for a ${label}` : "";
+  return service
+    ? `${has[0].toUpperCase()}${has.slice(1)}, but none${named} on ${service} service, or more than one fits and the ISO does not say which.`
+    : `${has[0].toUpperCase()}${has.slice(1)}, but the line's service is not known, so none could be chosen.`;
 }
 
 // A hook-up BOM says "NEEDLE VALVE TUBE END CONNECTIONS, 6000#" and the ISO
@@ -477,6 +499,7 @@ export function verifyHookup(
       measuredVariable,
       service,
       sheet,
+      noTypicalReason: sheet ? null : noTypicalReasonOf(sheets, measuredVariable, service, label),
       checks,
       missingCount: checks.filter((c) => c.status === "unmatched").length,
     };

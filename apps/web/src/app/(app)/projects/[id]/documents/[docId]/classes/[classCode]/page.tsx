@@ -203,9 +203,8 @@ export default async function ClassDetailPage({
   const [project] = await db.select({ organizationId: projects.organizationId }).from(projects).where(eq(projects.id, projectId)).limit(1);
   if (!project || !(await canReadOrganization(session, project.organizationId))) return <p>Document not found.</p>;
 
-  // A spec sheet is never an ISO, and a checker only reads ISO documents
-  // (see the document page's own rule) -- this page is Document Control's.
-  if (!session.isDcc) return <p>Not found.</p>;
+  // Open to anyone who can read the project (the check above): this page only READS. The one
+  // button that writes -- Recheck -- is Document Control's, here and again in its action.
 
   const [document] = await db.select().from(documents).where(eq(documents.id, docId)).limit(1);
   if (!document || document.projectId !== projectId) return <p>Document not found.</p>;
@@ -386,7 +385,11 @@ export default async function ClassDetailPage({
     <div className="flex flex-col gap-5">
       <PageHeader
         title={<span className="break-all">Class Detail: {classTag.tagNumber}</span>}
-        back={{ href: `/projects/${projectId}/documents/${docId}`, label: "Back to spec sheet" }}
+        back={
+          session.isDcc
+            ? { href: `/projects/${projectId}/documents/${docId}`, label: "Back to spec sheet" }
+            : { href: `/projects/${projectId}/specs`, label: "Pipe specs" }
+        }
         description={headerLine || undefined}
         meta={
           <>
@@ -407,13 +410,15 @@ export default async function ClassDetailPage({
             <IconChevronDown size={16} className="flex-none transition-transform group-open:rotate-180" />
           </summary>
           <div className="border-t p-4">
-            <form action={recheckClassAction.bind(null, docId, classTag.tagNumber)} className="flex flex-wrap items-center gap-3">
-              <button className="btn btn-secondary btn-sm">Recheck extracted data</button>
-              <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-                Re-sorts every category into true ascending size order and re-runs the overlap/notes checks on that corrected data. No AI
-                call &mdash; gap checks against the source page still need a full re-extraction.
-              </p>
-            </form>
+            {session.isDcc && (
+              <form action={recheckClassAction.bind(null, docId, classTag.tagNumber)} className="flex flex-wrap items-center gap-3">
+                <button className="btn btn-secondary btn-sm">Recheck extracted data</button>
+                <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                  Re-sorts every category into true ascending size order and re-runs the overlap/notes checks on that corrected data. No AI
+                  call &mdash; gap checks against the source page still need a full re-extraction.
+                </p>
+              </form>
+            )}
             <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
               {warnings.map((w, i) => (
                 <li key={i}>{w}</li>

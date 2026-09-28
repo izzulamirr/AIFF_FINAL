@@ -3,7 +3,7 @@ import { documents, extractedTags } from "@easy/db";
 import { enrichIsoLineAttrs } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { fluidPhaseOf, groupHookupSheets, verifyHookup } from "@/lib/verifyHookup";
-import { classifyComponent, classifyInstrument, mergeIsoLineSheets } from "@/lib/verifyIso";
+import { classifyComponent, classifyInstrument, isoBomRowText, mergeIsoLineSheets } from "@/lib/verifyIso";
 import { lineKey } from "@/lib/isoLines";
 
 // Instrument hook-up verification: the ISO checked against the project's
@@ -117,11 +117,13 @@ export async function verifyIsoHookup({
   // instrument hook-up to check.
   const isoInstruments = isoBom
     .map((row) => {
-      const text = `${row.component_type ?? ""} ${row.description ?? ""}`;
+      // isoBomRowText restores the hyphen on a bare tag ("FT0003" -> "FT-0003"), which is how an
+      // ISO prints it and the only form the instrument classifier decodes.
+      const text = isoBomRowText(row);
       const category = classifyComponent(text);
       const label = category && classifyInstrument(text) === category ? category : null;
       if (!label) return null;
-      const tag = String(row.description ?? "").match(/\b[A-Z]{2,4}-[A-Z]?\d+\b/)?.[0] ?? String(row.description ?? "").trim();
+      const tag = text.toUpperCase().match(/\b[A-Z]{2,4}-[A-Z]?\d+\b/)?.[0] ?? String(row.description ?? "").trim();
       return { tag, text };
     })
     .filter((v): v is { tag: string; text: string } => v !== null);

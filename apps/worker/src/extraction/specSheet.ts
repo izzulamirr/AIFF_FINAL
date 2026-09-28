@@ -11,6 +11,8 @@ import {
   type PageRange,
 } from "@easy/extraction-schemas";
 import { callTool, callWithRetry } from "./claudeClient";
+import { classRowsFromTable } from "./specTable";
+import { readSpecPageTable } from "./specTablePdf";
 import type { DocTypeExtractor, TagDraft } from "./types";
 
 // Direct generalization of AIFF's electron/specExtraction.js pipeline
@@ -44,6 +46,26 @@ interface SpecBranchTablesResult {
 
 const SYSTEM_PROMPT = buildSystemPrompt("Piping Material Specification");
 
+/**
+ * A class's pipe / fitting / flange rows read from the geometry of the page that holds its
+ * size table, or null when no page in its range yields a table that reads cleanly (every
+ * size column covered exactly once by each pipe row).
+ */
+async function geometryRowsFor(buffer: Buffer, range: PageRange | undefined) {
+  if (!range) return null;
+  for (let page = range.start; page <= range.end; page++) {
+    try {
+      const table = await readSpecPageTable(buffer, page);
+      const rows = table ? classRowsFromTable(table) : null;
+      if (table && rows && rows.pipes.length >= 3 && rows.issues.length === 0) return { page, columns: table.columns.length, rows };
+    } catch (err) {
+      // A page whose geometry cannot be read falls back to the model, as it always did.
+      console.warn(`Spec table geometry: page ${page} could not be read:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return null;
+}
+
 // An admin item-list workbook is already structured -- every line names its class, its
 // component type and its size -- so its classes are built straight from those columns.
 // Sending it through the extraction below costs several passes over the whole workbook on
@@ -58,7 +80,7 @@ function specClassesFromWorkbook(pages: Array<{ pageNumber: number; pageText: st
   return classes.length > 0 ? { items: items.length, classes } : null;
 }
 
-export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, onProgress, _pdfBuffer, context) => {
+export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, onProgress, pdfBuffer, context) => {
   if (context?.fileName.toLowerCase().endsWith(".xlsx")) {
     const built = specClassesFromWorkbook(pages, context.fileName);
     if (built) {
@@ -113,6 +135,7 @@ export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, 
   onProgress?.({ phase: "class_index", current: 1, total: 1 });
 
   const detailByClass = new Map<string, SpecClassDetailResult>();
+  const geometryRead = new Map<string, { page: number; columns: number }>();
   for (let i = 0; i < locate.classes.length; i++) {
     const cls = locate.classes[i];
     const detailText = sliceText(pageList, cls.detail_pages);
@@ -125,6 +148,19 @@ export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, 
         useThinking: true,
       })
     );
+    // The model is unreliable on which size columns a merged cell covers. Where the page
+    // has a text layer and drawn rules, that is a matter of coordinates: the table's own
+    // geometry decides, and the model's pipes, fittings and flanges are replaced by it.
+    // Valves stay with the model. A page it cannot read cleanly keeps the model's answer.
+    if (pdfBuffer) {
+      const read = await geometryRowsFor(pdfBuffer, cls.detail_pages);
+      if (read) {
+        detail.pipes = read.rows.pipes.map((p) => ({ ...p }));
+        if (read.rows.fittings.length > 0) detail.fittings = read.rows.fittings;
+        if (read.rows.flanges.length > 0) detail.flanges = read.rows.flanges;
+        geometryRead.set(cls.class_code, { page: read.page, columns: read.columns });
+      }
+    }
     detailByClass.set(cls.class_code, detail);
     onProgress?.({ phase: "class_detail", current: i + 1, total: locate.classes.length, detail: cls.class_code });
   }
@@ -158,7 +194,13 @@ export const extractSpecSheetDocument: DocTypeExtractor = async (pages, apiKey, 
   }));
 
   return {
-    rawJson: { classes: classIndex.classes, detail: Object.fromEntries(detailByClass), branch_tables: branchTables },
+    rawJson: {
+      classes: classIndex.classes,
+      detail: Object.fromEntries(detailByClass),
+      branch_tables: branchTables,
+      // Which classes had their pipes, fittings and flanges read from the page's geometry.
+      geometry: Object.fromEntries(geometryRead),
+    },
     tags,
   };
 };

@@ -126,8 +126,8 @@ function Drawing({ d, showName }: { d: DrawingReport; showName: boolean }) {
                       <span className="italic">For information: {r.problem}</span>
                     ) : (
                       <>
-                        <span className={r.kind === "missing" ? "font-medium text-danger" : "font-medium text-warning"}>
-                          {r.kind === "missing" ? "Not in admin list" : "Differs from admin list"}
+    <span className={r.kind === "deviation" ? "font-medium text-warning" : "font-medium text-danger"}>
+                          {r.kind === "wrongSpec" ? "Wrong spec used" : r.kind === "missing" ? "Not in admin list" : "Differs from admin list"}
                         </span>
                         <br />
                         {r.problem}
@@ -321,22 +321,30 @@ function Drawing({ d, showName }: { d: DrawingReport; showName: boolean }) {
             <thead>
               <tr>
                 <th className="w-12">Ref</th>
-                <th className="w-20">Sheet</th>
-                <th className="w-20">Spool</th>
-                <th>Size read from the drawing (mm)</th>
+                <th className="w-16">Sheet</th>
+                <th className="w-40">Spool</th>
+                <th className="w-44">Size read from the drawing (mm)</th>
                 <th>Problem</th>
               </tr>
             </thead>
             <tbody>
               {d.containers.map((r, i) => (
                 <tr key={i} className={r.note ? "text-muted-foreground" : ""}>
-                  <td className="tabular-nums text-muted-foreground">
+                  <td className="tabular-nums text-muted-foreground align-top">
                     {n}.{i + 1}
                   </td>
-                  <td className="whitespace-nowrap">{r.sheet}</td>
-                  <td className={r.note ? "" : "font-medium"}>{r.spool}</td>
-                  <td>{r.size}</td>
-                  <td>
+                  <td className="whitespace-nowrap align-top">{r.sheet}</td>
+                  <td className={`whitespace-nowrap align-top ${r.note ? "" : "font-medium"}`}>{r.spool}</td>
+                  <td className="align-top">
+                    {r.size === "-"
+                      ? "-"
+                      : r.size.split(" · ").map((axis) => (
+                          <span key={axis} className="block whitespace-nowrap">
+                            {axis}
+                          </span>
+                        ))}
+                  </td>
+                  <td className="align-top">
                     {r.problem}
                     {r.note && <span className="block italic">For information: {r.note}</span>}
                   </td>

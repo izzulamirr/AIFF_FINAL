@@ -368,7 +368,7 @@ export function classRowFields(category: SpecCategory, row: Record<string, unkno
 // SUCCESSFULLY extracted tokens that actively disagree counts as "differs".
 const END_TYPE_PATTERN = /\b(BW|SW|WN|THRD|THD|LJ|SO|PE|BE|TE|FE|RF)\b/gi;
 const STANDARD_PATTERNS = [/\bB\s?\d{1,3}\.\d{1,3}(?:\.\d+)?\b/gi, /\bAPI\s?\d{3,4}[A-Z]?\b/gi, /\bMSS[- ]?SP[- ]?\d+\b/gi];
-const SCHEDULE_PATTERN = /\bSCH(?:EDULE)?\.?\s?(\d+S?|XXS|XS|STD)\b/i;
+const SCHEDULE_PATTERN = /\bSCH(?:EDULE)?\.?\s?(\d+(?:\.\d+)?S?|XXS|XS|STD)\b/i;
 const CLASS_RATING_PATTERN = /\bCLASS\.?\s?(\d{2,4})\b|\b(\d{2,4})\s?#/i;
 // The ASTM/ASME base material designation -- "A106", "A672", "A105N",
 // "B564"... one or two letters then digits then an optional trailing
@@ -424,7 +424,7 @@ function extractSchedule(text: string): string | null {
 // "SCH160xSCH160" / "SCH40xSCH160" -> ["160", "160"] / ["40", "160"]: run
 // schedule first, branch second. One schedule -> a one-element array.
 function extractFittingSchedules(text: string): string[] | null {
-  const m = /\bSCH(?:EDULE)?\.?\s?(\d+S?|XXS|XS|STD)(?:\s?[xX]\s?(?:SCH(?:EDULE)?\.?\s?)?(\d+S?|XXS|XS|STD))?\b/i.exec(text);
+  const m = /\bSCH(?:EDULE)?\.?\s?(\d+(?:\.\d+)?S?|XXS|XS|STD)(?:\s?[xX]\s?(?:SCH(?:EDULE)?\.?\s?)?(\d+(?:\.\d+)?S?|XXS|XS|STD))?\b/i.exec(text);
   if (!m) return null;
   return m[2] ? [m[1].toUpperCase(), m[2].toUpperCase()] : [m[1].toUpperCase()];
 }
@@ -434,6 +434,7 @@ const normalizeSchedule = (s: string) =>
     .toUpperCase()
     .replace(/^SCH(?:EDULE)?\.?\s*/, "")
     .replace(/\s+/g, "")
+    .replace(/MM$/, "")
     .replace(/^0+(?=\d)/, "");
 
 // A BW fitting's wall thickness follows the mating PIPE's schedule at that
@@ -517,7 +518,7 @@ export function compareAdminItemToClientRow(
 
   const clientRating = client.classRating.trim();
   const isPlaceholderRating = !clientRating || clientRating === "-" || clientRating === FITTING_CLASS_RATING_LABEL;
-  const normalizeRating = (s: string) => s.toUpperCase().replace(/^0+(?=\d)/, "");
+  const normalizeRating = (s: string) => s.toUpperCase().replace(/MM$/, "").replace(/^0+(?=\d)/, "");
 
   // A fitting's schedule is the client PIPE's schedule at the fitting's own
   // size -- a 1/2" weldolet is held to the 1/2" pipe row. A run x branch

@@ -56,6 +56,7 @@ export function HookupResults({ results, isoLineNumber, lineService, serviceBasi
             <p className="border-b bg-danger-soft px-5 py-2.5 text-xs text-danger">
               No typical in this set covers a {result.measuredVariable ?? "?"} instrument
               {result.service ? ` on ${result.service} service` : ""}.
+              {result.noTypicalReason && <span className="mt-1 block text-muted-foreground">{result.noTypicalReason}</span>}
             </p>
           )}
 

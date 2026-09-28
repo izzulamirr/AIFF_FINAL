@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db";
 import { normalizeSpecClassCode } from "@/lib/verifySpecCrossCheck";
 import { revalidateSpecClassAttributes } from "@/lib/revalidateSpecClass";
+import { assertDcc } from "@/lib/roles";
 import { requireProjectMembership } from "../../../../actions";
 
 // Ported from the sibling AIFF_LATEST project, unchanged. Re-sorts this
@@ -21,6 +22,7 @@ export async function recheckClassAction(documentId: string, classCode: string) 
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated.");
+  assertDcc(user, "recheck a spec class");
 
   const db = getDb();
   const [document] = await db.select().from(documents).where(eq(documents.id, documentId)).limit(1);
