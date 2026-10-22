@@ -26,7 +26,7 @@ const ACCESS = [
 export default async function SignupPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; name?: string; email?: string }>;
+  searchParams: Promise<{ error?: string; name?: string; username?: string; email?: string }>;
 }) {
   const params = await searchParams;
 
@@ -63,6 +63,25 @@ export default async function SignupPage({
             Full name
           </label>
           <input id="name" name="name" required autoComplete="name" defaultValue={params.name ?? ""} className="input h-10" />
+        </div>
+        <div>
+          <label htmlFor="username" className="field-label">
+            Username
+          </label>
+          <input
+            id="username"
+            name="username"
+            required
+            minLength={3}
+            maxLength={32}
+            pattern="[A-Za-z0-9][A-Za-z0-9._\-]{2,31}"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            defaultValue={params.username ?? ""}
+            className="input h-10"
+          />
+          <p className="field-hint">What you sign in with. Letters, digits, dot, dash or underscore.</p>
         </div>
         <div>
           <label htmlFor="email" className="field-label">

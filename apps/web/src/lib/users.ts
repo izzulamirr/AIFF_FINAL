@@ -1,10 +1,9 @@
 import { sql } from "drizzle-orm";
-import type { User } from "@supabase/supabase-js";
 import { lineReviews } from "@easy/db";
 import { getDb } from "@/lib/db";
 import { isMissingTable } from "@/lib/progress";
 import { isBootstrapDcc, roleOf, type AppRole } from "@/lib/roles";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { allUsers, usernameOf } from "@/lib/usernames";
 
 // Every account, for the users page.
 //
@@ -15,6 +14,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export interface AccountRow {
   id: string;
   email: string;
+  /** What the person signs in with; null until one is assigned (they can still sign in by email). */
+  username: string | null;
   /** The name given at sign-up. Display only: the account holder can edit it. */
   name: string | null;
   role: AppRole;
@@ -25,21 +26,6 @@ export interface AccountRow {
   createdAt: Date;
   /** Lines this person has marked done; null if the progress tables do not exist yet. */
   linesChecked: number | null;
-}
-
-const PER_PAGE = 200;
-const MAX_PAGES = 25;
-
-async function allUsers(): Promise<User[]> {
-  const admin = createAdminClient();
-  const users: User[] = [];
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: PER_PAGE });
-    if (error) throw new Error(`Could not list the accounts: ${error.message}`);
-    users.push(...data.users);
-    if (data.users.length < PER_PAGE) break;
-  }
-  return users;
 }
 
 // How many lines each person has marked done, by account. Null when the progress
@@ -66,6 +52,7 @@ export async function listAccounts(): Promise<AccountRow[]> {
       return {
         id: user.id,
         email: user.email ?? "",
+        username: usernameOf(user),
         name: typeof fullName === "string" && fullName.trim() ? fullName.trim() : null,
         role: roleOf(user),
         bootstrap: isBootstrapDcc(user),

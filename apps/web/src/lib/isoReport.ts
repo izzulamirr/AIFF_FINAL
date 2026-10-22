@@ -2,6 +2,7 @@ import { combineAdminText } from "@/lib/parseSheetPage";
 import { fitOf, isTight, nearMiss } from "@/lib/containerFit";
 import type { IsoDrawingChecks, LineSummary } from "@/lib/lineSummary";
 import type { DesignBasisRow, RoutingFittingRow } from "@/lib/verifyIso";
+import { bomFault } from "@/lib/verifyBomCrossCheck";
 
 // Every finding from one ISO line's checks -- what a checker hands to the designer.
 //
@@ -39,6 +40,8 @@ export interface BomIssue {
   problem: string;
   /** The admin line the BOM was compared with, where there is one. */
   adminLine: string | null;
+  /** Who has to do what about it, where the check can say. */
+  action: string | null;
 }
 
 export interface RoutingIssue {
@@ -158,12 +161,13 @@ function bomIssues(sheets: IsoDrawingChecks["mto"]["sheetData"]): BomIssue[] {
         if (unlisted === "support" || unlisted === "instrument") continue;
         const kind = check.status === "wrong_spec" ? "wrongSpec" : check.status === "deviation" ? "deviation" : check.status === "missing" ? "missing" : "notChecked";
         const adminLine = check.adminMatches[0] ? combineAdminText(check.adminMatches[0]) : null;
+        // Always said from the BOM's side: the admin spec is the reference.
         const said =
           check.status === "wrong_spec"
-            ? [check.note, ...check.adminMismatches.map((m) => `${sentence(m.attribute)}: BOM says ${m.wanted}, ${check.wrongSpec ? "the filed spec's" : ""} admin list has ${m.found.join(" / ")}`)].filter(Boolean).join(" ")
+            ? [check.note, ...check.adminMismatches.map((m) => `${bomFault(m, group.specClass)}.`)].filter(Boolean).join(" ")
             : check.status === "deviation"
-            ? check.adminMismatches.map((m) => `${sentence(m.attribute)}: BOM says ${m.wanted}, admin list has ${m.found.join(" / ")}`).join("; ")
-            : (check.note ?? "Not in the admin item list");
+            ? check.adminMismatches.map((m) => bomFault(m, group.specClass)).join("; ")
+            : (check.note ?? "BOM item is not in the spec");
         // A stud's order size travels with its verdict.
         const problem = check.detail ? `${said}. ${check.detail}.` : said;
         out.push({
@@ -176,6 +180,7 @@ function bomIssues(sheets: IsoDrawingChecks["mto"]["sheetData"]): BomIssue[] {
           kind,
           problem,
           adminLine,
+          action: check.action ?? null,
         });
       }
     }

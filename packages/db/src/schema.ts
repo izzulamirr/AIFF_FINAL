@@ -374,6 +374,19 @@ export const lineReviews = pgTable(
   (table) => [primaryKey({ columns: [table.projectId, table.lineKey] })]
 );
 
+// How far each person has read their notifications.
+//
+// The notifications themselves are not stored: a revision change is already in
+// the data (a line carried by a superseded drawing and a newer one), so it is
+// worked out on each request -- see apps/web/src/lib/notifications.ts. All that
+// has to be remembered is a per-person watermark: anything newer is unread.
+export const notificationReads = pgTable("notification_reads", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => authUsers.id, { onDelete: "cascade" }),
+  lastReadAt: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ---------------------------------------------------------------------------
 // Library: reference material that is not itself reviewed -- legends, client
 // specifications, standards, templates, datasheets.

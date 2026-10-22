@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert, Badge, EmptyState, Stat } from "@/components/ui/primitives";
 import { IconUsers } from "@/components/ui/icons";
 import { ClientAccess, type ClientOption } from "./ClientAccess";
-import { setOrganizationAccess, setUserRole } from "./actions";
+import { setOrganizationAccess, setUserRole, setUsername } from "./actions";
 
 export const metadata: Metadata = { title: "Users" };
 
@@ -42,6 +42,7 @@ export default async function UsersPage() {
 
   const dccCount = accounts.filter((a) => a.role === "dcc").length;
   const unconfirmed = accounts.filter((a) => !a.confirmed).length;
+  const noUsername = accounts.filter((a) => !a.username).length;
   const unassigned = accounts.filter((a) => (membershipsByUser.get(a.id)?.length ?? 0) === 0).length;
 
   return (
@@ -62,7 +63,8 @@ export default async function UsersPage() {
             <Stat label="Accounts" value={accounts.length} />
             <Stat label="Document Control" value={dccCount} />
             <Stat label="Checkers" value={accounts.length - dccCount} />
-            {unconfirmed > 0 && <Stat label="Email not confirmed" value={unconfirmed} tone="warning" hint="cannot sign in yet" />}
+            {noUsername > 0 && <Stat label="No username" value={noUsername} tone="warning" hint="signs in by email until set" />}
+            {unconfirmed > 0 &&<Stat label="Email not confirmed" value={unconfirmed} tone="warning" hint="cannot sign in yet" />}
             {unassigned > 0 && <Stat label="Assigned to no client" value={unassigned} tone="warning" hint="they see an empty app" />}
           </div>
 
@@ -98,6 +100,28 @@ export default async function UsersPage() {
                         <td>
                           <p className="font-medium">{a.name ?? a.email}</p>
                           {a.name && <p className="text-xs text-muted-foreground">{a.email}</p>}
+                          {/* The sign-in name, editable in place. An account with
+                              none still signs in by email, so it is a warning,
+                              not a lock-out. */}
+                          <form action={setUsername.bind(null, a.id)} className="mt-1.5 flex items-center gap-1.5">
+                            <span className="text-xs text-muted-foreground">@</span>
+                            <input
+                              name="username"
+                              required
+                              defaultValue={a.username ?? ""}
+                              placeholder="username"
+                              aria-label={`Username for ${label}`}
+                              autoCapitalize="none"
+                              spellCheck={false}
+                              className="input h-7 w-36 text-xs"
+                            />
+                            <button className="btn btn-secondary btn-xs">Save</button>
+                          </form>
+                          {!a.username && (
+                            <Badge tone="warning" dot className="mt-1">
+                              No username
+                            </Badge>
+                          )}
                           {!a.confirmed && (
                             <Badge tone="warning" dot className="mt-1">
                               Email not confirmed

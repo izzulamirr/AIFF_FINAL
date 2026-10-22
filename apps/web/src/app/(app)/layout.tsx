@@ -6,7 +6,36 @@ import { IconLogOut } from "@/components/ui/icons";
 import { activeOrganization, memberOrganizationsOf } from "@/lib/access";
 import { ROLE_LABEL } from "@/lib/roles";
 import { getSessionUser } from "@/lib/session";
-import { leaveOrganization, signOut } from "./actions";
+import { notificationsFor } from "@/lib/notifications";
+import { NotificationBell, type BellNotice } from "@/components/shell/NotificationBell";
+import type { SessionUser } from "@/lib/session";
+import { leaveOrganization, markNotificationsRead, signOut } from "./actions";
+
+const noticeDate = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
+const rev = (r: string | null) => (r ? `Rev ${r}` : "an unread revision");
+
+// The bell, or nothing. A notice that cannot be worked out must not take every
+// page down with it, so a failure here is logged and the bell left off.
+async function bell(session: SessionUser) {
+  try {
+    const { notices, unread, canMarkRead } = await notificationsFor(session);
+    const items: BellNotice[] = notices.map((n) => ({
+      key: `${n.projectId}:${n.lineNumber}`,
+      href: `/projects/${n.projectId}?line=${encodeURIComponent(n.lineNumber)}`,
+      projectName: n.projectName,
+      lineNumber: n.lineNumber,
+      change: `Revised: ${rev(n.fromRevision)} → ${rev(n.toRevision)}`,
+      when: noticeDate.format(n.at),
+      fileName: n.fileName,
+      yourCheck: n.youCheckedAt ? `You checked this at Rev ${n.youCheckedAt} — re-check needed` : null,
+      unread: n.unread,
+    }));
+    return <NotificationBell notices={items} unread={unread} markRead={canMarkRead ? markNotificationsRead : undefined} />;
+  } catch (err) {
+    console.error("notifications: could not be worked out", err);
+    return null;
+  }
+}
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await getSessionUser();
@@ -14,14 +43,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const shellProps = { email: session.email, name: session.name, roleLabel: ROLE_LABEL[session.role] };
 
-  // Every top bar carries the same plain "Sign out" button.
+  // Every top bar carries the same notification bell and plain "Sign out" button.
   const barSignOut = (
-    <form action={signOut}>
-      <button type="submit" className="btn btn-ghost btn-sm">
-        <IconLogOut size={15} />
-        Sign out
-      </button>
-    </form>
+    <div className="flex items-center gap-1">
+      {await bell(session)}
+      <form action={signOut}>
+        <button type="submit" className="btn btn-ghost btn-sm">
+          <IconLogOut size={15} />
+          Sign out
+        </button>
+      </form>
+    </div>
   );
 
   if (session.isDcc) {

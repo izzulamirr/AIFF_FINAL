@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/primitives";
 import type { IsoChecks } from "@/lib/isoChecks";
-import { ADMIN_STATUS_TONE } from "@/lib/verifyBomCrossCheck";
+import { ADMIN_STATUS_TONE, bomFault } from "@/lib/verifyBomCrossCheck";
 import { combineAdminText } from "@/lib/parseSheetPage";
 import type { DesignBasisRow, RoutingFittingRow, ValveMatchGroup } from "@/lib/verifyIso";
 
@@ -230,11 +230,11 @@ export function BomSheets({ sheets }: { sheets: BomSheet[] }) {
 // none, why not).
 function tally(rows: Array<{ check: { status: string } }>) {
   const n = (...s: string[]) => rows.filter((r) => s.includes(r.check.status)).length;
-  return { match: n("match"), deviation: n("deviation", "wrong_spec"), missing: n("missing") };
+  return { match: n("match"), wrongSpec: n("deviation"), wrongClass: n("wrong_spec"), missing: n("missing") };
 }
 
 function CountBadges({ rows }: { rows: Array<{ check: { status: string } }> }) {
-  const { match, deviation, missing } = tally(rows);
+  const { match, wrongSpec, wrongClass, missing } = tally(rows);
   return (
     <span className="flex flex-wrap items-center gap-1.5">
       {match > 0 && (
@@ -242,14 +242,19 @@ function CountBadges({ rows }: { rows: Array<{ check: { status: string } }> }) {
           {match} match
         </Badge>
       )}
-      {deviation > 0 && (
-        <Badge tone="warning" dot>
-          {deviation} deviation{deviation > 1 ? "s" : ""}
+      {wrongSpec > 0 && (
+        <Badge tone="danger" dot>
+          {wrongSpec} wrong spec
+        </Badge>
+      )}
+      {wrongClass > 0 && (
+        <Badge tone="danger" dot>
+          {wrongClass} wrong class
         </Badge>
       )}
       {missing > 0 && (
         <Badge tone="danger" dot>
-          {missing} not in list
+          {missing} not in spec
         </Badge>
       )}
     </span>
@@ -277,7 +282,7 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                   <th className="w-12">Qty</th>
                   <th>BOM</th>
                   <th className="w-32">Result</th>
-                  <th>Admin item list</th>
+                  <th>Spec requires (admin item list)</th>
                 </tr>
               </thead>
               {groups.map(({ specClass, rows }) => (
@@ -298,38 +303,56 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                   {rows.map((row) => {
                     const { check } = row;
                     const muted = check.status === "skipped" || check.status === "no_list";
+                    const fails = check.status !== "match" && check.status !== "skipped";
                     return (
                       <tr key={row.id} className={check.status === "wrong_spec" ? "bg-danger-soft/40" : ""}>
                         <td className="tabular-nums text-muted-foreground">{row.itemNo}</td>
                         <td className="whitespace-nowrap tabular-nums">{row.size}</td>
                         <td className="tabular-nums">{row.quantity}</td>
-                        <td className={`max-w-sm ${muted ? "text-muted-foreground" : ""}`}>{row.description}</td>
+                        {/* Every fault is shown HERE, under what the BOM states: the
+                            admin spec is the reference, so what is wrong is always
+                            the BOM. The spec column only ever shows what is required. */}
+                        <td className="max-w-sm">
+                          <p className={muted ? "text-muted-foreground" : ""}>{row.description}</p>
+                          {fails && check.note && <p className="mt-0.5 font-medium text-danger">{check.note}</p>}
+                          {fails &&
+                            check.adminMismatches.map((m) => (
+                              <p key={m.attribute} className="mt-0.5 font-medium text-danger">
+                                {bomFault(m, specClass)}
+                              </p>
+                            ))}
+                          {check.detail && <p className="mt-0.5 font-medium">{check.detail}</p>}
+                          {check.action && (
+                            <p className="mt-1 rounded border border-warning-border bg-warning-soft px-2 py-1 text-foreground">
+                              <span className="font-semibold">Action required: </span>
+                              {check.action}
+                            </p>
+                          )}
+                        </td>
                         <td>
                           <Badge tone={ADMIN_STATUS_TONE[check.status]} dot>
                             {check.label}
                           </Badge>
                         </td>
-                        <td className="max-w-sm">
+                        <td className="max-w-sm text-muted-foreground">
                           {check.adminMatches.length > 0 ? (
                             <>
+                              {/* Always name the class these lines come from. On a wrong-class
+                                  row they are the OTHER class's, which must not read as what the
+                                  filed class requires. */}
+                              <p className="font-medium text-foreground">
+                                Listed in{" "}
+                                {check.status === "wrong_spec" && check.wrongSpec && check.wrongSpec.length > 0 ? check.wrongSpec.join(" / ") : specClass}:
+                              </p>
                               {check.adminMatches.map((m, i) => (
-                                <p key={i} className="text-muted-foreground">
-                                  {combineAdminText(m)}
-                                </p>
-                              ))}
-                              {check.adminMismatches.map((m) => (
-                                <p key={m.attribute} className="mt-0.5 font-medium text-danger">
-                                  {m.attribute}: BOM {m.wanted} &middot; admin {m.found.join(" / ")}
-                                </p>
+                                <p key={i}>{combineAdminText(m)}</p>
                               ))}
                             </>
-                          ) : check.note ? (
-                            <span className="text-muted-foreground">{check.note}</span>
+                          ) : !fails && check.note ? (
+                            <span>{check.note}</span>
                           ) : (
-                            <span className="text-muted-foreground">-</span>
+                            <span>-</span>
                           )}
-                          {check.status === "wrong_spec" && check.note && <p className="mt-0.5 font-medium text-danger">{check.note}</p>}
-                          {check.detail && <p className="mt-0.5 font-medium">{check.detail}</p>}
                         </td>
                       </tr>
                     );

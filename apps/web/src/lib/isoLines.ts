@@ -37,6 +37,8 @@ export interface IsoLine {
   key: string;
   /** The ISO documents carrying the CURRENT revision of this line. */
   documentIds: string[];
+  /** Those same drawings in full -- file name, upload date, revision. */
+  current: LineDrawing[];
   /** Sheets across those documents (one `line` tag per sheet). */
   sheets: number;
   /** The revision in force, as printed. Null when it could not be read or ordered. */
@@ -119,6 +121,7 @@ export async function isoLinesOf(projectId: string): Promise<IsoLine[]> {
       lineNumber: draft.lineNumber,
       key,
       documentIds: current.map((d) => d.documentId),
+      current,
       sheets: current.reduce((n, d) => n + d.sheets, 0),
       revision: resolved.revision,
       superseded: drawings.filter((d) => !isCurrent.has(d.documentId)).sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime()),

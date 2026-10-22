@@ -34,7 +34,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       }
     >
       <h1 className="text-2xl font-semibold tracking-tight">Sign in to EASY</h1>
-      <p className="mt-1.5 text-sm text-muted-foreground">Enter your email and password to continue.</p>
+      <p className="mt-1.5 text-sm text-muted-foreground">Enter your username and password to continue.</p>
 
       <div className="mt-6 flex flex-col gap-3 empty:hidden">
         {params.error && <Alert tone="danger">{params.error}</Alert>}
@@ -43,10 +43,19 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
 
       <form action={login} className="mt-6 flex flex-col gap-4">
         <div>
-          <label htmlFor="email" className="field-label">
-            Email
+          <label htmlFor="username" className="field-label">
+            Username
           </label>
-          <input id="email" name="email" type="email" required autoComplete="email" className="input h-10" />
+          <input
+            id="username"
+            name="username"
+            required
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            className="input h-10"
+          />
+          <p className="field-hint">No username yet? Sign in with your email address.</p>
         </div>
         <div>
           <label htmlFor="password" className="field-label">

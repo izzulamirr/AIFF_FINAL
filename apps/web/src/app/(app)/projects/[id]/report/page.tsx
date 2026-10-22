@@ -126,14 +126,23 @@ function Drawing({ d, showName }: { d: DrawingReport; showName: boolean }) {
                       <span className="italic">For information: {r.problem}</span>
                     ) : (
                       <>
-    <span className={r.kind === "deviation" ? "font-medium text-warning" : "font-medium text-danger"}>
-                          {r.kind === "wrongSpec" ? "Wrong spec used" : r.kind === "missing" ? "Not in admin list" : "Differs from admin list"}
+                        <span className="font-medium text-danger">
+                          {r.kind === "wrongSpec" ? "Wrong class" : r.kind === "missing" ? "Not in spec" : "Wrong spec"}
                         </span>
                         <br />
                         {r.problem}
                       </>
                     )}
-                    {r.adminLine && r.kind === "deviation" && <span className="block text-muted-foreground">Admin: {r.adminLine}</span>}
+                    {r.adminLine && r.kind === "deviation" && (
+                      <span className="block text-muted-foreground">
+                        {r.specClass} requires: {r.adminLine}
+                      </span>
+                    )}
+                    {r.action && (
+                      <span className="mt-1 block font-medium text-foreground">
+                        Action required: <span className="font-normal">{r.action}</span>
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

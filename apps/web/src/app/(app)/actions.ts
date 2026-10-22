@@ -10,6 +10,7 @@ import { ACTIVE_ORG_COOKIE, memberOrganizationsOf } from "@/lib/access";
 import { assertDcc } from "@/lib/roles";
 import { getSessionUser } from "@/lib/session";
 import { getDb } from "@/lib/db";
+import { markAllRead } from "@/lib/notifications";
 
 // A month, so Document Control is not asked again on every visit -- signing out
 // forgets it sooner. Not a secret and not a permission: it is checked against the
@@ -28,6 +29,14 @@ export async function signOut() {
   // The next person to sign in on this browser starts at the organization picker.
   (await cookies()).delete(ACTIVE_ORG_COOKIE);
   redirect("/login");
+}
+
+// The bell's "Mark all read": every notice up to now is read, for this person only.
+export async function markNotificationsRead() {
+  const session = await getSessionUser();
+  if (!session) redirect("/login");
+  await markAllRead(session.id);
+  revalidatePath("/", "layout");
 }
 
 // Document Control picks the organization it is working in. Only one it belongs

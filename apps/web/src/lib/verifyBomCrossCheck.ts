@@ -299,13 +299,13 @@ export function crossCheckBomGasket(
     adminMatches: [] as SheetItem[],
     adminMismatches: [] as AdminAttributeMismatch[],
   });
-  if (pool.length === 0) return notFound(`The admin item list has no gasket lines for class "${classCode}".`);
+  if (pool.length === 0) return notFound(`BOM gasket is not in the ${classCode} spec: no gasket is listed.`);
 
   // Size is the whole match. narrowAdminMatches records a size mismatch when no
   // line has it, which here means "no gasket of this size".
   const bySize = narrowAdminMatches(pool, { size: item.size, description: "" });
   if (bySize.mismatches.some((m) => m.attribute === "size")) {
-    return notFound(`The admin item list has no size ${String(item.size ?? "").trim()} gasket in class "${classCode}".`);
+    return notFound(`BOM gasket size ${String(item.size ?? "").trim()} is not in the ${classCode} spec.`);
   }
 
   let lines = bySize.matches;
@@ -378,7 +378,7 @@ function checkStudBolt(item: Record<string, unknown>, classCode: string, norm: s
     : null;
 
   const lines = adminItems.filter((a) => a.specCode.trim() && normalizeBomSpecClass(a.specCode) === norm && adminItemHint(a)?.typeHint === "bolt");
-  if (lines.length === 0) return { ...adminCheck("missing", `The admin item list has no stud bolt lines in class "${classCode}".`), detail };
+  if (lines.length === 0) return { ...missing(`BOM stud bolt is not in the ${classCode} spec: no stud bolt is listed.`, BOM_ACTION.component(classCode)), detail };
 
   const wanted = studNutCounts(description);
   const nutsOf = (a: SheetItem) => studNutCounts(combineAdminText(a));
@@ -412,6 +412,12 @@ export interface AdminCheck {
   /** Something worth saying beside a verdict, whatever it is (a stud's order size). */
   detail?: string | null;
   /**
+   * What somebody has to DO about it, and who -- set where the item is not in the
+   * admin spec. `note` says what is wrong; this says what happens next, so a
+   * reader does not have to work out whether the drawing or the spec is at fault.
+   */
+  action?: string | null;
+  /**
    * Set when the item does not match the class it is filed under but DOES match another spec on
    * its sheet: the classes it matches instead. The item is not moved -- the class is the
    * extraction's -- the wrong spec is reported.
@@ -426,7 +432,7 @@ export interface AdminCheck {
 export const ADMIN_STATUS_TONE: Record<AdminCheckStatus, "success" | "warning" | "danger" | "neutral"> = {
   match: "success",
   wrong_spec: "danger",
-  deviation: "warning",
+  deviation: "danger",
   missing: "danger",
   no_list: "neutral",
   skipped: "neutral",
@@ -434,12 +440,27 @@ export const ADMIN_STATUS_TONE: Record<AdminCheckStatus, "success" | "warning" |
 
 const ADMIN_STATUS_LABEL: Record<AdminCheckStatus, string> = {
   match: "Match",
-  wrong_spec: "Wrong spec",
-  deviation: "Deviation",
-  missing: "Not in admin list",
-  no_list: "No admin list",
+  // Said plainly, as what is wrong with the BOM. "Deviation" was dropped: it
+  // reads as a tolerated difference, when the BOM item is simply not to spec.
+  //   deviation   the item is in the class, but what the BOM states is not what the spec requires
+  //   wrong_spec  the item belongs to a DIFFERENT class from the one it is filed under
+  wrong_spec: "Wrong class",
+  deviation: "Wrong spec",
+  missing: "Not in spec",
+  no_list: "Class not in spec",
   skipped: "Not checked",
 };
+
+// THE ADMIN SPEC IS THE REFERENCE. Every verdict here is a statement about the
+// BOM -- what the BOM states, and what the spec requires instead -- never about
+// the admin list being wrong. A result that reads "admin A105N" in red invites
+// the question of who is at fault; "BOM A234 WPB, spec requires A105N" does not.
+
+/** One attribute the BOM gets wrong, said from the BOM's side. `specClass` names the spec where that matters. */
+export function bomFault(m: AdminAttributeMismatch, specClass?: string): string {
+  const attribute = m.attribute.charAt(0).toUpperCase() + m.attribute.slice(1);
+  return `${attribute}: BOM states ${m.wanted} — ${specClass ?? "spec"} requires ${m.found.join(" / ")}`;
+}
 
 /** The same admin line reached by two parts of a merged row is one line. */
 function distinctLines(lines: SheetItem[]): SheetItem[] {
@@ -454,6 +475,31 @@ function distinctLines(lines: SheetItem[]): SheetItem[] {
 
 function adminCheck(status: AdminCheckStatus, note: string | null, adminMatches: SheetItem[] = [], adminMismatches: AdminAttributeMismatch[] = []): AdminCheck {
   return { status, label: ADMIN_STATUS_LABEL[status], note, adminMatches, adminMismatches };
+}
+
+// The required action. The fix is always to the BOM, since the admin spec is
+// the reference it is checked against.
+const BOM_ACTION = {
+  /** The class has no line for this kind of component at all. */
+  component: (classCode: string) => `Piping designer to correct the BOM: replace this item with one listed in the ${classCode} spec.`,
+  /** The component is in the class, but not at the size the BOM states. */
+  size: (classCode: string, available: string[]) =>
+    `Piping designer to correct the BOM size to one listed in the ${classCode} spec (${available.join(" / ")}).`,
+  /** The BOM's class is not in the admin spec at all. */
+  noList: (classCode: string) =>
+    `Piping designer to confirm the class on the BOM: "${classCode}" is not in the admin spec, so no item filed under it can be checked.`,
+  /** The component is listed, but an attribute the BOM states differs. */
+  deviation: (classCode: string) => `Piping designer to correct the BOM item to match the ${classCode} spec.`,
+  /** Filed under one class, but matches another. */
+  wrongSpec: (ownClass: string, matches: string[]) =>
+    matches.length > 0
+      ? `Piping designer to correct the BOM: file this item under ${matches.join(" / ")}, or change it to the item the ${ownClass} spec requires.`
+      : `Piping designer to correct the BOM item to the one the ${ownClass} spec requires.`,
+};
+
+/** A "not in admin list" verdict carrying its required action. */
+function missing(note: string, action: string): AdminCheck {
+  return { ...adminCheck("missing", note), action };
 }
 
 /**
@@ -527,8 +573,8 @@ export function checkBomItem(item: Record<string, unknown>, ownClass: string, sh
       const bomNace = hasNace(text);
       if (elsewhere.length === 0 && here.adminMatches.length > 0 && here.adminMatches.every((l) => hasNace(lineText(l)) !== bomNace)) {
         serviceNote = bomNace
-          ? `states NACE but ${ownClass}'s admin line is not NACE service`
-          : `states no NACE but ${ownClass}'s admin line is NACE MR0175 service`;
+          ? `BOM states NACE, but ${ownClass} is not NACE service`
+          : `BOM does not state NACE, but ${ownClass} requires NACE MR0175 service`;
         for (const c of candidates) {
           const there = checkAgainstClass(part, c, adminItems);
           if ((there.status === "match" || there.status === "deviation") && there.adminMatches.some((l) => hasNace(lineText(l)) === bomNace)) {
@@ -549,11 +595,10 @@ export function checkBomItem(item: Record<string, unknown>, ownClass: string, sh
       .map((p) => {
         const subject = segments.length > 1 ? `"${short(p.text)}" ` : "";
         const codes = p.elsewhere.map((e) => e.code).filter(Boolean).join(" / ");
-        if (p.serviceNote) return `${subject}${p.serviceNote}${codes ? `; ${codes} lists it ${p.serviceNote.startsWith("states NACE") ? "with" : "without"} NACE service` : "; no other spec in the admin list carries it either"}`;
-        return `${subject}matches ${codes}'s admin list`;
+        if (p.serviceNote) return `${subject}${p.serviceNote}${codes ? `; the item as stated on the BOM matches ${codes}` : "; no other spec carries the item as stated on the BOM"}`;
+        return `${subject}BOM item matches ${codes}, not ${ownClass}`;
       })
       .join("; ");
-    const onlyService = wrong.every((p) => p.serviceNote);
     // A cell of several items: say which part is right, or the row reads as though all of it is wrong.
     const fine = parts.filter((p) => !wrong.includes(p) && p.here.status === "match");
     const rest =
@@ -563,14 +608,16 @@ export function checkBomItem(item: Record<string, unknown>, ownClass: string, sh
     return {
       ...adminCheck(
         "wrong_spec",
-        `${onlyService ? `${said}. This item is filed under the wrong spec.` : `${said}, not ${ownClass}'s. This item is filed under the wrong spec.`}${rest}`,
+        `${said}. The BOM item is filed under the wrong class.${rest}`,
         distinctLines(wrong.flatMap((p) => p.elsewhere.flatMap((e) => e.lines))),
         wrong.flatMap((p) => p.here.adminMismatches)
       ),
       wrongSpec: classes,
+      action: BOM_ACTION.wrongSpec(ownClass, classes),
     };
   }
-  return combineChecks(parts.map((p) => p.here));
+  const combined = combineChecks(parts.map((p) => p.here));
+  return combined.status === "deviation" && !combined.action ? { ...combined, action: BOM_ACTION.deviation(ownClass) } : combined;
 }
 
 // Sorting an item into another class is a claim, and a class whose admin lines merely SAY NOTHING
@@ -669,12 +716,12 @@ function checkWithinClass(item: Record<string, unknown>, classCode: string, admi
 
   const norm = normalizeBomSpecClass(classCode);
   if (!adminItems.some((a) => a.specCode.trim() && normalizeBomSpecClass(a.specCode) === norm)) {
-    return adminCheck("no_list", `The admin item list has no lines for class "${classCode}".`);
+    return { ...adminCheck("no_list", `BOM class "${classCode}" is not in the admin spec.`), action: BOM_ACTION.noList(classCode) };
   }
 
   const gasket = crossCheckBomGasket(item, classCode, adminItems);
   if (gasket) {
-    if (gasket.result.status !== "match") return adminCheck("missing", gasket.result.note);
+    if (gasket.result.status !== "match") return missing(gasket.result.note ?? `BOM item is not in the ${classCode} spec.`, BOM_ACTION.component(classCode));
     return adminCheck(gasket.adminMismatches.length > 0 ? "deviation" : "match", gasket.result.note, gasket.adminMatches, gasket.adminMismatches);
   }
 
@@ -685,11 +732,15 @@ function checkWithinClass(item: Record<string, unknown>, classCode: string, admi
   if (!classification) return adminCheck("skipped", "Supports, instruments, control valves and stud bolts aren't lines in the admin item list.");
 
   const pool = adminPoolFor(classification, norm, adminItems);
-  if (pool.length === 0) return adminCheck("missing", `The admin item list has no ${classification.category} of this type in class "${classCode}".`);
+  if (pool.length === 0) {
+    return missing(`BOM item is not in the ${classCode} spec: no ${classification.category} of this type is listed.`, BOM_ACTION.component(classCode));
+  }
 
   const narrowed = narrowAdminMatches(pool, item);
   const size = narrowed.mismatches.find((m) => m.attribute === "size");
-  if (size) return adminCheck("missing", `The admin item list has this component in ${size.found.join(" / ")}, but not ${size.wanted}.`);
+  if (size) {
+    return missing(`BOM size ${size.wanted} is not in the ${classCode} spec, which lists ${size.found.join(" / ")}.`, BOM_ACTION.size(classCode, size.found));
+  }
 
   const lines = closestAdminLines(narrowed.matches, String(item.description ?? ""));
   return narrowed.mismatches.length > 0 ? adminCheck("deviation", null, lines, narrowed.mismatches) : adminCheck("match", null, lines);

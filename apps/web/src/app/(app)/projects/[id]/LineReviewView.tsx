@@ -434,8 +434,8 @@ function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
         <div aria-hidden="true" className="flex flex-wrap gap-4 opacity-60 [&_.stat]:border-dashed [&_.stat]:shadow-none">
           <Stat label="BOM items" value="—" />
           <Stat label="Match" value="—" />
-          <Stat label="Deviations" value="—" />
-          <Stat label="Not in admin list" value="—" />
+          <Stat label="Wrong spec" value="—" />
+          <Stat label="Not in spec" value="—" />
         </div>
 
         <div>
@@ -455,8 +455,9 @@ function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
       <div className="flex flex-wrap gap-4">
         <Stat label="BOM items" value={totals.items} />
         <Stat label="Match" value={totals.match} tone={totals.match > 0 ? "good" : "neutral"} />
-        <Stat label="Deviations" value={totals.deviations} tone={totals.deviations > 0 ? "warning" : "neutral"} />
-        <Stat label="Not in admin list" value={totals.notInList} tone={totals.notInList > 0 ? "danger" : "neutral"} />
+        {/* Counts wrong spec AND wrong class: both are a BOM item not to the spec it should be. */}
+        <Stat label="Wrong spec" value={totals.deviations} tone={totals.deviations > 0 ? "danger" : "neutral"} />
+        <Stat label="Not in spec" value={totals.notInList} tone={totals.notInList > 0 ? "danger" : "neutral"} />
         <Stat label="Not checked" value={totals.notChecked} />
       </div>
 

@@ -8,6 +8,7 @@ import { getDb } from "@/lib/db";
 import { isBootstrapDcc, isDcc, type AppRole } from "@/lib/roles";
 import { getSessionUser } from "@/lib/session";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assignUsername } from "@/lib/usernames";
 
 // Who is Document Control and who is a checker. Only Document Control can change
 // it, and the rules below are what stop it locking everyone out or reaching further
@@ -45,6 +46,18 @@ export async function setUserRole(userId: string, role: AppRole) {
     if (organization) await addMembership(organization.id, userId, "admin");
   }
 
+  revalidatePath("/users");
+}
+
+// The username somebody signs in with (see lib/usernames.ts). Document Control
+// sets it -- for an account created before usernames existed, or to fix one. Your
+// own included: a username grants nothing, it only names the account.
+export async function setUsername(userId: string, formData: FormData) {
+  const session = await getSessionUser();
+  if (!session) throw new Error("Not authenticated.");
+  if (!session.isDcc) throw new Error("Only Document Control (DCC) can set usernames.");
+
+  await assignUsername(userId, String(formData.get("username") ?? ""));
   revalidatePath("/users");
 }
 
