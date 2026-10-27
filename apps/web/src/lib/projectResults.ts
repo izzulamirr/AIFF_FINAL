@@ -12,7 +12,9 @@ export interface LineResult {
   /** Errors only; findings for information are counted apart. */
   errors: number;
   info: number;
-  byCheck: Omit<IsoReport["totals"], "all" | "info">;
+  /** On hold or pending data from the client -- not errors. */
+  pending: number;
+  byCheck: Omit<IsoReport["totals"], "all" | "info" | "pending">;
   /** Checks that could not run on this line (nothing uploaded to compare against). */
   notChecked: number;
   /** True when the checks themselves failed to run for this line. */
@@ -29,16 +31,17 @@ export async function resultsOfProject(projectId: string): Promise<LineResult[]>
   for (let i = 0; i < lines.length; i += 4) {
     const batch = await Promise.all(
       lines.slice(i, i + 4).map(async (line): Promise<LineResult> => {
-        const failed: LineResult = { lineNumber: line.lineNumber, revision: line.revision, errors: 0, info: 0, byCheck: EMPTY, notChecked: 0, failed: true };
+        const failed: LineResult = { lineNumber: line.lineNumber, revision: line.revision, errors: 0, info: 0, pending: 0, byCheck: EMPTY, notChecked: 0, failed: true };
         try {
           const report = buildIsoReport(await summariseLine(projectId, line));
           if (!report) return failed;
-          const { all, info, ...byCheck } = report.totals;
+          const { all, info, pending, ...byCheck } = report.totals;
           return {
             lineNumber: line.lineNumber,
             revision: line.revision,
             errors: all,
             info,
+            pending,
             byCheck,
             notChecked: report.drawings.reduce((n, d) => n + d.notChecked.length, 0),
             failed: false,

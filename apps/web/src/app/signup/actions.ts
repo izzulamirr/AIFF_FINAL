@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { roleOf } from "@/lib/roles";
+import { isDcc } from "@/lib/roles";
 import { assignUsername, findUserByUsername, isValidUsername, normalizeUsername, USERNAME_RULE } from "@/lib/usernames";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -55,10 +55,10 @@ export async function signup(formData: FormData) {
   }
 
   // With email confirmation off, Supabase signs the new account straight in.
-  // Every new sign-up is a plain User (see lib/roles.ts) -- the "dcc" branch
+  // Every new sign-up is a plain User (see lib/roles.ts) -- the dashboard branch
   // only fires for the handful of addresses already listed there, in case one
   // of them registers before anyone has manually created its account.
-  if (data.session) redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/clients");
+  if (data.session) redirect(isDcc(data.user) ? "/dashboard" : "/clients");
 
   redirect(`/login?message=${encodeURIComponent("Check your email to confirm your account, then log in.")}`);
 }

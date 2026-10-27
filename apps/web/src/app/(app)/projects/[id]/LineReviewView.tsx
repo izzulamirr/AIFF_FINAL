@@ -189,7 +189,6 @@ function SpoolingBody({ spooling: s }: { spooling: LineSummary["spooling"] }) {
 // ---- Instrument Hookup ----------------------------------------------------
 function HookupBadges({ hookup: h }: { hookup: LineSummary["hookup"] }) {
   if (!h) return null;
-  if (h.typicals === 0) return <Badge>No hook-up typicals yet</Badge>;
   if (h.drawings.every((d) => d.instruments === 0)) return <Badge>No instruments on the ISO</Badge>;
   const withMissing = most(h.drawings.map((d) => d.withMissing));
   const noTypical = most(h.drawings.map((d) => d.noTypical));
@@ -202,8 +201,8 @@ function HookupBadges({ hookup: h }: { hookup: LineSummary["hookup"] }) {
         </Badge>
       )}
       {noTypical > 0 && (
-        <Badge tone="warning" dot>
-          {noTypical} with no typical
+        <Badge tone="info" dot>
+          {noTypical} pending vendor data
         </Badge>
       )}
       {withMissing === 0 && noTypical === 0 && (
@@ -217,7 +216,6 @@ function HookupBadges({ hookup: h }: { hookup: LineSummary["hookup"] }) {
 
 function HookupBody({ hookup: h }: { hookup: LineSummary["hookup"] }) {
   if (!h) return <Note>{UNAVAILABLE}</Note>;
-  if (h.typicals === 0) return <Note>No hook-up typicals are available for this project yet, so this line cannot be checked.</Note>;
   if (h.drawings.length === 0) return <Note>There is no ISO drawing for this line to check.</Note>;
   return (
     <Drawings
@@ -406,7 +404,7 @@ function PidBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
 // lib/isoChecks.ts's mtoAdminAvailable) -- until then this is the shape the
 // result will take, greyed and dashed, plus the BOM as extracted so the card is
 // not just empty.
-function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
+function MtoBody({ drawings, projectId }: { drawings: IsoDrawingChecks[]; projectId: string }) {
   const available = drawings.some((d) => d.mto.available);
   const withBom = drawings.filter((d) => d.bom.sheets > 0);
   const withMto = drawings.filter((d) => d.mto.sheetData.length > 0);
@@ -418,8 +416,9 @@ function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
       deviations: acc.deviations + d.mto.deviations,
       notInList: acc.notInList + d.mto.notInList,
       notChecked: acc.notChecked + d.mto.notChecked,
+      pending: acc.pending + d.mto.pending,
     }),
-    { items: 0, match: 0, deviations: 0, notInList: 0, notChecked: 0 }
+    { items: 0, match: 0, deviations: 0, notInList: 0, notChecked: 0, pending: 0 }
   );
 
   if (!available) {
@@ -459,12 +458,20 @@ function MtoBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
         <Stat label="Wrong spec" value={totals.deviations} tone={totals.deviations > 0 ? "danger" : "neutral"} />
         <Stat label="Not in spec" value={totals.notInList} tone={totals.notInList > 0 ? "danger" : "neutral"} />
         <Stat label="Not checked" value={totals.notChecked} />
+        {/* Waiting on the client or a vendor -- not an error, and listed per sheet in the report. */}
+        <Stat label="Pending / on hold" value={totals.pending} />
       </div>
 
       {withMto.length === 0 ? (
         <Note>No bill of material has been read for this line yet.</Note>
       ) : (
-        <Drawings items={withMto.map((d) => ({ key: d.documentId, fileName: d.fileName, body: <MtoSheets sheets={d.mto.sheetData} /> }))} />
+        <Drawings
+          items={withMto.map((d) => ({
+            key: d.documentId,
+            fileName: d.fileName,
+            body: <MtoSheets sheets={d.mto.sheetData} marking={d.mto.holdsEditable ? { projectId, documentId: d.documentId } : undefined} />,
+          }))}
+        />
       )}
     </div>
   );
@@ -582,7 +589,7 @@ export async function LineReviewView({
             checks && checks.some((d) => d.bom.items > 0) ? <Badge>{plural(most(checks.map((d) => d.bom.items)), "BOM item")}</Badge> : undefined
           }
         >
-          {checks ? <MtoBody drawings={checks} /> : <Note>{UNAVAILABLE}</Note>}
+          {checks ? <MtoBody drawings={checks} projectId={projectId} /> : <Note>{UNAVAILABLE}</Note>}
         </CollapsibleCard>
 
         <CollapsibleCard

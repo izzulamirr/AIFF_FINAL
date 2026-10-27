@@ -66,6 +66,9 @@ export const projects = pgTable("projects", {
   description: text("description"),
   createdBy: uuid("created_by").references(() => authUsers.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Set when Document Control hides the project: it drops out of every project
+  // list but keeps all its data, and unhiding clears this. Null = shown.
+  hiddenAt: timestamp("hidden_at", { withTimezone: true }),
 });
 
 // 'pid' | 'hmb' | 'pfd' | 'spec_sheet'
@@ -386,6 +389,41 @@ export const notificationReads = pgTable("notification_reads", {
     .references(() => authUsers.id, { onDelete: "cascade" }),
   lastReadAt: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// A BOM item a person has marked ON HOLD or PENDING -- waiting on something
+// (client data, vendor data, a decision) rather than wrong. Marked items are not
+// counted as errors; the report lists them per sheet so it can be issued with a
+// note instead of being held back for one item.
+//
+// Keyed by the item's place on the drawing (`itemKey`: page, materials block, PT
+// NO and description), not by the extracted row id -- re-extracting the same
+// drawing recreates every row, and a hold must survive that.
+//
+// Holds the drawing itself prints (HOLD / TBA / TBC on the BOM row) are read off
+// the extraction and are not stored here.
+export const itemHolds = pgTable(
+  "item_holds",
+  {
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    itemKey: text("item_key").notNull(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: text("status").notNull(),
+    remark: text("remark").notNull(),
+    markedBy: uuid("marked_by").references(() => authUsers.id, { onDelete: "set null" }),
+    // A snapshot, like line_reviews.reviewed_by_name.
+    markedByName: text("marked_by_name"),
+    markedAt: timestamp("marked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.documentId, table.itemKey] }),
+    index("item_holds_project_idx").on(table.projectId),
+    check("item_holds_status_check", sql`${table.status} in ('pending','hold')`),
+  ]
+);
 
 // ---------------------------------------------------------------------------
 // Library: reference material that is not itself reviewed -- legends, client

@@ -7,8 +7,8 @@ import { IconBuilding, IconCheck } from "@/components/ui/icons";
 //
 // The cell itself stays a quiet list of names -- it is read far more often than
 // it is changed, and a row of remove crosses and a dropdown on every line turned
-// the table into a form. Changing it opens a panel: every client Document
-// Control can hand out, in one list, each either on or off.
+// the table into a form. Changing it opens a panel: every client, in
+// one list, each either on or off.
 //
 // The panel is a native <dialog>. A popover would have been clipped by
 // `.table-wrap`'s own horizontal scroll; the top layer is not.
@@ -20,16 +20,13 @@ export interface ClientOption {
 
 export function ClientAccess({
   personLabel,
-  isSelf,
   memberOf,
   assignable,
   setAccess,
 }: {
   personLabel: string;
-  /** Your own row: shown, never editable -- see the action for why. */
-  isSelf: boolean;
   memberOf: ClientOption[];
-  /** What Document Control may hand out: the clients it is in itself. */
+  /** What the Super Admin may hand out: every client. */
   assignable: ClientOption[];
   /** Bound to this account by the page. */
   setAccess: (clientId: string, member: boolean) => Promise<void>;
@@ -39,9 +36,9 @@ export function ClientAccess({
   const [failed, setFailed] = useState<string | null>(null);
 
   const isMember = (id: string) => memberOf.some((o) => o.id === id);
-  // A client this account cannot hand out -- somebody else's, or one
-  // Document Control has since left. Shown so the list is the whole truth, and
-  // said to be unchangeable rather than quietly left out.
+  // A client not in the list the page handed over. Every client is offered, so
+  // this is empty in practice; shown, rather than quietly left out, should one
+  // ever be missing.
   const locked = memberOf.filter((o) => !assignable.some((a) => a.id === o.id));
 
   function toggle(clientId: string, next: boolean) {
@@ -64,7 +61,7 @@ export function ClientAccess({
           {memberOf.length === 0 ? "No access" : memberOf.map((o) => o.name).join(", ")}
         </p>
 
-        {!isSelf && assignable.length > 0 && (
+        {assignable.length > 0 && (
           // `ml-auto` so the buttons line up down the column rather than sitting
           // ragged against names of different lengths. The column is no longer
           // given a minimum width, so it sizes to its widest row and the gap on
@@ -115,8 +112,7 @@ export function ClientAccess({
 
         {locked.length > 0 && (
           <p className="border-t px-5 py-3 text-xs text-muted-foreground">
-            Also in <span className="text-foreground">{locked.map((o) => o.name).join(", ")}</span> — you don&apos;t belong to
-            {locked.length === 1 ? " it" : " those"}, so {locked.length === 1 ? "it is" : "they are"} not yours to change.
+            Also in <span className="text-foreground">{locked.map((o) => o.name).join(", ")}</span>, which can&apos;t be changed here.
           </p>
         )}
 

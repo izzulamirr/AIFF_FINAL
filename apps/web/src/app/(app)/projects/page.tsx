@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge, EmptyState } from "@/components/ui/primitives";
 import { IconBuilding, IconChevronRight, IconFolder, IconPlus } from "@/components/ui/icons";
 import { createProject } from "../actions";
+import { DeleteProjectButton, HideProjectButton } from "./DeleteProjectButton";
 
 export const metadata: Metadata = { title: "Projects" };
 
@@ -28,7 +29,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const projectRows = await db.select().from(projects);
   const projectsByOrg = scopedOrgs.map((organization) => ({
     organization,
-    projects: projectRows.filter((p) => p.organizationId === organization.id),
+    projects: projectRows.filter((p) => p.organizationId === organization.id && !p.hiddenAt),
   }));
 
   return (
@@ -68,15 +69,18 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
           ) : (
             <ul className="divide-y divide-border">
               {orgProjects.map((project) => (
-                <li key={project.id}>
+                <li key={project.id} className="flex items-center gap-2 pr-5">
                   <Link
                     href={`/projects/${project.id}`}
-                    className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
+                    className="group flex min-w-0 flex-1 items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
                   >
                     <IconFolder size={17} className="text-muted-foreground" />
                     <span className="font-medium">{project.name}</span>
                     <IconChevronRight size={16} className="ml-auto text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                   </Link>
+                  {/* Outside the link, so a click on it never opens the project. */}
+                  {session.isDcc && <HideProjectButton projectId={project.id} name={project.name} />}
+                  {session.isDcc && <DeleteProjectButton projectId={project.id} name={project.name} />}
                 </li>
               ))}
             </ul>

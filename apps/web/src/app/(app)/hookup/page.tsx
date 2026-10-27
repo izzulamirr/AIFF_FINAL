@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { documents, extractionJobs, projects } from "@easy/db";
 import { getSessionUser } from "@/lib/session";
 import { visibleOrganizations } from "@/lib/access";
@@ -53,7 +53,7 @@ export default async function HookupPage({
   // below is "the first one" -- the same instability that made the cutting
   // page's saved stock appear to come and go.
   const myProjects = orgIds.length
-    ? await db.select().from(projects).where(inArray(projects.organizationId, orgIds)).orderBy(asc(projects.createdAt), asc(projects.id))
+    ? await db.select().from(projects).where(and(inArray(projects.organizationId, orgIds), isNull(projects.hiddenAt))).orderBy(asc(projects.createdAt), asc(projects.id))
     : [];
 
   const requestedProject = params.project && myProjects.some((p) => p.id === params.project) ? params.project : undefined;
@@ -119,10 +119,12 @@ export default async function HookupPage({
   const sheets = await loadHookupSheets(hookupDocs.map((d) => d.id));
   // The check itself is in lib/hookupVerification.ts, shared with a line's
   // summary so the two cannot disagree.
-  const { results, isoLineNumber, lineService, serviceBasis } =
-    isoId && sheets.length > 0
-      ? await verifyIsoHookup({ projectDocs, sheets, isoId, chosenLineKey: chosenLine?.key })
-      : { results: [] as HookupVerification["results"], isoLineNumber: null, lineService: null, serviceBasis: null };
+  const empty: HookupVerification = { results: [], isoLineNumber: null, lineService: null, serviceBasis: null, sheetByPage: {} };
+  // Run even with no typicals: each instrument then shows as Pending Vendor Data
+  // rather than the page showing nothing.
+  const { results, isoLineNumber, lineService, serviceBasis, sheetByPage } = isoId
+    ? await verifyIsoHookup({ projectDocs, sheets, isoId, chosenLineKey: chosenLine?.key })
+    : empty;
 
   return (
     <div className="flex flex-col gap-6">
@@ -241,15 +243,16 @@ export default async function HookupPage({
 
       {isoId && sheets.length === 0 && (
         <Alert tone="info">
-          {canManage ? "Upload and extract a hook-up drawing set before verifying." : "No hook-up typicals are available for this project yet."}
+          No hook-up typicals have been supplied for this project, so every instrument below is Pending Vendor Data.
+          {canManage ? " Upload and extract the hook-up drawing set to check them." : ""}
         </Alert>
       )}
 
       {results.length > 0 && (
-        <HookupResults results={results} isoLineNumber={isoLineNumber} lineService={lineService} serviceBasis={serviceBasis} />
+        <HookupResults results={results} isoLineNumber={isoLineNumber} lineService={lineService} serviceBasis={serviceBasis} sheetByPage={sheetByPage} />
       )}
 
-      {isoId && results.length === 0 && sheets.length > 0 && (
+      {isoId && results.length === 0 && (
         <Alert tone="info">No instruments found in that ISO&apos;s bill of material, so there is no hook-up to check.</Alert>
       )}
     </div>

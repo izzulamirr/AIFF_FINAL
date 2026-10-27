@@ -8,17 +8,18 @@ import { formatMismatch, isLibraryDocument, labelForDocument } from "@/lib/docTy
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmButton } from "@/components/ui/ConfirmButton";
 import { Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
-import { IconClipboard, IconFile, IconLibrary, IconNest } from "@/components/ui/icons";
+import { IconClipboard, IconCompare, IconFile, IconLibrary, IconNest, IconTable } from "@/components/ui/icons";
 import { deleteDocument, moveDocumentToLibrary, uploadDocument } from "./actions";
 import { DeleteDocumentButton } from "./DeleteDocumentButton";
 import { DocumentUploadCard } from "./DocumentUploadCard";
 import { LineReviewView } from "./LineReviewView";
 import { ProjectHub } from "./ProjectHub";
 
-// TWO features, the same two the dashboard offers -- hook-up, spooling and the
+// The same two features the dashboard offers -- hook-up, spooling and the
 // container check are checks ON an ISO and live inside ISO checking, on the
 // line's own page. Scoped to this one project, so neither has to be picked again
-// from that page's own project selector.
+// from that page's own project selector. P&ID compare is this project's alone:
+// it reads two of the project's own P&IDs.
 const toolsFor = (id: string) => [
   {
     href: `/review?project=${id}`,
@@ -26,7 +27,20 @@ const toolsFor = (id: string) => [
     text: "Check each line: design basis, bill of material, P&ID, hook-up, spools and container fit.",
     icon: IconClipboard,
   },
+  // The same page a checker opens from the project hub's "Pipe specs" card.
+  {
+    href: `/projects/${id}/specs`,
+    title: "Pipe specs",
+    text: "Compare the client's piping classes with the admin item list, size by size, with every difference marked.",
+    icon: IconTable,
+  },
   { href: `/cutting?project=${id}`, title: "Cutting Plan", text: "Nest this project's cutting-plate parts onto stock plate.", icon: IconNest },
+  {
+    href: `/projects/${id}/pid-compare`,
+    title: "P&ID compare",
+    text: "Pick an earlier P&ID and the latest one to see every line, valve and instrument that changed.",
+    icon: IconCompare,
+  },
 ];
 
 export default async function ProjectDetailPage({
@@ -125,7 +139,7 @@ export default async function ProjectDetailPage({
       />
 
       <section className="flex flex-col gap-4">
-        <ul className="grid gap-4 sm:grid-cols-2">
+        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {toolsFor(id).map(({ href, title, text, icon: Icon }) => (
             <li key={href}>
               <Link href={href} className="card group flex h-full flex-col gap-3 transition hover:border-border-strong hover:shadow-md">

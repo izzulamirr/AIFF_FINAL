@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BrandMark } from "@/components/ui/icons";
+import { BRAND_NAME, BrandLockup } from "@/components/ui/Brand";
 
 // The frame with no sidebar: a plain top bar and nothing else.
 //
@@ -40,9 +40,8 @@ export function GuidedShell({
       </a>
 
       <header className="app-chrome sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-card px-4 sm:px-6 lg:px-10">
-        <Link href="/clients" className="flex items-center gap-2.5">
-          <BrandMark size={28} />
-          <span className="font-semibold tracking-wide">EASY</span>
+        <Link href="/clients" aria-label={`${BRAND_NAME} home`}>
+          <BrandLockup />
         </Link>
         <div className="flex items-center gap-3">
           <div className="hidden text-right leading-tight sm:block">

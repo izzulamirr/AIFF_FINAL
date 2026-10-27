@@ -41,6 +41,8 @@ export interface HookupVerification {
   lineService: string | null;
   /** How a service CODE was turned into a phase, so the auto-match is auditable. */
   serviceBasis: string | null;
+  /** Page -> the sheet its title block prints ("4 of 5", "4/5"). */
+  sheetByPage: Record<number, string>;
 }
 
 /**
@@ -115,8 +117,10 @@ export async function verifyIsoHookup({
   // device. classifyComponent is what decides: a control valve reads as an
   // instrument by tag ("FV-0003") but is a valve, and a valve has no
   // instrument hook-up to check.
-  const isoInstruments = isoBom
-    .map((row) => {
+  const isoInstruments = isoTags
+    .filter((t) => t.tagType === "bom_item")
+    .map((t) => {
+      const row = t.attributes as Record<string, unknown>;
       // isoBomRowText restores the hyphen on a bare tag ("FT0003" -> "FT-0003"), which is how an
       // ISO prints it and the only form the instrument classifier decodes.
       const text = isoBomRowText(row);
@@ -124,9 +128,17 @@ export async function verifyIsoHookup({
       const label = category && classifyInstrument(text) === category ? category : null;
       if (!label) return null;
       const tag = text.toUpperCase().match(/\b[A-Z]{2,4}-[A-Z]?\d+\b/)?.[0] ?? String(row.description ?? "").trim();
-      return { tag, text };
+      return { tag, text, page: t.sourcePage };
     })
-    .filter((v): v is { tag: string; text: string } => v !== null);
+    .filter((v): v is { tag: string; text: string; page: number | null } => v !== null);
 
-  return { results: verifyHookup(sheets, isoInstruments, isoBom, lineService), isoLineNumber, lineService, serviceBasis };
+  // The sheet each page prints in its title block, so an instrument can be
+  // reported as "sheet 4" rather than as a page of the PDF.
+  const sheetByPage: Record<number, string> = {};
+  for (const t of isoTags) {
+    const sheet = (t.attributes as Record<string, unknown>).sheet;
+    if (t.tagType === "line" && t.sourcePage != null && typeof sheet === "string" && sheet.trim()) sheetByPage[t.sourcePage] = sheet.trim();
+  }
+
+  return { results: verifyHookup(sheets, isoInstruments, isoBom, lineService), isoLineNumber, lineService, serviceBasis, sheetByPage };
 }

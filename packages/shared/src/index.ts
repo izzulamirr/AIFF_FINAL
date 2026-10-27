@@ -17,6 +17,7 @@ export * from "./spoolEnvelope";
 export * from "./spoolShape";
 export * from "./spoolTagClash";
 export * from "./revisions";
+export * from "./pidCompare";
 export * from "./pipeSize";
 export * from "./specVariants";
 export * from "./sheetItems";

@@ -34,8 +34,8 @@ export default async function SignupPage({
     <AuthShell
       panel={
         <>
-          <h2 className="text-4xl font-semibold leading-tight tracking-tight text-sidebar-strong">Two kinds of account</h2>
-          <p className="mt-4 text-base leading-relaxed">Document Control puts the drawings in; everyone else checks what comes out.</p>
+          <h2 className="text-4xl font-semibold leading-tight tracking-tight text-sidebar-strong">Account access</h2>
+          <p className="mt-4 text-base leading-relaxed">Document Control manages the project documents; users review the results.</p>
           <ul className="mt-8 flex flex-col gap-4">
             {ACCESS.map(({ icon: Icon, title, text }) => (
               <li key={title} className="flex items-start gap-4 rounded-xl border border-sidebar-border bg-white/[0.03] p-4">
@@ -52,8 +52,8 @@ export default async function SignupPage({
         </>
       }
     >
-      <h1 className="text-2xl font-semibold tracking-tight">Create your account</h1>
-      <p className="mt-1.5 text-sm text-muted-foreground">New accounts have User access: you can review the data but not upload documents.</p>
+      <h1 className="text-2xl font-semibold tracking-tight">Create an account</h1>
+      <p className="mt-1.5 text-sm text-muted-foreground">New accounts are given User access, which allows review but not document upload.</p>
 
       <div className="mt-6 flex flex-col gap-3 empty:hidden">{params.error && <Alert tone="danger">{params.error}</Alert>}</div>
 

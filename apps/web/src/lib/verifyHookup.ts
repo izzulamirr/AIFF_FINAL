@@ -77,6 +77,8 @@ export interface HookupItemCheck {
 
 export interface HookupInstrumentCheck {
   instrumentTag: string;
+  /** The ISO page the instrument's BOM row is on, so a pending instrument can be reported by sheet. */
+  isoPage: number | null;
   instrumentLabel: string;
   measuredVariable: string | null;
   service: string | null;
@@ -245,6 +247,7 @@ export function matchHookupSheet(
  * leaves the reader unable to tell a gap in the hook-up drawing from a fault on the ISO.
  */
 export function noTypicalReasonOf(sheets: HookupSheet[], measuredVariable: string | null, service: string | null, label: string | null): string {
+  if (sheets.length === 0) return "No hook-up drawing has been supplied for this project.";
   const variables = [...new Set(sheets.map((s) => s.measuredVariable).filter((v): v is string => !!v))];
   const held = variables.length > 0 ? ` The hook-up set holds typicals for: ${variables.join(", ")}.` : "";
   if (!measuredVariable) return `The instrument could not be identified from its tag, so no typical could be chosen.${held}`;
@@ -432,7 +435,7 @@ function itemMatchesIso(
  */
 export function verifyHookup(
   sheets: HookupSheet[],
-  isoInstruments: Array<{ tag: string; text: string }>,
+  isoInstruments: Array<{ tag: string; text: string; page?: number | null }>,
   isoBom: Array<Record<string, unknown>>,
   lineService: string | null
 ): HookupInstrumentCheck[] {
@@ -441,11 +444,11 @@ export function verifyHookup(
   // Resolve the sheet for every instrument BEFORE checking any of them: the
   // root valves have to be allocated across the whole line at once (see
   // allocateRootValves), which needs every instrument's requirement in hand.
-  const resolved = isoInstruments.map(({ tag, text }) => {
+  const resolved = isoInstruments.map(({ tag, text, page }) => {
     const label = classifyInstrument(`${text} ${tag}`);
     const measuredVariable = label ? label.split(" ")[0] : null;
     const sheet = matchHookupSheet(sheets, measuredVariable, service, label);
-    return { tag, label, measuredVariable, sheet };
+    return { tag, page: page ?? null, label, measuredVariable, sheet };
   });
 
   const rootValves = allocateRootValves(
@@ -458,7 +461,7 @@ export function verifyHookup(
     isoBom
   );
 
-  return resolved.map(({ tag, label, measuredVariable, sheet }) => {
+  return resolved.map(({ tag, page, label, measuredVariable, sheet }) => {
 
     const checks: HookupItemCheck[] = (sheet?.items ?? [])
       // Only the piping side is the ISO's to carry. "undetermined" rows are
@@ -495,6 +498,7 @@ export function verifyHookup(
 
     return {
       instrumentTag: tag,
+      isoPage: page,
       instrumentLabel: label ?? "instrument",
       measuredVariable,
       service,

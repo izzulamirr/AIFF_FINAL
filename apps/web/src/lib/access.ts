@@ -1,6 +1,6 @@
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import { organizationMembers, organizations, projects } from "@easy/db";
 import { getDb } from "@/lib/db";
 import type { SessionUser } from "@/lib/session";
@@ -101,6 +101,17 @@ export async function activeProjectsOf(session: Pick<SessionUser, "id" | "isDcc"
   return getDb()
     .select({ id: projects.id, name: projects.name })
     .from(projects)
-    .where(eq(projects.organizationId, organization.id))
+    .where(and(eq(projects.organizationId, organization.id), isNull(projects.hiddenAt)))
     .orderBy(asc(projects.createdAt), asc(projects.id));
+}
+
+/** The active organization's HIDDEN projects, so the dashboard can offer to show them again. */
+export async function hiddenProjectsOf(session: Pick<SessionUser, "id" | "isDcc">): Promise<Array<{ id: string; name: string }>> {
+  const organization = await activeOrganization(session);
+  if (!organization) return [];
+  return getDb()
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(and(eq(projects.organizationId, organization.id), isNotNull(projects.hiddenAt)))
+    .orderBy(asc(projects.name));
 }

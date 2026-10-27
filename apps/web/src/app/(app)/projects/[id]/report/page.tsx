@@ -1,14 +1,18 @@
 import Link from "next/link";
-import { eq } from "drizzle-orm";
-import { projects } from "@easy/db";
+import { and, eq } from "drizzle-orm";
+import { lineReviews, projects } from "@easy/db";
 import { getDb } from "@/lib/db";
 import { canReadOrganization } from "@/lib/access";
 import { getSessionUser } from "@/lib/session";
 import { findLine, isoLinesOf } from "@/lib/isoLines";
 import { summariseLine } from "@/lib/lineSummary";
-import { buildIsoReport, type DrawingReport } from "@/lib/isoReport";
+import { buildIsoReport, reportSections, type DrawingReport, type Finding } from "@/lib/isoReport";
 import { Badge } from "@/components/ui/primitives";
+import { BRAND_FULL_NAME, BRAND_NAME, BrandLockup } from "@/components/ui/Brand";
 import { IconArrowLeft } from "@/components/ui/icons";
+import { HOLD_LABEL } from "@/lib/pending";
+import { isMissingTable } from "@/lib/progress";
+import { markLineReviewed } from "../progressActions";
 import { PrintButton } from "./PrintButton";
 
 // The errors found on one ISO line, laid out to be handed to the designer: print it
@@ -18,6 +22,22 @@ import { PrintButton } from "./PrintButton";
 //
 // Reached from a line's own page. Same access rule as the project page: an account
 // reads the organizations it is a member of and no others.
+
+// The checker's mark on this line, if there is one. Null as well where the
+// progress tables have not been created yet (see lib/progress.ts).
+async function reviewOf(projectId: string, key: string) {
+  try {
+    const [row] = await getDb()
+      .select({ reviewedByName: lineReviews.reviewedByName, reviewedAt: lineReviews.reviewedAt, revision: lineReviews.revision })
+      .from(lineReviews)
+      .where(and(eq(lineReviews.projectId, projectId), eq(lineReviews.lineKey, key)))
+      .limit(1);
+    return row ?? null;
+  } catch (err) {
+    if (isMissingTable(err)) return null;
+    throw err;
+  }
+}
 
 const PRINT_CSS = `
 @media print {
@@ -30,19 +50,89 @@ const PRINT_CSS = `
 }
 `;
 
-function Section({ n, title, count, info = 0, children }: { n: number; title: string; count: number; info?: number; children: React.ReactNode }) {
+// `reference` names the master document the ISO was checked against. Said once per
+// section, so every finding under it reads as the ISO's to correct, never as two
+// documents disagreeing with nobody responsible.
+function Section({
+  n,
+  title,
+  count,
+  info = 0,
+  reference,
+  children,
+}: {
+  n: number;
+  title: string;
+  count: number;
+  info?: number;
+  reference?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <section className="mt-5">
-      <h2 className="mb-2 flex items-baseline gap-2 border-b pb-1.5 text-sm font-semibold">
+    <section className="mt-6">
+      <h2 className="mb-2 flex items-baseline gap-2 border-b border-foreground/40 pb-1.5 text-sm font-semibold uppercase tracking-[0.04em]">
         <span className="tabular-nums text-muted-foreground">{n}.</span>
         {title}
-        <span className="font-normal text-muted-foreground">
+        <span className="font-normal normal-case tracking-normal text-muted-foreground">
           &middot; {count} {count === 1 ? "issue" : "issues"}
           {info > 0 ? ` · ${info} for information` : ""}
         </span>
       </h2>
+      {reference && (
+        <p className="mb-2 text-xs text-muted-foreground">
+          Checked against the <span className="font-medium text-foreground">{reference}</span>. Fixes are for the piping designer, on the ISO.
+        </p>
+      )}
       {children}
     </section>
+  );
+}
+
+// Every finding in the same five columns: what it is about, what the reference
+// requires, what is wrong on the ISO, and who does what about it. A finding shown
+// for information keeps its place, greyed, with the reason in place of an action.
+function FindingTable({ n, findings }: { n: number; findings: Finding[] }) {
+  return (
+    <table className="table table-compact w-full text-xs">
+      <thead>
+        <tr>
+          <th className="w-12">Ref</th>
+          <th className="w-[26%]">Item</th>
+          <th className="w-[22%]">Should be</th>
+          <th className="w-[24%]">Problem</th>
+          <th>Fix</th>
+        </tr>
+      </thead>
+      <tbody>
+        {findings.map((f, i) => (
+          <tr key={i} className={`align-top ${f.info ? "text-muted-foreground" : ""}`}>
+            <td className="tabular-nums text-muted-foreground">
+              {n}.{i + 1}
+            </td>
+            <td>
+              <span className={f.info ? "" : "font-medium"}>{f.item}</span>
+              {/* One line per item: a cell the drawing crams several items into
+                  reads as a list, not as one description twice as long. */}
+              {f.itemParts && f.itemParts.length > 1 ? (
+                <ol className="mt-0.5 list-decimal pl-4">
+                  {f.itemParts.map((p, k) => (
+                    <li key={k}>{p}</li>
+                  ))}
+                </ol>
+              ) : (
+                f.itemParts?.[0] && <span className="block">{f.itemParts[0]}</span>
+              )}
+              {f.itemDetail && <span className="block text-muted-foreground">{f.itemDetail}</span>}
+            </td>
+            <td>{f.requirement}</td>
+            <td className={f.info ? "" : "text-danger"}>{f.discrepancy}</td>
+            <td>
+              {f.info ? <span className="italic">Info only: {f.info}</span> : (f.action ?? "-")}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -54,321 +144,60 @@ function Drawing({ d, showName }: { d: DrawingReport; showName: boolean }) {
 
       {d.issueCount === 0 && (
         <p className="mt-4 rounded-lg border border-success/30 bg-success-soft px-4 py-3 text-sm text-success">
-          No errors found in the checks that were run.
-          {d.infoCount > 0 && ` ${d.infoCount} finding${d.infoCount > 1 ? "s are" : " is"} listed below for information.`}
+          No errors found.
+          {d.infoCount > 0 && ` ${d.infoCount} info-only note${d.infoCount > 1 ? "s" : ""} below.`}
         </p>
       )}
 
-      {d.designBasis.issues.length > 0 && (
-        <Section n={++n} title="Design basis: drawing vs line list" count={d.designBasis.issues.length}>
-          <table className="table table-compact w-full text-xs">
+      {/* FIRST, ahead of the errors: what this report is issued without. These
+          are not faults on the drawing -- they are waiting on the client or a
+          vendor -- so the report goes out with them noted per sheet rather than
+          being held back for them. */}
+      {d.pending.length > 0 && (
+        <section className="mt-5 rounded-lg border border-info-border bg-info-soft/40 px-4 py-3">
+          <h2 className="text-sm font-semibold">
+            On hold <span className="font-normal text-muted-foreground">&middot; {d.pending.length} · not errors</span>
+          </h2>
+          <table className="table table-compact mt-2 w-full text-xs">
             <thead>
               <tr>
-                <th className="w-12">Ref</th>
-                <th>Field</th>
-                <th>Drawing says</th>
-                <th>Line list says</th>
+                <th className="w-24">Sheet</th>
+                <th className="w-20">Status</th>
+                <th>Item</th>
+                <th>Remark</th>
               </tr>
             </thead>
             <tbody>
-              {d.designBasis.issues.map((r, i) => (
-                <tr key={r.field}>
-                  <td className="tabular-nums text-muted-foreground">
-                    {n}.{i + 1}
-                  </td>
-                  <td className="font-medium">{r.field}</td>
-                  <td>{r.iso}</td>
-                  <td>{r.pll}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
-      )}
-
-      {d.bom.length > 0 && (
-        <Section
-          n={++n}
-          title="Bill of material vs admin item list"
-          count={d.bom.filter((b) => b.kind !== "notChecked").length}
-          info={d.bom.filter((b) => b.kind === "notChecked").length}
-        >
-          <table className="table table-compact w-full text-xs">
-            <thead>
-              <tr>
-                <th className="w-12">Ref</th>
-                <th className="w-20">Sheet / class</th>
-                <th className="w-10">Item</th>
-                <th className="w-16">Size</th>
-                <th>BOM item</th>
-                <th>Problem</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.bom.map((r, i) => (
-                <tr key={i} className={r.kind === "notChecked" ? "text-muted-foreground" : ""}>
-                  <td className="tabular-nums text-muted-foreground">
-                    {n}.{i + 1}
-                  </td>
-                  <td className="whitespace-nowrap">
-                    {r.sheet}
-                    <br />
-                    <span className="text-muted-foreground">{r.specClass}</span>
-                  </td>
-                  <td className="tabular-nums">{r.itemNo}</td>
-                  <td className="whitespace-nowrap">{r.size}</td>
-                  <td>
-                    {r.description}
-                    <span className="text-muted-foreground"> &middot; qty {r.quantity}</span>
-                  </td>
-                  <td>
-                    {r.kind === "notChecked" ? (
-                      <span className="italic">For information: {r.problem}</span>
-                    ) : (
-                      <>
-                        <span className="font-medium text-danger">
-                          {r.kind === "wrongSpec" ? "Wrong class" : r.kind === "missing" ? "Not in spec" : "Wrong spec"}
-                        </span>
-                        <br />
-                        {r.problem}
-                      </>
-                    )}
-                    {r.adminLine && r.kind === "deviation" && (
-                      <span className="block text-muted-foreground">
-                        {r.specClass} requires: {r.adminLine}
-                      </span>
-                    )}
-                    {r.action && (
-                      <span className="mt-1 block font-medium text-foreground">
-                        Action required: <span className="font-normal">{r.action}</span>
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
-      )}
-
-      {d.routing.length + d.fittings.length > 0 && (
-        <Section
-          n={++n}
-          title="Drawing vs P&ID"
-          count={d.routing.length + d.fittings.filter((f) => f.note == null).length}
-          info={d.fittings.filter((f) => f.note != null).length}
-        >
-          {d.routing.length > 0 && (
-            <table className="table table-compact mb-3 w-full text-xs">
-              <thead>
-                <tr>
-                  <th className="w-12">Ref</th>
-                  <th>Item</th>
-                  <th>Drawing says</th>
-                  <th>P&amp;ID says</th>
-                  <th>Problem</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.routing.map((r, i) => (
-                  <tr key={r.field}>
-                    <td className="tabular-nums text-muted-foreground">
-                      {n}.{i + 1}
-                    </td>
-                    <td className="font-medium">{r.field}</td>
-                    <td>{r.iso}</td>
-                    <td>{r.pid}</td>
-                    <td>{r.problem}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {d.fittings.length > 0 && (
-            <table className="table table-compact w-full text-xs">
-              <thead>
-                <tr>
-                  <th className="w-12">Ref</th>
-                  <th>In-line component</th>
-                  <th className="w-16">Size</th>
-                  <th className="w-24">Class</th>
-                  <th className="w-14">Drawing</th>
-                  <th className="w-14">P&amp;ID</th>
-                  <th>Problem</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.fittings.map((r, i) => (
-                  <tr key={i} className={r.note ? "text-muted-foreground" : ""}>
-                    <td className="tabular-nums text-muted-foreground">
-                      {n}.{d.routing.length + i + 1}
-                    </td>
-                    <td className={r.note ? "" : "font-medium"}>{r.component}</td>
-                    <td className="whitespace-nowrap">{r.size}</td>
-                    <td>{r.specClass}</td>
-                    <td className="tabular-nums">{r.isoCount}</td>
-                    <td className="tabular-nums">{r.pidCount}</td>
-                    <td>
-                      {r.problem}
-                      {r.note && <span className="block italic">For information: {r.note}</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Section>
-      )}
-
-      {d.hookup.length > 0 && (
-        <Section
-          n={++n}
-          title="Instrument hook-up"
-          count={d.hookup.filter((h) => h.noTypical == null).reduce((c, h) => c + Math.max(h.missing.length, 1), 0)}
-          info={d.hookup.filter((h) => h.noTypical != null).length}
-        >
-          <table className="table table-compact w-full text-xs">
-            <thead>
-              <tr>
-                <th className="w-12">Ref</th>
-                <th>Instrument</th>
-                <th>Required by the hook-up typical, not found on the drawing</th>
-                <th className="w-16">Size</th>
-                <th className="w-12">Qty</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(() => {
-                let ref = 0;
-                return d.hookup.flatMap((h) => {
-                  if (h.noTypical != null) {
-                    ref += 1;
-                    return [
-                      <tr key={h.instrument} className="text-muted-foreground">
-                        <td className="tabular-nums">
-                          {n}.{ref}
-                        </td>
-                        <td>
-                          <span className="font-mono">{h.instrument}</span>
-                          <br />
-                          {h.label}
-                        </td>
-                        <td colSpan={3} className="italic">
-                          For information: {h.noTypical}
-                        </td>
-                      </tr>,
-                    ];
-                  }
-                  return (h.missing.length > 0 ? h.missing : [{ item: "-", description: "Piping items missing", size: "-", quantity: "-" }]).map((m, mi) => {
-                    ref += 1;
-                    return (
-                      <tr key={`${h.instrument}-${mi}`}>
-                        <td className="tabular-nums text-muted-foreground">
-                          {n}.{ref}
-                        </td>
-                        <td>
-                          {mi === 0 && (
-                            <>
-                              <span className="font-mono font-medium">{h.instrument}</span>
-                              <br />
-                              <span className="text-muted-foreground">{h.label}</span>
-                            </>
-                          )}
-                        </td>
-                        <td>{m.description}</td>
-                        <td className="whitespace-nowrap">{m.size}</td>
-                        <td className="tabular-nums">{m.quantity}</td>
-                      </tr>
-                    );
-                  });
-                });
-              })()}
-            </tbody>
-          </table>
-        </Section>
-      )}
-
-      {d.spooling.length > 0 && (
-        <Section n={++n} title="Spooling" count={d.spooling.length}>
-          <table className="table table-compact w-full text-xs">
-            <thead>
-              <tr>
-                <th className="w-12">Ref</th>
-                <th className="w-20">Sheet</th>
-                <th className="w-16">Weld</th>
-                <th className="w-24">Type</th>
-                <th className="w-16">Size</th>
-                <th>Problem</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.spooling.map((r, i) => (
+              {d.pending.map((p, i) => (
                 <tr key={i}>
-                  <td className="tabular-nums text-muted-foreground">
-                    {n}.{i + 1}
-                  </td>
-                  <td className="whitespace-nowrap">{r.sheet}</td>
-                  <td className="tabular-nums font-medium">{r.weld}</td>
-                  <td>{r.weldType}</td>
-                  <td className="whitespace-nowrap">{r.size}</td>
-                  <td>{r.problem}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
-      )}
-
-      {d.containers.length > 0 && (
-        <Section
-          n={++n}
-          title="Container check (20ft)"
-          count={d.containers.filter((c) => c.note == null).length}
-          info={d.containers.filter((c) => c.note != null).length}
-        >
-          <table className="table table-compact w-full text-xs">
-            <thead>
-              <tr>
-                <th className="w-12">Ref</th>
-                <th className="w-16">Sheet</th>
-                <th className="w-40">Spool</th>
-                <th className="w-44">Size read from the drawing (mm)</th>
-                <th>Problem</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.containers.map((r, i) => (
-                <tr key={i} className={r.note ? "text-muted-foreground" : ""}>
-                  <td className="tabular-nums text-muted-foreground align-top">
-                    {n}.{i + 1}
-                  </td>
-                  <td className="whitespace-nowrap align-top">{r.sheet}</td>
-                  <td className={`whitespace-nowrap align-top ${r.note ? "" : "font-medium"}`}>{r.spool}</td>
-                  <td className="align-top">
-                    {r.size === "-"
-                      ? "-"
-                      : r.size.split(" · ").map((axis) => (
-                          <span key={axis} className="block whitespace-nowrap">
-                            {axis}
-                          </span>
-                        ))}
-                  </td>
-                  <td className="align-top">
-                    {r.problem}
-                    {r.note && <span className="block italic">For information: {r.note}</span>}
+                  <td className="whitespace-nowrap font-medium">{p.sheet}</td>
+                  <td className="whitespace-nowrap">{HOLD_LABEL[p.status]}</td>
+                  <td>{p.what}</td>
+                  <td>
+                    {p.remark}
+                    {p.markedBy && <span className="text-muted-foreground"> &middot; marked by {p.markedBy}</span>}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </Section>
+        </section>
       )}
 
+      {reportSections(d).map((s) => {
+        const sectionNo = ++n;
+        const errors = s.findings.filter((f) => !f.info).length;
+        return (
+          <Section key={s.title} n={sectionNo} title={s.title} count={errors} info={s.findings.length - errors} reference={s.reference ?? undefined}>
+            <FindingTable n={sectionNo} findings={s.findings} />
+          </Section>
+        );
+      })}
       {(d.clear.length > 0 || d.notChecked.length > 0) && (
         <div className="mt-6 border-t pt-3 text-xs text-muted-foreground">
           {d.clear.length > 0 && (
             <p>
-              <span className="font-medium text-foreground">Checked, no errors:</span> {d.clear.join(" · ")}
+              <span className="font-medium text-foreground">No errors:</span> {d.clear.join(" · ")}
             </p>
           )}
           {d.notChecked.length > 0 && (
@@ -408,8 +237,18 @@ export default async function IsoReportPage({
   const line = findLine(await isoLinesOf(id), requestedLine);
   if (!line) return <p>Line not found.</p>;
 
-  const summary = await summariseLine(id, line);
+  const [summary, review] = await Promise.all([summariseLine(id, line), reviewOf(id, line.key)]);
   const report = buildIsoReport(summary);
+  // A checker's print marks the line done (see PrintButton); Document Control's
+  // does not, because only a checker's mark counts as progress.
+  const canMark = !session.isDcc;
+  // Who signed the line off. A checker about to print is about to become that
+  // person; anyone else sees the recorded mark, or a blank box to sign by hand.
+  const checkedBy = review
+    ? `${review.reviewedByName ?? "—"} · ${review.reviewedAt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}${review.revision ? ` · REV ${review.revision}` : ""}`
+    : canMark
+      ? (session.name ?? session.email)
+      : "";
   const back = session.isDcc ? `/review?project=${id}&line=${encodeURIComponent(line.lineNumber)}` : `/projects/${id}?line=${encodeURIComponent(line.lineNumber)}`;
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
@@ -422,26 +261,32 @@ export default async function IsoReportPage({
           <IconArrowLeft size={14} />
           Back to the line
         </Link>
-        {report && <PrintButton />}
+        {report && <PrintButton markDone={canMark ? markLineReviewed.bind(null, id, line.lineNumber) : undefined} />}
       </div>
 
       <article className="report card">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4">
-          <div className="min-w-0">
-            <p className="eyebrow">ISO check report</p>
-            <h1 className="mt-1 break-all font-mono text-lg font-semibold">{line.lineNumber}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {project.name}
-              {line.revision ? ` · REV ${line.revision}` : ""}
-            </p>
+        <header className="border-b-2 border-foreground pb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <BrandLockup size={30} full />
+            <p className="text-right text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">ISO Check Report</p>
           </div>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-            <dt className="text-muted-foreground">Date</dt>
-            <dd>{today}</dd>
-            <dt className="text-muted-foreground">Checked by</dt>
-            <dd>{session.name ?? session.email}</dd>
-            <dt className="text-muted-foreground">Sheets</dt>
-            <dd>{line.sheets}</dd>
+          <p className="mt-5 text-xs uppercase tracking-[0.12em] text-muted-foreground">Line number</p>
+          <h1 className="mt-1 break-all font-mono text-xl font-semibold">{line.lineNumber}</h1>
+          {/* The title block of the report itself: what a reader filing it needs
+              without reading on. */}
+          <dl className="mt-4 grid grid-cols-2 border text-xs sm:grid-cols-5">
+            {[
+              ["Project", project.name],
+              ["Revision", line.revision ? `REV ${line.revision}` : "Not read"],
+              ["Sheets", String(line.sheets)],
+              ["Date", today],
+              ["Checked by", checkedBy || "—"],
+            ].map(([label, value]) => (
+              <div key={label} className="border-b border-r px-3 py-2 last:border-r-0 sm:border-b-0">
+                <dt className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{label}</dt>
+                <dd className="mt-0.5 break-words font-medium">{value}</dd>
+              </div>
+            ))}
           </dl>
         </header>
 
@@ -453,6 +298,11 @@ export default async function IsoReportPage({
               <Badge tone={report.totals.all > 0 ? "danger" : "success"} dot>
                 {report.totals.all} {report.totals.all === 1 ? "issue" : "issues"}
               </Badge>
+              {report.totals.pending > 0 && (
+                <Badge tone="info" dot>
+                  {report.totals.pending} pending
+                </Badge>
+              )}
               {report.totals.info > 0 && <Badge>{report.totals.info} for information</Badge>}
               {report.totals.designBasis > 0 && <Badge>Design basis {report.totals.designBasis}</Badge>}
               {report.totals.bom > 0 && <Badge>Bill of material {report.totals.bom}</Badge>}
@@ -466,11 +316,32 @@ export default async function IsoReportPage({
               <Drawing key={d.documentId} d={d} showName={report.drawings.length > 1} />
             ))}
 
-            <p className="mt-6 border-t pt-3 text-[11px] text-muted-foreground">
-              Generated from the drawing&apos;s extracted data. Refs (e.g. 2.3) identify each finding for the designer&apos;s reply. Rows marked &ldquo;for information&rdquo; are shown because the checks flag them, but are not counted as errors.
-            </p>
+            {/* Sign-off: the checks narrow the review; a person still signs the drawing. */}
+            <section className="mt-8 grid grid-cols-1 border text-xs sm:grid-cols-3" aria-label="Sign-off">
+              {[
+                ["Checked by", checkedBy],
+                ["Reviewed by", ""],
+                ["Approved by", ""],
+              ].map(([role, name]) => (
+                <div key={role} className="border-b px-3 py-2 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+                  <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{role}</p>
+                  <p className="mt-0.5 min-h-[1.25rem] font-medium">{name}</p>
+                  <div className="mt-6 flex justify-between gap-4 border-t pt-1 text-[10px] text-muted-foreground">
+                    <span>Signature</span>
+                    <span>Date</span>
+                  </div>
+                </div>
+              ))}
+            </section>
           </>
         )}
+
+        <footer className="mt-6 border-t pt-3 text-[11px] leading-relaxed text-muted-foreground">
+          <p>
+            Prepared with {BRAND_NAME} ({BRAND_FULL_NAME}). Quote the Ref (e.g. 2.3) when replying. &ldquo;Info only&rdquo; rows are not errors. This
+            report supports the checker&apos;s review; it does not replace it.
+          </p>
+        </footer>
       </article>
     </div>
   );

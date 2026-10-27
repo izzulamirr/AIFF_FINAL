@@ -1,6 +1,6 @@
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
-import { roleOf, type AppRole } from "@/lib/roles";
+import { isDccRole, isDeactivated, roleOf, type AppRole } from "@/lib/roles";
 
 export interface SessionUser {
   id: string;
@@ -8,7 +8,10 @@ export interface SessionUser {
   /** The name given at sign-up, if any. Display only -- it is the account holder's to edit. */
   name: string | null;
   role: AppRole;
+  /** Document Control's permissions. True for Super Admin too (see lib/roles.ts). */
   isDcc: boolean;
+  /** Staff management: the users page. */
+  isSuperAdmin: boolean;
 }
 
 // The signed-in person and what they may do, or null when signed out.
@@ -25,7 +28,9 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return null;
+  // Deactivated by a Super Admin: signed out from this request on, even though
+  // the token in the cookie has not expired yet.
+  if (!user || isDeactivated(user)) return null;
 
   const role = roleOf(user);
   const fullName = (user.user_metadata as Record<string, unknown> | null | undefined)?.full_name;
@@ -34,6 +39,7 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
     email: user.email ?? "",
     name: typeof fullName === "string" && fullName.trim() ? fullName.trim() : null,
     role,
-    isDcc: role === "dcc",
+    isDcc: isDccRole(role),
+    isSuperAdmin: role === "super_admin",
   };
 });

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { documents, extractionJobs, organizations, projects } from "@easy/db";
 import { activeOrganization } from "@/lib/access";
 import { getDb } from "@/lib/db";
@@ -78,7 +78,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
   const clientProjects = await db
     .select({ id: projects.id, name: projects.name })
     .from(projects)
-    .where(eq(projects.organizationId, organizationId))
+    .where(and(eq(projects.organizationId, organizationId), isNull(projects.hiddenAt)))
     .orderBy(asc(projects.createdAt), asc(projects.id));
 
   // The project asked for, if it is one of the client's, else the first.

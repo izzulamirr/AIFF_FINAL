@@ -76,6 +76,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <AppShell
         {...shellProps}
         isDcc
+        isSuperAdmin={session.isSuperAdmin}
         organization={{
           name: organization.name,
           switcher: (

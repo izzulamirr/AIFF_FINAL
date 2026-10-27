@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { BRAND_FULL_NAME, BRAND_NAME } from "@/components/ui/Brand";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: { default: "EASY — Engineering review", template: "%s · EASY" },
-  description: "AI-powered cross-document engineering review: P&ID, ISO, hook-up and cutting drawings extracted and checked against each other.",
+  title: { default: `${BRAND_NAME} — ${BRAND_FULL_NAME}`, template: `%s · ${BRAND_NAME}` },
+  description: "Cross-document engineering review: P&ID, ISO, hook-up and cutting drawings extracted and checked against each other.",
 };
 
 export default function RootLayout({

@@ -2,6 +2,8 @@ import { Badge } from "@/components/ui/primitives";
 import type { IsoChecks } from "@/lib/isoChecks";
 import { ADMIN_STATUS_TONE, bomFault } from "@/lib/verifyBomCrossCheck";
 import { combineAdminText } from "@/lib/parseSheetPage";
+import { HOLD_LABEL } from "@/lib/pending";
+import { clearItemHold, setItemHold } from "@/app/(app)/projects/[id]/holdActions";
 import type { DesignBasisRow, RoutingFittingRow, ValveMatchGroup } from "@/lib/verifyIso";
 
 // The tables behind an ISO's cross-document checks. Shown on the ISO's own page
@@ -11,29 +13,53 @@ import type { DesignBasisRow, RoutingFittingRow, ValveMatchGroup } from "@/lib/v
 type BomSheet = IsoChecks["bomBySpec"][number];
 type MtoSheet = IsoChecks["mtoBySpec"][number];
 
+// WHO IS RESPONSIBLE. Every check here audits the ISO against a master document
+// -- the line list, the P&ID, the admin spec, the hook-up typical. The master is
+// the REFERENCE: where the two disagree it is the ISO that is wrong and the ISO
+// that gets corrected. So the reference column is headed as what is REQUIRED,
+// the ISO's value is the one marked in red, and a status names the ISO, never a
+// bare "mismatch" that leaves the reader to decide which document is at fault.
+const ON_ISO = "text-danger font-medium";
+
+function ReferenceNote({ reference }: { reference: string }) {
+  return (
+    <p className="border-b bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+      Reference: <span className="font-medium text-foreground">{reference}</span>. Where they differ, the ISO is to be corrected.
+    </p>
+  );
+}
+
+const COMPARE_LABEL: Record<string, string> = {
+  match: "Match",
+  mismatch: "Wrong on ISO",
+  "iso only": "On ISO, not on P&ID",
+  "not compared": "Not compared",
+};
+
 // ISO vs PLL: the design basis, field by field.
 export function DesignBasisTable({ rows }: { rows: DesignBasisRow[] }) {
   return (
     <div className="overflow-hidden rounded-lg border">
+      <ReferenceNote reference="the line list (PLL)" />
       <div className="table-wrap">
         <table className="table table-compact">
           <thead>
             <tr>
               <th>Field</th>
-              <th>ISO</th>
-              <th>PLL</th>
-              <th>Status</th>
+              <th>ISO states</th>
+              <th>Line list requires</th>
+              <th>Result</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.field}>
                 <td className="font-medium">{row.field}</td>
-                <td>{row.isoValue ?? "-"}</td>
+                <td className={row.status === "mismatch" ? ON_ISO : ""}>{row.isoValue ?? "-"}</td>
                 <td>{row.pllValue ?? "-"}</td>
                 <td>
                   <Badge tone={row.status === "match" ? "success" : row.status === "mismatch" ? "danger" : "neutral"} dot>
-                    {row.status}
+                    {COMPARE_LABEL[row.status] ?? row.status}
                   </Badge>
                 </td>
               </tr>
@@ -49,25 +75,26 @@ export function DesignBasisTable({ rows }: { rows: DesignBasisRow[] }) {
 export function RoutingTable({ rows }: { rows: RoutingFittingRow[] }) {
   return (
     <div className="overflow-hidden rounded-lg border">
+      <ReferenceNote reference="the P&ID" />
       <div className="table-wrap">
         <table className="table table-compact">
           <thead>
             <tr>
               <th>Item</th>
-              <th>ISO</th>
-              <th>P&amp;ID</th>
-              <th>Status</th>
+              <th>ISO states</th>
+              <th>P&amp;ID requires</th>
+              <th>Result</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.field}>
                 <td className="font-medium">{row.field}</td>
-                <td>{row.isoValue ?? "-"}</td>
+                <td className={row.status === "mismatch" || row.status === "iso only" ? ON_ISO : ""}>{row.isoValue ?? "-"}</td>
                 <td>{row.pidValue ?? "-"}</td>
                 <td>
-                  <Badge tone={row.status === "match" ? "success" : row.status === "mismatch" ? "danger" : "neutral"} dot>
-                    {row.status}
+                  <Badge tone={row.status === "match" ? "success" : row.status === "mismatch" || row.status === "iso only" ? "danger" : "neutral"} dot>
+                    {COMPARE_LABEL[row.status] ?? row.status}
                   </Badge>
                 </td>
               </tr>
@@ -78,6 +105,13 @@ export function RoutingTable({ rows }: { rows: RoutingFittingRow[] }) {
     </div>
   );
 }
+
+const FITTING_LABEL: Record<string, string> = {
+  match: "Match",
+  "count mismatch": "Wrong count on ISO",
+  "iso only": "On ISO, not on P&ID",
+  "pid only": "Missing from ISO",
+};
 
 // ISO vs P&ID: every in-line component both documents show, paired, one block per
 // material class along the run.
@@ -95,17 +129,18 @@ export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
               ISO {group.isoTotal} / P&amp;ID {group.pidTotal}
             </span>
           </p>
+          <ReferenceNote reference="the P&ID" />
           <div className="table-wrap">
             <table className="table table-compact">
               <thead>
                 <tr>
                   <th>Component</th>
                   <th>Size</th>
-                  <th>ISO</th>
-                  <th>P&amp;ID</th>
+                  <th>ISO shows</th>
+                  <th>P&amp;ID requires</th>
                   <th>ISO description</th>
                   <th>P&amp;ID tag</th>
-                  <th>Status</th>
+                  <th>Result</th>
                 </tr>
               </thead>
               <tbody>
@@ -113,7 +148,7 @@ export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
                   <tr key={`${row.category}-${row.size}`}>
                     <td className="font-medium">{row.category}</td>
                     <td className="font-mono text-xs">{row.size}</td>
-                    <td className="tabular-nums">{row.isoCount || "-"}</td>
+                    <td className={`tabular-nums ${row.status === "match" ? "" : ON_ISO}`}>{row.isoCount || "-"}</td>
                     <td className="tabular-nums">
                       {/* A root valve the legend declares is accounted for as
                           firmly as one the P&ID draws, so it is added into the
@@ -128,8 +163,8 @@ export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
                       {row.impliedDetail ?? row.pidDetail ?? "-"}
                     </td>
                     <td>
-                      <Badge tone={row.status === "match" ? "success" : row.status === "count mismatch" ? "warning" : "danger"} dot>
-                        {row.status}
+                      <Badge tone={row.status === "match" ? "success" : "danger"} dot>
+                        {FITTING_LABEL[row.status] ?? row.status}
                       </Badge>
                     </td>
                   </tr>
@@ -228,15 +263,23 @@ export function BomSheets({ sheets }: { sheets: BomSheet[] }) {
 // rows to say what one table says. Every row reads the same way: what the BOM
 // states, the verdict, and the admin line that verdict rests on (or, where there is
 // none, why not).
-function tally(rows: Array<{ check: { status: string } }>) {
-  const n = (...s: string[]) => rows.filter((r) => s.includes(r.check.status)).length;
-  return { match: n("match"), wrongSpec: n("deviation"), wrongClass: n("wrong_spec"), missing: n("missing") };
+type TallyRow = { check: { status: string }; hold: unknown };
+
+// A held row counts as pending and nowhere else -- it is waiting, not wrong.
+function tally(rows: TallyRow[]) {
+  const n = (...s: string[]) => rows.filter((r) => !r.hold && s.includes(r.check.status)).length;
+  return { match: n("match"), wrongSpec: n("deviation"), wrongClass: n("wrong_spec"), missing: n("missing"), pending: rows.filter((r) => r.hold).length };
 }
 
-function CountBadges({ rows }: { rows: Array<{ check: { status: string } }> }) {
-  const { match, wrongSpec, wrongClass, missing } = tally(rows);
+function CountBadges({ rows }: { rows: TallyRow[] }) {
+  const { match, wrongSpec, wrongClass, missing, pending } = tally(rows);
   return (
     <span className="flex flex-wrap items-center gap-1.5">
+      {pending > 0 && (
+        <Badge tone="info" dot>
+          {pending} pending
+        </Badge>
+      )}
       {match > 0 && (
         <Badge tone="success" dot>
           {match} match
@@ -261,7 +304,41 @@ function CountBadges({ rows }: { rows: Array<{ check: { status: string } }> }) {
   );
 }
 
-export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
+// Mark a row pending / on hold, or clear a mark. A plain form in a <details>, so
+// it costs nothing until opened and needs no client code.
+function HoldControl({ row, marking }: { row: MtoSheet["groups"][number]["rows"][number]; marking: HoldMarking }) {
+  const { projectId, documentId } = marking;
+  if (row.hold?.source === "manual") {
+    return (
+      <form action={clearItemHold.bind(null, projectId, documentId, row.holdKey)} className="mt-1">
+        <button className="text-[11px] font-medium text-link hover:underline">Clear {HOLD_LABEL[row.hold.status].toLowerCase()}</button>
+      </form>
+    );
+  }
+  // A hold the drawing prints is the drawing's to lift, not this page's.
+  if (row.hold) return null;
+  return (
+    <details className="mt-1 text-[11px]">
+      <summary className="cursor-pointer font-medium text-link">Mark pending…</summary>
+      <form action={setItemHold.bind(null, projectId, documentId, row.holdKey)} className="mt-1.5 flex w-56 flex-col gap-1.5">
+        <select name="status" defaultValue="pending" className="input h-7 text-xs">
+          <option value="pending">Pending (awaiting data)</option>
+          <option value="hold">On hold</option>
+        </select>
+        <textarea name="remark" required rows={2} placeholder="Waiting on what? e.g. vendor datasheet from client" className="input text-xs" />
+        <button className="btn btn-secondary btn-xs self-start">Save</button>
+      </form>
+    </details>
+  );
+}
+
+/** Where marks are saved. Absent where items cannot be marked (the table is not set up, or no project context). */
+export interface HoldMarking {
+  projectId: string;
+  documentId: string;
+}
+
+export function MtoSheets({ sheets, marking }: { sheets: MtoSheet[]; marking?: HoldMarking }) {
   return (
     <div className="flex flex-col gap-4">
       {sheets.map(({ lineNumber, sheetLabel, page, groups }) => (
@@ -273,6 +350,7 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
             </p>
             <CountBadges rows={groups.flatMap((g) => g.rows)} />
           </div>
+          <ReferenceNote reference="the admin spec (item list)" />
           <div className="table-wrap">
             <table className="table table-compact min-w-[52rem] text-xs">
               <thead>
@@ -304,8 +382,12 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                     const { check } = row;
                     const muted = check.status === "skipped" || check.status === "no_list";
                     const fails = check.status !== "match" && check.status !== "skipped";
+                    const { hold } = row;
+                    // Held: waiting, not wrong. What the check found is kept, greyed,
+                    // for when the data arrives -- but it is not shown as an error.
+                    const faultTone = hold ? "text-muted-foreground" : "font-medium text-danger";
                     return (
-                      <tr key={row.id} className={check.status === "wrong_spec" ? "bg-danger-soft/40" : ""}>
+                      <tr key={row.id} className={hold ? "bg-info-soft/40" : check.status === "wrong_spec" ? "bg-danger-soft/40" : ""}>
                         <td className="tabular-nums text-muted-foreground">{row.itemNo}</td>
                         <td className="whitespace-nowrap tabular-nums">{row.size}</td>
                         <td className="tabular-nums">{row.quantity}</td>
@@ -314,15 +396,22 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                             the BOM. The spec column only ever shows what is required. */}
                         <td className="max-w-sm">
                           <p className={muted ? "text-muted-foreground" : ""}>{row.description}</p>
-                          {fails && check.note && <p className="mt-0.5 font-medium text-danger">{check.note}</p>}
+                          {hold && (
+                            <p className="mt-1 rounded border border-info-border bg-info-soft px-2 py-1 text-foreground">
+                              <span className="font-semibold">{HOLD_LABEL[hold.status]}: </span>
+                              {hold.remark}
+                              {hold.markedByName && <span className="text-muted-foreground"> &middot; {hold.markedByName}</span>}
+                            </p>
+                          )}
+                          {fails && check.note && <p className={`mt-0.5 ${faultTone}`}>{check.note}</p>}
                           {fails &&
                             check.adminMismatches.map((m) => (
-                              <p key={m.attribute} className="mt-0.5 font-medium text-danger">
+                              <p key={m.attribute} className={`mt-0.5 ${faultTone}`}>
                                 {bomFault(m, specClass)}
                               </p>
                             ))}
                           {check.detail && <p className="mt-0.5 font-medium">{check.detail}</p>}
-                          {check.action && (
+                          {check.action && !hold && (
                             <p className="mt-1 rounded border border-warning-border bg-warning-soft px-2 py-1 text-foreground">
                               <span className="font-semibold">Action required: </span>
                               {check.action}
@@ -330,9 +419,19 @@ export function MtoSheets({ sheets }: { sheets: MtoSheet[] }) {
                           )}
                         </td>
                         <td>
-                          <Badge tone={ADMIN_STATUS_TONE[check.status]} dot>
-                            {check.label}
-                          </Badge>
+                          {hold ? (
+                            <>
+                              <Badge tone="info" dot>
+                                {HOLD_LABEL[hold.status]}
+                              </Badge>
+                              {check.status !== "match" && <p className="mt-0.5 text-[11px] text-muted-foreground">check: {check.label.toLowerCase()}</p>}
+                            </>
+                          ) : (
+                            <Badge tone={ADMIN_STATUS_TONE[check.status]} dot>
+                              {check.label}
+                            </Badge>
+                          )}
+                          {marking && <HoldControl row={row} marking={marking} />}
                         </td>
                         <td className="max-w-sm text-muted-foreground">
                           {check.adminMatches.length > 0 ? (

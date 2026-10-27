@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import ExcelJS from "exceljs";
 import { activeOrganization, activeProjectsOf } from "@/lib/access";
 import { boardOf, CHECK_LABEL, namesOf, overviewOf } from "@/lib/dashboardData";
@@ -19,13 +19,18 @@ function styled(sheet: ExcelJS.Worksheet, widths: number[]) {
   sheet.views = [{ state: "frozen", ySplit: 1 }];
 }
 
-export async function GET() {
+// `?project=<id>` exports that one project, as the dashboard's project view shows
+// it; without it, the whole client. The id is matched against the client's own
+// projects, the same rule the page applies.
+export async function GET(request: NextRequest) {
   const session = await getSessionUser();
   if (!session) return new NextResponse("Not signed in.", { status: 401 });
   if (!session.isDcc) return new NextResponse("Not available.", { status: 403 });
 
   const client = await activeOrganization(session);
-  const projects = await activeProjectsOf(session);
+  const clientProjects = await activeProjectsOf(session);
+  const focus = clientProjects.find((p) => p.id === request.nextUrl.searchParams.get("project")) ?? null;
+  const projects = focus ? [focus] : clientProjects;
   const progress = await progressOfProjects(projects);
   const overview = await overviewOf(projects);
   const names = await namesOf([...new Set(overview.flatMap((o) => o.uploaders.map((u) => u.userId)))]);
@@ -41,6 +46,7 @@ export async function GET() {
   summary.addRow(["Item", "Value"]);
   const rows: Array<[string, string | number]> = [
     ["Client", client?.name ?? ""],
+    ["Scope", focus ? `Project: ${focus.name}` : "All projects"],
     ["Generated", generated.toLocaleString("en-GB")],
     ["Projects", board.projects],
     ["Documents uploaded", board.documents],
@@ -106,7 +112,7 @@ export async function GET() {
   styled(users, [30, 10, 12, 62]);
 
   const buffer = await book.xlsx.writeBuffer();
-  const safe = (client?.name ?? "client").replace(/[^A-Za-z0-9._-]+/g, "_");
+  const safe = [client?.name ?? "client", focus?.name].filter(Boolean).join("-").replace(/[^A-Za-z0-9._-]+/g, "_");
   return new NextResponse(buffer as ArrayBuffer, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

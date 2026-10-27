@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { documents, extractedTags, extractionJobs, projects } from "@easy/db";
 import { outlineExtentMm, type CutPart, type CutShape } from "@easy/shared";
 import { getSessionUser } from "@/lib/session";
@@ -53,7 +53,7 @@ export default async function CuttingPage({
     ? await db
         .select()
         .from(projects)
-        .where(inArray(projects.organizationId, orgIds))
+        .where(and(inArray(projects.organizationId, orgIds), isNull(projects.hiddenAt)))
         .orderBy(asc(projects.createdAt), asc(projects.id))
     : [];
 

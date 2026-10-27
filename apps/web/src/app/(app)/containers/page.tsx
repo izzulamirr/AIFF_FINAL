@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { documents, extractedTags, projects } from "@easy/db";
 import { getSessionUser } from "@/lib/session";
 import { visibleOrganizations } from "@/lib/access";
@@ -50,7 +50,7 @@ export default async function ContainersPage({
     ? await db
         .select()
         .from(projects)
-        .where(inArray(projects.organizationId, orgIds))
+        .where(and(inArray(projects.organizationId, orgIds), isNull(projects.hiddenAt)))
         .orderBy(asc(projects.createdAt), asc(projects.id))
     : [];
 

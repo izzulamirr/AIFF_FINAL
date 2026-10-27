@@ -2,6 +2,9 @@ import { Badge } from "@/components/ui/primitives";
 import type { HookupVerification } from "@/lib/hookupVerification";
 
 const statusTone = { match: "success", unmatched: "danger", "not checkable": "neutral" } as const;
+// The typical is the reference: a component it requires that the ISO lacks is the
+// ISO's to add, so the status says so rather than a bare "unmatched".
+const statusLabel = { match: "On ISO", unmatched: "Missing from ISO", "not checkable": "Not checkable" } as const;
 
 // The hook-up verification of one ISO: each instrument, the typical it was
 // checked against, and each piping-scope component found or missing on the ISO.
@@ -35,13 +38,17 @@ export function HookupResults({ results, isoLineNumber, lineService, serviceBasi
               <span className="text-muted-foreground">{result.instrumentLabel}</span>
               {result.missingCount > 0 ? (
                 <Badge tone="danger" dot>
-                  {result.missingCount} piping item{result.missingCount > 1 ? "s" : ""} unmatched on the ISO
+                  {result.missingCount} piping item{result.missingCount > 1 ? "s" : ""} missing from the ISO
                 </Badge>
               ) : result.sheet ? (
                 <Badge tone="success" dot>
                   all piping-scope items matched
                 </Badge>
-              ) : null}
+              ) : (
+                <Badge tone="info" dot>
+                  Pending Vendor Data
+                </Badge>
+              )}
             </p>
           </div>
           {result.sheet ? (
@@ -51,11 +58,17 @@ export function HookupResults({ results, isoLineNumber, lineService, serviceBasi
               {" -- matched automatically"}
               {result.sheet.mounting ? ` | ${result.sheet.mounting}` : ""}
               {result.sheet.slope ? ` | slope ${result.sheet.slope}` : ""}
+              <span className="mt-0.5 block">
+                Reference: <span className="font-medium text-foreground">this hook-up typical</span>. A component it requires that the ISO lacks is
+                to be added to the ISO.
+              </span>
             </p>
           ) : (
-            <p className="border-b bg-danger-soft px-5 py-2.5 text-xs text-danger">
-              No typical in this set covers a {result.measuredVariable ?? "?"} instrument
-              {result.service ? ` on ${result.service} service` : ""}.
+            // Not an error on the ISO: there is no supporting document to check
+            // it against yet. Pending Vendor Data, listed as such in the report.
+            <p className="border-b bg-info-soft px-5 py-2.5 text-xs text-foreground">
+              <span className="font-semibold">Pending Vendor Data.</span> No supporting hook-up document for this{" "}
+              {result.measuredVariable ?? ""} instrument{result.service ? ` on ${result.service} service` : ""}, so its piping cannot be checked yet.
               {result.noTypicalReason && <span className="mt-1 block text-muted-foreground">{result.noTypicalReason}</span>}
             </p>
           )}
@@ -66,11 +79,11 @@ export function HookupResults({ results, isoLineNumber, lineService, serviceBasi
                 <thead>
                   <tr>
                     <th className="w-16">Item</th>
-                    <th>Hook-up component (piping scope)</th>
+                    <th>Typical requires (piping scope)</th>
                     <th className="w-28">Size</th>
                     <th className="w-16">Qty</th>
                     <th className="w-56">Found on the ISO</th>
-                    <th className="w-28">Status</th>
+                    <th className="w-32">Result</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -116,7 +129,7 @@ export function HookupResults({ results, isoLineNumber, lineService, serviceBasi
                       <td className="text-xs text-muted-foreground">{check.isoDetail ?? "-"}</td>
                       <td>
                         <Badge tone={statusTone[check.status]} dot>
-                          {check.status}
+                          {statusLabel[check.status]}
                         </Badge>
                       </td>
                     </tr>

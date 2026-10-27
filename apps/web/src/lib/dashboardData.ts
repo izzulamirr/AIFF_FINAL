@@ -17,7 +17,6 @@ export interface ProjectOverview {
   documents: number;
   byType: Array<[string, number]>;
   lastUpload: Date | null;
-  uploads: Date[];
   /** Who uploaded the drawings, with how many documents and current ISO lines came from each. */
   uploaders: Array<{ userId: string; documents: number; lines: number }>;
   /** What the checks found on each of its ISO lines. */
@@ -57,7 +56,6 @@ export async function overviewOf(projects: Array<{ id: string; name: string }>):
       results: results[i],
       documents: mine.length,
       byType: [...counts.entries()].sort((a, b) => b[1] - a[1]),
-      uploads: mine.map((d) => d.uploadedAt),
       uploaders: [...byUser.values()],
       lastUpload: mine.length > 0 ? new Date(Math.max(...mine.map((d) => d.uploadedAt.getTime()))) : null,
     };
@@ -125,10 +123,12 @@ export const CHECK_LABEL: Array<[keyof LineResult["byCheck"], string]> = [
 
 /** The numbers the monitoring board draws, rolled up across the client's projects. */
 export function boardOf(overview: ProjectOverview[], progress: ProjectProgress[] | null, names: Map<string, string>): BoardData {
-  const all = overview.flatMap((o) => o.results);
+  const all = overview.flatMap((o) => o.results.map((r) => ({ ...r, project: o.name })));
   // Against the total Document Control stated where there is one, otherwise the lines read so far.
   const totalOf = (o: ProjectOverview) => progress?.find((p) => p.projectId === o.id)?.total ?? o.isoLines;
   const shortLabel = (line: string) => line.split("-").slice(-3, -2)[0] ?? line;
+  const byType = new Map<string, number>();
+  for (const o of overview) for (const [type, n] of o.byType) byType.set(type, (byType.get(type) ?? 0) + n);
   return {
     projects: overview.length,
     documents: overview.reduce((n, o) => n + o.documents, 0),
@@ -142,7 +142,8 @@ export function boardOf(overview: ProjectOverview[], progress: ProjectProgress[]
       .filter((r) => r.errors > 0)
       .sort((x, y) => y.errors - x.errors)
       .slice(0, 7)
-      .map((r) => ({ label: shortLabel(r.lineNumber), full: r.lineNumber, errors: r.errors })),
+      .map((r) => ({ label: shortLabel(r.lineNumber), full: r.lineNumber, project: r.project, errors: r.errors })),
+    documentsByType: [...byType.entries()].sort((a, b) => b[1] - a[1]).map(([type, value]) => ({ label: DOC_LABEL[type] ?? type, value })),
     perProject: overview.map((o) => ({
       name: o.name,
       checked: o.results.filter((r) => !r.failed).length,
@@ -150,7 +151,6 @@ export function boardOf(overview: ProjectOverview[], progress: ProjectProgress[]
       withErrors: o.results.filter((r) => r.errors > 0).length,
     })),
     ...usersOf(overview, progress, names),
-    uploads: overview.flatMap((o) => o.uploads),
   };
 }
 

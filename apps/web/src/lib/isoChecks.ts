@@ -18,6 +18,7 @@ import {
 import { kindOfDocument } from "@/lib/docTypes";
 import { extractSheetItems, type SheetItem } from "@/lib/parseSheetPage";
 import { checkBomItem, type AdminCheck } from "@/lib/verifyBomCrossCheck";
+import { bomItemKey, loadItemHolds, printedHold, type ItemHold } from "@/lib/pending";
 
 // An ISO's cross-document checks: its design basis against the line list (PLL),
 // its routing and fittings against the project's P&IDs, and its bill of
@@ -43,6 +44,10 @@ export interface MtoBomRow {
   itemCode: string;
   /** The verdict, with the admin line(s) it rests on and anything they contradict. */
   check: AdminCheck;
+  /** The item's identity on the drawing, for marking it pending (see lib/pending.ts). */
+  holdKey: string;
+  /** Set when the item is on hold or pending: then it is waiting, not wrong, and is not an error. */
+  hold: ItemHold | null;
 }
 
 /**
@@ -253,6 +258,11 @@ export async function buildIsoChecks({
     })
     .filter((v): v is NonNullable<typeof v> => v !== null);
 
+  // Holds a person has marked on this drawing's BOM rows. A drawing's own printed
+  // HOLD / TBA / TBC is read per row below; a manual mark wins over it, since it
+  // carries a remark somebody chose to write.
+  const { holds: manualHolds, tableExists: holdsEditable } = await loadItemHolds([docId]);
+
   // MTO: the same BOM items, looked up in the ADMIN's item list under the class
   // each is filed under. (The client specs and the admin item list are read
   // above, ahead of the BOM grouping, which reads them.)
@@ -270,7 +280,10 @@ export async function buildIsoChecks({
         rows: items.map((displayItem): MtoBomRow => {
           const tag = tags.find((t) => t.id === displayItem.id);
           const a = (tag?.attributes as Record<string, unknown> | undefined) ?? {};
+          const holdKey = bomItemKey(tag?.sourcePage ?? page, a);
           return {
+            holdKey,
+            hold: manualHolds.get(`${docId}::${holdKey}`) ?? printedHold(a),
             id: displayItem.id,
             itemNo: displayItem.itemNo,
             componentType: String(a.component_type ?? "-"),
@@ -402,5 +415,5 @@ export async function buildIsoChecks({
     });
   }
 
-  return { designBasis, routingFittings, bomBySpec, mtoBySpec, mtoAdminAvailable };
+  return { designBasis, routingFittings, bomBySpec, mtoBySpec, mtoAdminAvailable, holdsEditable };
 }

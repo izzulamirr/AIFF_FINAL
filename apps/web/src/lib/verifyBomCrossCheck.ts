@@ -685,8 +685,10 @@ export function splitMergedRow(description: string): string[] {
     const at = m.index ?? 0;
     // "TO MATCH PIPE", "BORE TO MATCH FLANGE": mentioned, not starting an item.
     if (at > 0 && /\b(?:MATCH|TO|WITH|OF)\s*$/i.test(text.slice(Math.max(0, at - 12), at))) continue;
-    // A stud's length leads its description: "110 STUD BOLT ...".
-    const lead = /(\d+\s+)$/.exec(text.slice(0, at));
+    // A stud's length leads its description: "110 STUD BOLT ...". Only a stud's: the
+    // number before any other head is the tail of the item before it ("...SCH20 FLANGE",
+    // "...ISO 15156 FLANGE"), and taking it would cut that item short.
+    const lead = head === "STUD BOLT" ? /(\d+\s+)$/.exec(text.slice(0, at)) : null;
     starts.push(lead && at > 0 ? at - lead[1].length : at);
   }
   if (starts.length < 2 || starts[0] !== 0) return [text];

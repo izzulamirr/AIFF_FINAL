@@ -87,6 +87,10 @@ export interface IsoDrawingChecks {
     notInList: number;
     /** Not looked up: supports, instruments, control valves, stud bolts, no class, or no admin lines for the class. */
     notChecked: number;
+    /** On hold or pending (see lib/pending.ts) -- waiting on someone, not counted as an error. */
+    pending: number;
+    /** False until supabase/item-holds.sql has been run: items cannot be marked pending by hand. */
+    holdsEditable: boolean;
     sheetData: IsoChecks["mtoBySpec"];
   };
 }
@@ -200,7 +204,8 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
   //   notChecked  not something the admin list itemises, or nothing to look it up in
   const mtoSheets = checks.mtoBySpec.filter((s) => lineKey(s.lineNumber) === key);
   const mtoRows = mtoSheets.flatMap((s) => s.groups.flatMap((g) => g.rows));
-  const countOf = (...statuses: string[]) => mtoRows.filter((r) => statuses.includes(r.check.status)).length;
+  // A held item is waiting, not wrong: it counts as pending and nowhere else.
+  const countOf = (...statuses: string[]) => mtoRows.filter((r) => !r.hold && statuses.includes(r.check.status)).length;
   const mto: IsoDrawingChecks["mto"] = {
     available: checks.mtoAdminAvailable,
     items: mtoRows.length,
@@ -208,6 +213,8 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
     deviations: countOf("deviation", "wrong_spec"),
     notInList: countOf("missing"),
     notChecked: countOf("skipped", "no_list"),
+    pending: mtoRows.filter((r) => r.hold).length,
+    holdsEditable: checks.holdsEditable,
     sheetData: mtoSheets,
   };
 
@@ -260,7 +267,11 @@ export async function summariseLine(projectId: string, line: IsoLine): Promise<L
   try {
     const typicals = await loadHookupSheets(projectDocs.filter((d) => d.docType === "hookup").map((d) => d.id));
     const drawings: HookupDrawingSummary[] = [];
-    if (typicals.length > 0) {
+    // Verified even with NO typicals: the line's instruments are still listed,
+    // each as Pending Vendor Data. Skipping the check hid them altogether, so a
+    // line with three transmitters and no hook-up drawing read as having nothing
+    // to check.
+    {
       for (const doc of isoDocs) {
         const verification = await verifyIsoHookup({ projectDocs, sheets: typicals, isoId: doc.id, chosenLineKey: line.key });
         const { results } = verification;

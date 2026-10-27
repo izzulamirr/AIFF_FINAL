@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AuthShell } from "@/components/auth/AuthShell";
+import { BRAND_NAME } from "@/components/ui/Brand";
 import { IconCheckCircle } from "@/components/ui/icons";
 import { Alert } from "@/components/ui/primitives";
 import { login } from "./actions";
@@ -8,9 +9,9 @@ import { login } from "./actions";
 export const metadata: Metadata = { title: "Sign in" };
 
 const POINTS = [
-  "Structured data read from every P&ID, isometric and hook-up drawing",
-  "Bills of material and design basis cross-checked between documents",
-  "Spools, container loads and plate nests planned from the drawing",
+  "Structured data extracted from P&IDs, isometrics and hook-up drawings",
+  "Bills of material and design basis verified across documents",
+  "Spooling, container loading and plate nesting planned from the drawings",
 ];
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; message?: string }> }) {
@@ -21,7 +22,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       panel={
         <>
           <h2 className="text-4xl font-semibold leading-tight tracking-tight text-sidebar-strong">Cross-document engineering review</h2>
-          <p className="mt-4 text-base leading-relaxed">Drawings go in; a consistent, checkable picture of the plant comes out.</p>
+          <p className="mt-4 text-base leading-relaxed">
+            Project drawings and documents are read, cross-checked and reported, ready for the checker&apos;s review.
+          </p>
           <ul className="mt-8 flex flex-col gap-3.5">
             {POINTS.map((point) => (
               <li key={point} className="flex items-start gap-3 text-sm leading-relaxed">
@@ -33,7 +36,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         </>
       }
     >
-      <h1 className="text-2xl font-semibold tracking-tight">Sign in to EASY</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Sign in to {BRAND_NAME}</h1>
       <p className="mt-1.5 text-sm text-muted-foreground">Enter your username and password to continue.</p>
 
       <div className="mt-6 flex flex-col gap-3 empty:hidden">
@@ -63,13 +66,13 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           </label>
           <input id="password" name="password" type="password" required minLength={8} className="input h-10" />
         </div>
-        <button className="btn btn-primary mt-2 h-10 w-full">Log in</button>
+        <button className="btn btn-primary mt-2 h-10 w-full">Sign in</button>
       </form>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">
-        Don&apos;t have an account?{" "}
+        No account yet?{" "}
         <Link href="/signup" className="link font-medium">
-          Create one
+          Create an account
         </Link>
       </p>
     </AuthShell>

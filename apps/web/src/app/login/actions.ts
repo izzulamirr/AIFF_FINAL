@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { roleOf } from "@/lib/roles";
+import { DEACTIVATED, isDcc } from "@/lib/roles";
 import { findUserByUsername } from "@/lib/usernames";
 
 // The same words Supabase uses for a wrong password, so a mistyped username and
@@ -27,11 +27,20 @@ export async function login(formData: FormData) {
 
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
+    // Supabase answers "banned" only once the password is right, so saying so
+    // tells nobody anything they could not already sign in to find out.
+    const message =
+      error.code === "user_banned"
+        ? DEACTIVATED
+        : error.code === "email_not_confirmed"
+          ? "Your email address has not been confirmed yet. Open the link in the confirmation email, or ask a Super Admin to confirm your account."
+          : error.message;
+    redirect(`/login?error=${encodeURIComponent(message)}`);
   }
 
-  // Document Control lands on its dashboard; a plain User goes straight into
-  // the guided Organization -> Project -> Features path, since it has no
-  // sidebar to reach the dashboard's tool grid from.
-  redirect(roleOf(data.user) === "dcc" ? "/dashboard" : "/clients");
+  // Document Control (and Super Admin, which is Document Control and more) lands
+  // on its dashboard; a plain User goes straight into the guided Organization ->
+  // Project -> Features path, since it has no sidebar to reach the dashboard's
+  // tool grid from.
+  redirect(isDcc(data.user) ? "/dashboard" : "/clients");
 }

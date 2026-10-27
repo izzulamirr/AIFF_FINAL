@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BrandMark, IconBuilding, IconClose, IconDashboard, IconMenu, IconUsers } from "@/components/ui/icons";
+import { BRAND_NAME, BrandLockup } from "@/components/ui/Brand";
+import { IconBuilding, IconClose, IconDashboard, IconMenu, IconUsers } from "@/components/ui/icons";
 
 // The frame around Document Control's pages: a top bar with the brand, the
 // client it is working for, the pages, and who is signed in. On narrow
@@ -21,6 +22,8 @@ interface NavItem {
   href: string;
   label: string;
   icon: typeof IconDashboard;
+  /** Shown to Super Admin only. The page refuses everyone else as well; this only spares them a link that leads nowhere. */
+  superAdminOnly?: boolean;
 }
 
 // The places Document Control works FROM -- and there is no persistent way back
@@ -37,7 +40,7 @@ interface NavItem {
 // bar to begin with.
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
-  { href: "/users", label: "Users", icon: IconUsers },
+  { href: "/users", label: "Staff", icon: IconUsers, superAdminOnly: true },
 ];
 
 // Who is signed in, passed down from the server layout. `roleLabel` is the
@@ -48,6 +51,7 @@ interface Identity {
   name: string | null;
   roleLabel: string;
   isDcc: boolean;
+  isSuperAdmin: boolean;
 }
 
 // The client Document Control is working for. `switcher` arrives already
@@ -57,13 +61,13 @@ interface Workspace {
   switcher: ReactNode;
 }
 
-function NavLinks({ vertical = false, onNavigate }: { vertical?: boolean; onNavigate?: () => void }) {
+function NavLinks({ vertical = false, onNavigate, isSuperAdmin }: { vertical?: boolean; onNavigate?: () => void; isSuperAdmin: boolean }) {
   const pathname = usePathname();
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
   return (
     <ul className={vertical ? "flex flex-col gap-1" : "flex items-center gap-1"}>
-      {NAV.map(({ href, label, icon: Icon }) => {
+      {NAV.filter((item) => !item.superAdminOnly || isSuperAdmin).map(({ href, label, icon: Icon }) => {
         const active = isActive(href);
         return (
           <li key={href}>
@@ -166,15 +170,14 @@ export function AppShell({
             <IconMenu />
           </button>
 
-          <Link href="/dashboard" className="flex items-center gap-2.5">
-            <BrandMark size={28} />
-            <span className="font-semibold tracking-wide">EASY</span>
+          <Link href="/dashboard" aria-label={`${BRAND_NAME} dashboard`}>
+            <BrandLockup />
           </Link>
 
           {organization && <ClientChip organization={organization} className="ml-2 hidden lg:flex" />}
 
           <nav aria-label="Main" className="ml-2 hidden lg:block">
-            <NavLinks />
+            <NavLinks isSuperAdmin={identity.isSuperAdmin} />
           </nav>
 
           <div className="ml-auto flex items-center gap-3">
@@ -197,9 +200,8 @@ export function AppShell({
             style={{ animation: "drawer-in 0.2s ease-out" }}
           >
             <div className="flex items-center justify-between">
-              <Link href="/dashboard" onClick={close} className="flex items-center gap-2.5">
-                <BrandMark size={28} />
-                <span className="font-semibold tracking-wide">EASY</span>
+              <Link href="/dashboard" onClick={close} aria-label={`${BRAND_NAME} dashboard`}>
+                <BrandLockup />
               </Link>
               <button ref={closeRef} type="button" aria-label="Close menu" onClick={close} className="btn btn-ghost h-9 w-9 p-0">
                 <IconClose size={18} />
@@ -209,7 +211,7 @@ export function AppShell({
             {organization && <ClientChip organization={organization} className="flex w-full" />}
 
             <nav aria-label="Main">
-              <NavLinks vertical onNavigate={close} />
+              <NavLinks vertical onNavigate={close} isSuperAdmin={identity.isSuperAdmin} />
             </nav>
 
             <div className="mt-auto border-t pt-4">
