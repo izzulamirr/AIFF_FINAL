@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { documents, extractedTags } from "@easy/db";
-import { normalizeRevision, normalizeTagNumber, resolveRevisions, type DocumentRevision } from "@easy/shared";
+import { normalizeRevision, normalizeTagNumber, resolveRevisions, type DocumentRevision, type KnownRevisions } from "@easy/shared";
 import { getDb } from "@/lib/db";
 
 // A project's ISO line numbers -- what a plain user picks from, and what every
@@ -130,6 +130,29 @@ export async function isoLinesOf(projectId: string): Promise<IsoLine[]> {
   }
 
   return lines.sort((a, b) => a.lineNumber.localeCompare(b.lineNumber, undefined, { numeric: true }));
+}
+
+/**
+ * Every ISO document's revision and whether it is still in force, from the REV
+ * printed on the drawing -- the form `resolveDocumentVersions` takes, so ISOs sit
+ * in the same revision tracking as every other document. A drawing is superseded
+ * only if it is superseded on every line it carries.
+ */
+export async function isoVersionsOf(projectId: string): Promise<KnownRevisions> {
+  const known: KnownRevisions = new Map();
+  for (const line of await isoLinesOf(projectId)) {
+    for (const [drawings, current] of [[line.current, true], [line.superseded, false]] as const) {
+      for (const d of drawings) {
+        const seen = known.get(d.documentId);
+        known.set(d.documentId, {
+          revision: d.revision,
+          current: current || Boolean(seen?.current),
+          supersededBy: current ? null : (seen?.supersededBy ?? line.current[0]?.documentId ?? null),
+        });
+      }
+    }
+  }
+  return known;
 }
 
 /** The line a `?line=` value names, or undefined if this project has no such line. */

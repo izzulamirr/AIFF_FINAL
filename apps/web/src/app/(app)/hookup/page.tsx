@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { documents, extractionJobs, projects } from "@easy/db";
+import { currentDocuments } from "@easy/shared";
 import { getSessionUser } from "@/lib/session";
 import { visibleOrganizations } from "@/lib/access";
 import { findLine, isoLinesOf } from "@/lib/isoLines";
@@ -91,7 +92,7 @@ export default async function HookupPage({
   if (!chosenLine && !canManage) redirect(`/projects/${projectId}`);
 
   const projectDocs = await db.select().from(documents).where(eq(documents.projectId, projectId));
-  const hookupDocs = projectDocs.filter((d) => d.docType === "hookup");
+  const hookupDocs = currentDocuments(projectDocs.filter((d) => d.docType === "hookup"));
   const isoDocs = projectDocs.filter((d) => d.docType === "iso" && (!chosenLine || chosenLine.documentIds.includes(d.id)));
 
   const jobs = await db

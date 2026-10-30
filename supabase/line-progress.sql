@@ -41,6 +41,10 @@ create table if not exists line_reviews (
 -- exists gains the column too. Safe to run more than once.
 alter table line_reviews add column if not exists revision text;
 
+-- Every document the check was based on, as it stood when marked done. A later
+-- revision of any of them puts the line back to re-check.
+alter table line_reviews add column if not exists basis jsonb;
+
 -- Row level security, the same model as rls.sql: readable by members of the
 -- owning organization, and nothing else. The app itself connects with a role that
 -- bypasses RLS and enforces who may write in its own server actions, so no
@@ -66,5 +70,35 @@ create policy "org members can read line reviews" on line_reviews
       select 1 from projects p
       join organization_members m on m.organization_id = p.organization_id
       where p.id = line_reviews.project_id and m.user_id = auth.uid()
+    )
+  );
+
+-- Check prints: CP-01..CP-03 sent back to the designer, then FINAL (zero errors),
+-- which marks the line done. Each row is kept; the sequence is the record.
+create table if not exists line_check_prints (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  line_key text not null,
+  line_number text not null,
+  kind text not null check (kind in ('cp', 'final')),
+  seq integer not null,
+  iso_revision text,
+  iso_document_ids jsonb,
+  error_count integer not null,
+  issued_by uuid references auth.users(id) on delete set null,
+  issued_by_name text,
+  issued_at timestamptz not null default now()
+);
+create index if not exists line_check_prints_line_idx on line_check_prints (project_id, line_key);
+
+-- Same model as line_reviews: readable by members of the owning organization only.
+alter table line_check_prints enable row level security;
+drop policy if exists "org members can read check prints" on line_check_prints;
+create policy "org members can read check prints" on line_check_prints
+  for select using (
+    exists (
+      select 1 from projects p
+      join organization_members m on m.organization_id = p.organization_id
+      where p.id = line_check_prints.project_id and m.user_id = auth.uid()
     )
   );

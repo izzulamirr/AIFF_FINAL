@@ -1,30 +1,33 @@
 import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { documents, extractionJobs, projects } from "@easy/db";
+import { resolveDocumentVersions } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { canReadOrganization } from "@/lib/access";
 import { getSessionUser } from "@/lib/session";
+import { isoVersionsOf } from "@/lib/isoLines";
 import { formatMismatch, isLibraryDocument, labelForDocument } from "@/lib/docTypes";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmButton } from "@/components/ui/ConfirmButton";
 import { Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
-import { IconClipboard, IconCompare, IconFile, IconLibrary, IconNest, IconTable } from "@/components/ui/icons";
+import { IconBox, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconNest, IconSpool, IconSupport, IconTable } from "@/components/ui/icons";
 import { deleteDocument, moveDocumentToLibrary, uploadDocument } from "./actions";
 import { DeleteDocumentButton } from "./DeleteDocumentButton";
 import { DocumentUploadCard } from "./DocumentUploadCard";
 import { LineReviewView } from "./LineReviewView";
 import { ProjectHub } from "./ProjectHub";
 
-// The same two features the dashboard offers -- hook-up, spooling and the
-// container check are checks ON an ISO and live inside ISO checking, on the
-// line's own page. Scoped to this one project, so neither has to be picked again
-// from that page's own project selector. P&ID compare is this project's alone:
-// it reads two of the project's own P&IDs.
+// Every feature as a standalone tool, scoped to this one project. This page is
+// Document Control's (a checker gets ProjectHub instead), so hook-up, spooling,
+// the container check and pipe supports are reachable here across the WHOLE
+// project, not only one line at a time from inside ISO checking -- which still
+// shows them per line as well. P&ID compare is this project's alone: it reads
+// two of the project's own P&IDs.
 const toolsFor = (id: string) => [
   {
     href: `/review?project=${id}`,
     title: "ISO checking",
-    text: "Check each line: design basis, bill of material, P&ID, hook-up, spools and container fit.",
+    text: "Check each line: design basis, bill of material, P&ID, hook-up, spools, container fit and pipe supports.",
     icon: IconClipboard,
   },
   // The same page a checker opens from the project hub's "Pipe specs" card.
@@ -33,6 +36,30 @@ const toolsFor = (id: string) => [
     title: "Pipe specs",
     text: "Compare the client's piping classes with the admin item list, size by size, with every difference marked.",
     icon: IconTable,
+  },
+  {
+    href: `/hookup?project=${id}`,
+    title: "Instrument hook-up",
+    text: "Every instrument on the project's ISOs, checked against the hook-up typicals.",
+    icon: IconGauge,
+  },
+  {
+    href: `/spooling?project=${id}`,
+    title: "Spooling",
+    text: "The spools and welds read off every ISO in the project, sheet by sheet.",
+    icon: IconSpool,
+  },
+  {
+    href: `/containers?project=${id}`,
+    title: "Container check",
+    text: "Whether each spool in the project ships in a 20ft container.",
+    icon: IconBox,
+  },
+  {
+    href: `/supports?project=${id}`,
+    title: "Pipe supports",
+    text: "Check each ISO's pipe supports: the BOM's count against the spans the pipe needs between them.",
+    icon: IconSupport,
   },
   { href: `/cutting?project=${id}`, title: "Cutting Plan", text: "Nest this project's cutting-plate parts onto stock plate.", icon: IconNest },
   {
@@ -48,7 +75,7 @@ export default async function ProjectDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ line?: string; feature?: string }>;
+  searchParams: Promise<{ line?: string; feature?: string; sort?: string; dir?: string; rev?: string; pid?: string }>;
 }) {
   const { id } = await params;
   const db = getDb();
@@ -70,13 +97,15 @@ export default async function ProjectDetailPage({
   // a link to a single line opens. Everything below is Document Control's, and the actions
   // behind its forms and buttons enforce that again on the server.
   if (!session.isDcc) {
-    const { line, feature } = await searchParams;
+    const { line, feature, rev, pid } = await searchParams;
     if (!line && feature !== "iso") return <ProjectHub projectId={id} projectName={project.name} libraryHref={`/library?project=${id}`} />;
     return (
       <LineReviewView
         projectId={id}
         projectName={project.name}
         requestedLine={line}
+        requestedDrawing={rev}
+        requestedPid={pid}
         canMark
         links={{
           list: `/projects/${id}?feature=iso`,
@@ -98,8 +127,60 @@ export default async function ProjectDetailPage({
   // By KIND, not by stored type: a spec_sheet XLSX is the admin spec and belongs
   // here, a spec_sheet PDF is the client's and belongs in the library. Both are
   // read; only where they are LISTED differs.
-  const ownDocuments = projectDocuments.filter((d) => !isLibraryDocument(d.docType, d.fileName));
   const referenceDocuments = projectDocuments.filter((d) => isLibraryDocument(d.docType, d.fileName));
+
+  // Sorted by a column header link (?sort=type|file&dir=asc|desc). By the type
+  // as the table SHOWS it, so the order matches the badges read down the page;
+  // ties fall back to the file name so a group reads in a stable order.
+  const { sort, dir } = await searchParams;
+  const sortKey = sort === "type" || sort === "file" ? sort : null;
+  const descending = dir === "desc";
+  const byName = (a: (typeof projectDocuments)[number], b: (typeof projectDocuments)[number]) =>
+    a.fileName.localeCompare(b.fileName, undefined, { numeric: true, sensitivity: "base" });
+  const ownDocuments = projectDocuments.filter((d) => !isLibraryDocument(d.docType, d.fileName));
+  if (sortKey) {
+    ownDocuments.sort((a, b) => {
+      const order =
+        sortKey === "type"
+          ? labelForDocument(a.docType, a.fileName).localeCompare(labelForDocument(b.docType, b.fileName)) || byName(a, b)
+          : byName(a, b);
+      return descending ? -order : order;
+    });
+  }
+  // Clicking the column already sorted by flips it; any other column starts ascending.
+  const sortHref = (key: "type" | "file") =>
+    `/projects/${id}?sort=${key}${sortKey === key && !descending ? "&dir=desc" : ""}#documents`;
+  const sortMark = (key: "type" | "file") => (sortKey === key ? (descending ? " ↓" : " ↑") : "");
+
+  // Revision tracking, for every kind of document: an upload that a later one has
+  // replaced is not a row of its own but sits under the one in force, as a
+  // dropdown. An ISO is ordered by the REV on the drawing, anything else by the
+  // revision in its file name or, failing that, by upload date.
+  const versions = resolveDocumentVersions(projectDocuments, await isoVersionsOf(id));
+  const ownIds = new Set(ownDocuments.map((d) => d.id));
+  const earlierOf = new Map<string, typeof ownDocuments>();
+  const tableDocuments = ownDocuments.filter((d) => {
+    const v = versions.get(d.id);
+    // Kept as a row of its own if what replaced it is not in this table.
+    if (!v || v.current || !v.supersededBy || !ownIds.has(v.supersededBy)) return true;
+    earlierOf.set(v.supersededBy, [...(earlierOf.get(v.supersededBy) ?? []), d]);
+    return false;
+  });
+  for (const list of earlierOf.values()) list.sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime());
+  const day = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
+  const revisionBadge = (docId: string) => {
+    const v = versions.get(docId);
+    if (!v) return null;
+    if (v.revision) {
+      return (
+        <Badge tone={v.current ? "info" : "neutral"} title={v.current ? "Revision in force" : "Superseded by a later revision"}>
+          Rev {v.revision}
+        </Badge>
+      );
+    }
+    if (v.orderedBy === "upload date" && v.current) return <Badge title="The newest upload of this document">Latest</Badge>;
+    return null;
+  };
 
   const projectJobs = await db
     .select({ job: extractionJobs })
@@ -162,7 +243,7 @@ export default async function ProjectDetailPage({
           things being checked. */}
       <DocumentUploadCard action={handleUpload} libraryHref={`/library?project=${id}`} />
 
-      <section className="card card-flush">
+      <section id="documents" className="card card-flush scroll-mt-20">
         <div className="card-header">
           <h2 className="card-title">Documents</h2>
           {referenceDocuments.length > 0 && (
@@ -175,16 +256,25 @@ export default async function ProjectDetailPage({
           <table className="table">
             <thead>
               <tr>
-                <th>File</th>
-                <th>Type</th>
+                <th aria-sort={sortKey === "file" ? (descending ? "descending" : "ascending") : undefined}>
+                  <Link href={sortHref("file")} className="hover:text-foreground" title="Sort by file name">
+                    File{sortMark("file")}
+                  </Link>
+                </th>
+                <th aria-sort={sortKey === "type" ? (descending ? "descending" : "ascending") : undefined}>
+                  <Link href={sortHref("type")} className="hover:text-foreground" title="Sort by type of document">
+                    Type{sortMark("type")}
+                  </Link>
+                </th>
                 <th>Pages</th>
                 <th>Extraction status</th>
                 <th className="w-px"></th>
               </tr>
             </thead>
             <tbody>
-              {ownDocuments.map((doc) => {
+              {tableDocuments.map((doc) => {
                 const job = jobsByDocument.get(doc.id);
+                const earlier = earlierOf.get(doc.id) ?? [];
                 // Null for a document whose file matches its type, which is all
                 // of them from now on -- uploads that do not match are refused.
                 const misfiled = formatMismatch(doc.docType, doc.fileName);
@@ -200,7 +290,37 @@ export default async function ProjectDetailPage({
                         ) : (
                           <span className="break-all font-medium">{doc.fileName}</span>
                         )}
+                        {revisionBadge(doc.id)}
                       </span>
+                      {earlier.length > 0 && (
+                        <details className="mt-2 text-[0.8125rem]">
+                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                            Earlier revisions ({earlier.length})
+                          </summary>
+                          <ul className="mt-2 flex flex-col gap-2 border-l border-border pl-3">
+                            {earlier.map((old) => (
+                              <li key={old.id} className="flex flex-wrap items-center gap-2">
+                                {jobsByDocument.get(old.id)?.status === "succeeded" ? (
+                                  <Link href={`/projects/${id}/documents/${old.id}`} className="link break-all">
+                                    {old.fileName}
+                                  </Link>
+                                ) : (
+                                  <span className="break-all">{old.fileName}</span>
+                                )}
+                                {revisionBadge(old.id)}
+                                <span className="text-muted-foreground">{day.format(old.uploadedAt)}</span>
+                                <DeleteDocumentButton
+                                  fileName={old.fileName}
+                                  onDelete={async () => {
+                                    "use server";
+                                    await deleteDocument(id, old.id);
+                                  }}
+                                />
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                     </td>
                     <td>
                       {/* A document stored before the format rule existed can
@@ -252,7 +372,7 @@ It will be filed under "Kept for reference". The file itself is kept; what it lo
                   </tr>
                 );
               })}
-              {ownDocuments.length === 0 && (
+              {tableDocuments.length === 0 && (
                 <tr>
                   <td colSpan={5}>
                     <EmptyState icon={<IconFile />} title="No documents uploaded yet">

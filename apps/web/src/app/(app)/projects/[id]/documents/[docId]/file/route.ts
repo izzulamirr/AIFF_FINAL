@@ -29,7 +29,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   if (!document || document.projectId !== projectId) return notFound();
   const [project] = await db.select({ organizationId: projects.organizationId }).from(projects).where(eq(projects.id, projectId)).limit(1);
   if (!project || !(await canReadOrganization(session, project.organizationId))) return notFound();
-  if (!session.isDcc && document.docType !== "iso") return notFound();
+  // A checker reads ISOs, and the P&IDs they compare in P&ID checking.
+  if (!session.isDcc && document.docType !== "iso" && document.docType !== "pid") return notFound();
 
   const { data, error } = await createAdminClient().storage.from("documents").download(document.storagePath);
   if (error || !data) return new NextResponse("The file could not be retrieved.", { status: 502 });

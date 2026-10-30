@@ -66,7 +66,11 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
   const pidFittings = pidDocIds.length > 0 ? allTags.filter((t) => pidDocIds.includes(t.documentId) && t.tagType === "fitting") : [];
   const pidInstruments = pidDocIds.length > 0 ? allTags.filter((t) => pidDocIds.includes(t.documentId) && t.tagType === "instrument") : [];
   const gaLines = gaDocumentId ? allTags.filter((t) => t.documentId === gaDocumentId && t.tagType === "line") : [];
-  const gaSupports = gaDocumentId ? allTags.filter((t) => t.documentId === gaDocumentId && t.tagType === "support") : [];
+  // The GA's own supports were read here for gate 6, which has moved to the
+  // /supports page. Nothing cross-document is asked of them now, so they are
+  // no longer collected -- checking an ISO support against the GA is a
+  // question worth asking again, but it is a question about supports and
+  // belongs where the rest of them are.
 
   const specByNorm = new Map(specClasses.map((s) => [normalizeTagNumber(s.tagNumber), s] as const));
   const pllByNorm = new Map<string, ExtractedTag[]>();
@@ -645,31 +649,20 @@ export async function verifyIsoBom(input: VerifyIsoBomInput): Promise<{ findings
   // emitted, so absence of findings here must not be read as a pass.
 
   // ---- Gate 6: Supports --------------------------------------------------
-  if (!stopped) {
-    const supportItems = isoBomItems.filter((b) => String((b.attributes as Record<string, unknown>).component_type ?? "").toLowerCase().includes("support"));
-    for (const support of supportItems) {
-      const attrs = support.attributes as Record<string, unknown>;
-      const description = String(attrs.description ?? "");
-      // Every support must carry a type designation (e.g. SW100, RB201).
-      if (!/[A-Z]{1,3}\d{2,}/.test(description)) {
-        out.push(makeFinding(projectId, support, isoDocumentId, undefined, "6.support_type", description, null, "warning", `Support BOM item ${support.tagNumber} has no recognizable support type designation.`));
-      } else if (gaDocumentId && gaSupports.length > 0) {
-        const typeMatch = description.match(/[A-Z]{1,3}\d{2,}/g) ?? [];
-        const inGa = gaSupports.some((g) => {
-          const gAttrs = g.attributes as Record<string, unknown>;
-          const gText = `${g.tagNumber} ${String(gAttrs.support_type ?? "")}`;
-          return typeMatch.some((t) => normalizeTagNumber(gText).includes(normalizeTagNumber(t)));
-        });
-        if (!inGa) {
-          out.push(
-            makeFinding(projectId, support, isoDocumentId, gaDocumentId, "6.support_in_ga", typeMatch.join(", "), null, "warning", `Support type(s) ${typeMatch.join(", ")} from ISO BOM item ${support.tagNumber} not found among the GA's supports.`)
-          );
-        }
-      }
-    }
-    // Support standard and stress-isometric cross-checks need those document
-    // types, which don't exist yet -- not checked.
-  }
+  // MOVED OUT, to the /supports page (`apps/web/src/lib/supports.ts`).
+  //
+  // What lived here was two string tests -- does a support BOM row name a
+  // type designation at all, and does that designation appear somewhere on
+  // the GA -- and neither is the question anyone has about supports. The
+  // question is whether the pipe is held up often enough, which is a
+  // measurement against the project's span sheet: the distance between two
+  // supports, against what that size, schedule, material and SHAPE of run
+  // allows. None of that needs a sibling document, so none of it belongs in
+  // a cross-document compile that stops when one is missing.
+  //
+  // Nothing is lost by the move: the type designation is read by
+  // `supportTypeCode` and shown per row, and the span check the gate never
+  // did is the new page's whole purpose.
 
   // ---- Gate 7: BOM ------------------------------------------------------
   if (!stopped && specDocumentId) {
@@ -763,13 +756,18 @@ export function buildDesignBasisComparison(isoAttrs: Record<string, unknown>, pl
     // decode, but only where the document actually printed one.
     const shown = (raw: unknown, original: unknown) =>
       raw == null ? (nMeansNone && /^(n|none)$/i.test(String(original ?? "").trim()) ? "none (N)" : null) : String(raw);
-    const isoValue = shown(isoRaw, isoAttrs[isoKey]);
+    // An unfilled ISO cell (TBC, XX.XX) is shown as nothing rather than echoed.
+    const isoValue = isBlank(isoRaw) ? shown(null, isoAttrs[isoKey]) : shown(isoRaw, isoAttrs[isoKey]);
     const pllValue = shown(pllRaw, pllAttrs[pllKey]);
 
     // Mirrors compareNumeric/compareText in the gate chain, units included,
     // so this table and the findings can never disagree.
     let status: DesignBasisRow["status"];
-    if (isBlank(isoRaw) || isBlank(pllRaw)) {
+    if (isBlank(isoRaw) && !isBlank(pllRaw)) {
+      // The ISO is not complete yet: read the line list's value for it. Gate 2
+      // skips a blank side too, so no finding is raised and the two agree.
+      return { field: label, isoValue: pllValue, pllValue, status: "match" as const };
+    } else if (isBlank(isoRaw) || isBlank(pllRaw)) {
       status = "not compared";
     } else if (numeric) {
       const common = toCommonUnit(isoRaw, pllRaw);
@@ -852,6 +850,9 @@ function isBlank(value: unknown): boolean {
   if (value == null) return true;
   const s = String(value).trim().toUpperCase();
   if (s === "" || s === "NA" || s === "N/A" || s === "NIL" || s === "NIL." || s === "-") return true;
+  // "To be confirmed / advised / decided": a cell not filled in yet, the same
+  // as the XX.XX placeholder below, not a value that disagrees with anything.
+  if (/^T\.?B\.?[CAD]\.?$/.test(s)) return true;
   // Issued-for-review drawings print unfilled title-block cells as
   // "XX.XX" / "XX" (optionally followed by a unit) -- placeholders, not
   // data. Comparing them produced false mismatches (e.g. service "XX.XX"
@@ -1138,17 +1139,85 @@ export function componentRank(category: ComponentCategory): number {
 // Codes that look like an ISA tag but name a standard or a material.
 const NON_INSTRUMENT_PREFIXES = new Set(["ASME", "ASTM", "API", "ISO", "MSS", "NACE", "BS", "EN", "DIN", "SA", "SS", "CS", "SCH", "MR"]);
 
+// THE HYPHEN IS A CONVENTION OF WRITING, NOT PART OF THE TAG, and a BOM
+// table is where it most often goes missing: this project's ISO lists its
+// instruments as component_type "INSTRUMENT", description "FT0003", with no
+// hyphen anywhere. Every one of them classified as "instrument (other)",
+// which names no measured variable, so the hook-up page could not find a
+// typical for any of them and reported the whole set as uncovered.
+//
+// But the hyphen is load-bearing and cannot simply be dropped. It is a cheap
+// stand-in for "this token is a tag, not a material code", and without it
+// "SS316L" decodes as a speed switch and "ASME B16.5" as an analysis
+// element -- both appear in nearly every BOM description on the sheet. So
+// the bare form is read only with the evidence the hyphen was standing in
+// for, and only after the surer readings have failed:
+//
+//   - the row has to SAY it is an instrument (see DEVICE_WORDS)
+//   - the prefix must not be a standard or material code
+//   - the letters must decode to a variable AND a function
+//   - the token must not FOLLOW a hyphen. "XI-VKA102" is a tag whose loop
+//     number carries a three-letter area prefix, which defeats the
+//     hyphenated pattern below; reading its "VKA102" as a letter group
+//     turns an indicator into a vibration alarm.
+//
+// Measured over every BOM, valve, fitting, instrument and hook-up row in the
+// database -- 1,112 of them -- 18 rows change answer, and they are the three
+// instruments on this ISO. Nothing else in the corpus moves.
+// `node scripts/probe-isa-tags.mjs` from packages/db prints that diff. It is
+// free -- re-derive it on a new document rather than trusting this note.
+const BARE_ISA_TAG = /(?:^|[^-A-Z0-9])([A-Z]{2,4})(\d{2,6})\b/g;
+
+// The words that say a row is an instrument at all. Same list the instrument
+// branch of classifyComponent gates on, and deliberately so: two different
+// answers to "is this an instrument" is the split that lets one of them rot.
+const DEVICE_WORDS = /\binstrument\b|transmitter|\bindicator\b|controller|thermowell|\bgauge\b|\bswitch\b|\belement\b|\brecorder\b/;
+
+/**
+ * What a tag's letter group MEANS, or null where it is not an ISA group.
+ *
+ * The first letter is the measured variable; the device is the LAST letter
+ * that names a function, so FIC is a controller and TIT a transmitter.
+ */
+function decodeIsaLetters(letters: string): InstrumentCategory | null {
+  const v = ISA_VARIABLES[letters[0] as keyof typeof ISA_VARIABLES];
+  if (!v) return null;
+  for (let i = letters.length - 1; i >= 1; i--) {
+    const f = ISA_FUNCTIONS[letters[i] as keyof typeof ISA_FUNCTIONS];
+    if (f) return `${v} ${f}`;
+  }
+  return null;
+}
+
+/**
+ * Every bare letters+digits token in the text that reads as an ISA tag.
+ *
+ * All of them, not just the first: "INSTRUMENT, SS316 BODY, FT0003" would
+ * otherwise stop at the blacklisted SS316 and never reach the tag.
+ */
+function* bareIsaTags(upper: string): Generator<{ letters: string; loop: string; category: InstrumentCategory }> {
+  for (const m of upper.matchAll(BARE_ISA_TAG)) {
+    if (NON_INSTRUMENT_PREFIXES.has(m[1])) continue;
+    const category = decodeIsaLetters(m[1]);
+    if (category) yield { letters: m[1], loop: m[2], category };
+  }
+}
+
 // The ISA tag inside a description, normalised so the two documents' ways of
 // writing the same device agree: an ISO BOM row says "INSTRUMENT FT-0003"
 // and a P&ID bubble says "FT-0003", and they are one instrument.
 // Same hyphen-and-two-digits shape classifyInstrument decodes with, for the
 // same reason -- it is what keeps "MSS-SP97" and "ASME B16.5" out.
 export function isaTagOf(text: unknown): string | null {
-  const match = String(text ?? "")
-    .toUpperCase()
-    .match(/\b([A-Z]{2,4})-([A-Z]?\d{2,})\b/);
-  if (!match || NON_INSTRUMENT_PREFIXES.has(match[1])) return null;
-  return `${match[1]}-${match[2]}`;
+  const upper = String(text ?? "").toUpperCase();
+  const match = upper.match(/\b([A-Z]{2,4})-([A-Z]?\d{2,})\b/);
+  if (match && !NON_INSTRUMENT_PREFIXES.has(match[1])) return `${match[1]}-${match[2]}`;
+  // Written without the hyphen. Normalising it INTO the hyphenated form is
+  // the whole job of this function: the ISO writes "FT0003" and the P&ID
+  // "FT-0003", and pairing them is what stops one instrument being reported
+  // twice, once as missing from each drawing.
+  for (const { letters, loop } of bareIsaTags(upper)) return `${letters}-${loop}`;
+  return null;
 }
 
 // The text an ISO BOM row is classified and tag-matched on.
@@ -1192,21 +1261,28 @@ export function classifyInstrument(text: unknown): InstrumentCategory | null {
   if (variable && fn) return `${variable} ${fn}`;
 
   // Otherwise decode the tag: 2-4 letters, a HYPHEN, then a loop number
-  // (optionally prefixed by an area letter). The hyphen and the two-digit
-  // minimum are what keep material text out: without them "SS316L" decodes
-  // as a speed switch and "ASME B16.5" as an analysis element, and both
-  // appear in almost every BOM description on the sheet.
-  const tag = raw.toUpperCase().match(/\b([A-Z]{2,4})-(?=[A-Z]?\d{2})/);
+  // (optionally prefixed by an area letter). The hyphen carries this on its
+  // own -- it is what keeps "SS316L" and "ASME B16.5" out -- so nothing
+  // more is asked of it. The bare form below has to earn the same trust
+  // another way.
+  const upper = raw.toUpperCase();
+  const tag = upper.match(/\b([A-Z]{2,4})-(?=[A-Z]?\d{2})/);
   if (tag && !NON_INSTRUMENT_PREFIXES.has(tag[1])) {
-    const letters = tag[1];
-    const v = ISA_VARIABLES[letters[0] as keyof typeof ISA_VARIABLES];
-    // Walk back from the end for the first letter that names a function --
-    // the tail of the group is the device (FIC -> C, TIT -> T).
-    for (let i = letters.length - 1; i >= 1; i--) {
-      const f = ISA_FUNCTIONS[letters[i] as keyof typeof ISA_FUNCTIONS];
-      if (v && f) return `${v} ${f}`;
-    }
+    const decoded = decodeIsaLetters(tag[1]);
+    if (decoded) return decoded;
   }
+
+  // The same letters written without the hyphen, which is how a BOM table
+  // usually prints them. Last, and only where the row has already said it
+  // is an instrument -- see BARE_ISA_TAG for why this needs evidence the
+  // two readings above do not.
+  if (DEVICE_WORDS.test(t)) {
+    for (const { category } of bareIsaTags(upper)) return category;
+  }
+
+  // It says it is an instrument and nothing says which kind. Better than
+  // null -- it still counts as a component -- but it names no measured
+  // variable, so no hook-up typical can be found for it.
   return /\binstrument\b/.test(t) ? "instrument (other)" : null;
 }
 
@@ -1274,7 +1350,7 @@ export function classifyComponent(text: unknown): ComponentCategory | null {
   // In-line instruments, named by what their ISA tag says they measure and
   // do -- a flow transmitter and a pressure indicator are different devices
   // and comparing them as one "instrument" count hides a swap.
-  if (/\binstrument\b|transmitter|\bindicator\b|controller|thermowell|\bgauge\b|\bswitch\b|\belement\b|\brecorder\b|\b[a-z]{2,4}-\d/.test(t)) {
+  if (DEVICE_WORDS.test(t) || /\b[a-z]{2,4}-\d/.test(t)) {
     const instrument = classifyInstrument(t);
     if (instrument) return instrument;
   }
@@ -1363,6 +1439,36 @@ export function formatNominalSize(dn: number | null): string {
   return eighths > 0 ? `${formatNpsInches(eighths)}" (DN${dn})` : `DN${dn}`;
 }
 
+const REDUCER_CATEGORIES: ComponentCategory[] = ["reducer (concentric)", "reducer (eccentric)", "reducer"];
+
+// The small end of a reducer written '8" x 6"' or '600 x 450 mm', as a DN; null
+// for a single size or one that cannot be read. Same unit rules as the first.
+export function secondNominalSize(value: unknown, defaultUnit: "mm" | "in" = "in"): number | null {
+  if (value == null) return null;
+  const parts = String(value).split(/x|×/i);
+  if (parts.length < 2) return null;
+  const second = parts[1]
+    .replace(/½/g, " 1/2")
+    .replace(/¼/g, " 1/4")
+    .replace(/¾/g, " 3/4")
+    .trim();
+  // "450 mm" after "600 x" carries its unit on the second number only; the first
+  // then shares it, so a bare first number is read in the second's unit.
+  const unit = /\bmm\b/i.test(second) ? "mm" : defaultUnit;
+  return normalizeNominalSize(second, unit);
+}
+
+// A reducer's two ends, in the notation the drawings use: 24" x 18" (DN600 x DN450).
+export function formatReducerSize(dn: number, dn2: number): string {
+  const inches = (n: number) => {
+    const nps = DN_TO_NPS.get(n);
+    if (nps) return `${formatNpsInches(Number(nps))}"`;
+    const eighths = Math.round((n / 25.4) * 8) / 8;
+    return eighths > 0 ? `${formatNpsInches(eighths)}"` : `DN${n}`;
+  };
+  return `${inches(dn)} x ${inches(dn2)} (DN${dn} x DN${dn2})`;
+}
+
 // Line classes are written with the insulation/service suffix attached in
 // some places ("AC03N-N") and without it in others ("AC03N"), which would
 // otherwise split one class into two rows.
@@ -1441,11 +1547,22 @@ export function buildValveMatch(
   }
   const isoSide = new Map<string, Side>();
   const pidSide = new Map<string, Side>();
-  const meta = new Map<string, { spec: string; category: ComponentCategory; dn: number | null }>();
+  const meta = new Map<string, { spec: string; category: ComponentCategory; dn: number | null; dn2: number | null }>();
 
-  const add = (map: Map<string, Side>, spec: string, category: ComponentCategory, dn: number | null, qty: number, detail: string) => {
-    const key = `${spec}|${category}|${dn ?? "?"}`;
-    meta.set(key, { spec, category, dn });
+  // A reducer is two sizes, and 24"x18" and 24"x12" are different parts that
+  // happen to share a large end -- so for reducers the small end is part of the key.
+  const add = (
+    map: Map<string, Side>,
+    spec: string,
+    category: ComponentCategory,
+    dn: number | null,
+    qty: number,
+    detail: string,
+    dn2Raw: number | null = null
+  ) => {
+    const dn2 = REDUCER_CATEGORIES.includes(category) ? dn2Raw : null;
+    const key = `${spec}|${category}|${dn ?? "?"}|${dn2 ?? ""}`;
+    meta.set(key, { spec, category, dn, dn2 });
     const side = map.get(key) ?? { count: 0, details: [] };
     side.count += qty;
     if (detail && !side.details.includes(detail)) side.details.push(detail);
@@ -1489,7 +1606,7 @@ export function buildValveMatch(
       const consistent = seen !== "ambiguous" && seen?.spec === spec && seen?.dn === dn;
       isoInstrumentByCategory.set(category, seen === undefined || consistent ? here : "ambiguous");
     }
-    add(isoSide, spec, category, dn, parseNumber(item.quantity) ?? 1, desc);
+    add(isoSide, spec, category, dn, parseNumber(item.quantity) ?? 1, desc, secondNominalSize(item.size, "mm"));
   }
   for (const valve of pidValves) {
     const category = classifyComponent(valve.valve_type);
@@ -1509,7 +1626,7 @@ export function buildValveMatch(
     if (!category) continue;
     const spec = normalizeSpecClass(fitting.spec_class) ?? "unassigned";
     const tag = String(fitting.tag_number ?? "").trim();
-    add(pidSide, spec, category, normalizeNominalSize(fitting.size), parseNumber(fitting.quantity) ?? 1, tag || "untagged");
+    add(pidSide, spec, category, normalizeNominalSize(fitting.size), parseNumber(fitting.quantity) ?? 1, tag || "untagged", secondNominalSize(fitting.size));
   }
   // Only PRIMARY instruments are physical in-line items. A loop accessory --
   // an indicator or controller reading from a transmitter, a positioner on a
@@ -1540,6 +1657,78 @@ export function buildValveMatch(
       if (dn === null) dn = isoRow.dn;
     }
     add(pidSide, spec, category, dn, parseNumber(instrument.quantity) ?? 1, tag || "untagged");
+  }
+
+  // A P&ID draws "a reducer" and an ISO BOM names its kind ("REDU CONC"), so
+  // the same physical reducer lands under two categories -- "reducer" on one
+  // drawing, "reducer (concentric)" on the other -- and is reported twice, once
+  // missing from each. Where one drawing says only "reducer" and the other names
+  // exactly one kind at the same spec and size, they are the same part. Two
+  // different kinds at that size is a real ambiguity and is left apart.
+  // The same goes for a small end one drawing could not read: it is paired with
+  // the one reducer at that spec, large end and kind the other drawing lists.
+  const mergeInto = (map: Map<string, Side>, from: string, to: string) => {
+    const side = map.get(from);
+    if (!side) return;
+    const target = map.get(to) ?? { count: 0, details: [] };
+    target.count += side.count;
+    for (const d of side.details) if (!target.details.includes(d)) target.details.push(d);
+    map.set(to, target);
+    map.delete(from);
+  };
+  const reconcileReducers = (own: Map<string, Side>, other: Map<string, Side>) => {
+    for (const key of [...own.keys()]) {
+      const k = meta.get(key);
+      if (!k || !REDUCER_CATEGORIES.includes(k.category)) continue;
+      // Candidates are what the OTHER drawing lists that says more than this row
+      // does, and contradicts nothing in it.
+      const candidates = [...other.keys()].filter((otherKey) => {
+        const c = meta.get(otherKey);
+        return (
+          otherKey !== key &&
+          c !== undefined &&
+          c.spec === k.spec &&
+          c.dn === k.dn &&
+          (k.dn2 === null || k.dn2 === c.dn2) &&
+          (k.category === "reducer" || k.category === c.category)
+        );
+      });
+      if (candidates.length === 1) mergeInto(own, key, candidates[0]);
+    }
+  };
+  reconcileReducers(pidSide, isoSide);
+  reconcileReducers(isoSide, pidSide);
+
+  // THE SAME VALVE FILED UNDER TWO CLASSES. Each drawing decides for itself which
+  // piping class a valve sits in, and around a spec break they disagree: the ISO
+  // files a valve under AC03N where the P&ID has it just past the break in AC03U.
+  // Compared class by class, one valve then reads as "wrong count" in one block
+  // and "missing" in another, though both drawings show it. So once each class is
+  // paired, whatever the ISO has left over in one class is paired with what the
+  // P&ID is still short in another -- same component, same size -- and counted on
+  // the ISO's row, with the P&ID's class named beside it. Only the overlap moves;
+  // a genuine surplus or shortfall is left where it is.
+  const sameItem = (a: string, b: string) => {
+    const x = meta.get(a)!;
+    const y = meta.get(b)!;
+    return x.spec !== y.spec && x.category === y.category && x.dn === y.dn && x.dn2 === y.dn2;
+  };
+  for (const isoKey of [...isoSide.keys()]) {
+    for (const pidKey of [...pidSide.keys()]) {
+      if (!sameItem(isoKey, pidKey)) continue;
+      const isoSurplus = (isoSide.get(isoKey)?.count ?? 0) - (pidSide.get(isoKey)?.count ?? 0);
+      const pidShort = (pidSide.get(pidKey)?.count ?? 0) - (isoSide.get(pidKey)?.count ?? 0);
+      const move = Math.min(isoSurplus, pidShort);
+      if (move <= 0) continue;
+      const from = pidSide.get(pidKey)!;
+      const to = pidSide.get(isoKey) ?? { count: 0, details: [] };
+      to.count += move;
+      const note = `P&ID class ${meta.get(pidKey)!.spec}`;
+      if (!to.details.includes(note)) to.details.push(note);
+      pidSide.set(isoKey, to);
+      from.count -= move;
+      if (from.count <= 0) pidSide.delete(pidKey);
+    }
   }
 
   // A P&ID does NOT draw an instrument's root valves -- the bubble is a
@@ -1590,7 +1779,7 @@ export function buildValveMatch(
   const rank = { "pid only": 0, "iso only": 1, "count mismatch": 2, match: 3 } as const;
   const bySpec = new Map<string, ValveMatchRow[]>();
   for (const key of new Set([...isoSide.keys(), ...pidSide.keys()])) {
-    const { spec, category, dn } = meta.get(key)!;
+    const { spec, category, dn, dn2 } = meta.get(key)!;
     const iso = isoSide.get(key);
     const pid = pidSide.get(key);
     const isoCount = iso?.count ?? 0;
@@ -1610,7 +1799,7 @@ export function buildValveMatch(
     const rows = bySpec.get(spec) ?? [];
     rows.push({
       category,
-      size: formatNominalSize(dn),
+      size: dn2 !== null && dn !== null ? formatReducerSize(dn, dn2) : formatNominalSize(dn),
       isoCount,
       pidCount,
       isoDetail: iso ? iso.details.join(" / ") : null,
@@ -1769,7 +1958,9 @@ export function buildRoutingFittingComparison(
   isoBom: Array<Record<string, unknown>>,
   pidLineAttrs: Array<Record<string, unknown>>,
   pidValveCount: number,
-  pidLineFittings: Array<Record<string, unknown>> = []
+  pidLineFittings: Array<Record<string, unknown>> = [],
+  /** Instrument root valves the P&ID legend implies but the sheet does not draw. */
+  impliedValveCount = 0
 ): RoutingFittingRow[] {
   const rows: RoutingFittingRow[] = [];
   const endpoints = pidEndpointSet(pidLineAttrs);
@@ -1806,11 +1997,20 @@ export function buildRoutingFittingComparison(
 
   const tally = tallyFittings(isoBom);
   const isoValves = tally.get("valves") ?? 0;
+  // The P&ID draws most valves, and its LEGEND accounts for the rest -- the root
+  // valves inside a simplified instrument symbol. Both are counted, said
+  // separately so the figure can be followed, and the ISO must show exactly that
+  // many: "at least" let a valve the P&ID has no place for pass unnoticed.
+  const pidRequired = pidValveCount + impliedValveCount;
   rows.push({
     field: "Valves",
     isoValue: String(isoValves),
-    pidValue: pidLineAttrs.length ? String(pidValveCount) : null,
-    status: pidValveCount === 0 ? "not compared" : isoValves >= pidValveCount ? "match" : "mismatch",
+    pidValue: pidLineAttrs.length
+      ? impliedValveCount > 0
+        ? `${pidRequired} (${pidValveCount} drawn + ${impliedValveCount} instrument root valves from the legend)`
+        : String(pidValveCount)
+      : null,
+    status: pidRequired === 0 ? "not compared" : isoValves === pidRequired ? "match" : "mismatch",
   });
 
   // Totals only here. The per-type and per-spec breakdowns live in the

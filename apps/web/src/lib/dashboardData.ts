@@ -119,6 +119,7 @@ export const CHECK_LABEL: Array<[keyof LineResult["byCheck"], string]> = [
   ["hookup", "Hook-up"],
   ["spooling", "Spooling"],
   ["containers", "Containers"],
+  ["supports", "Supports"],
 ];
 
 /** The numbers the monitoring board draws, rolled up across the client's projects. */

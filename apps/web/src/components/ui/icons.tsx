@@ -59,6 +59,17 @@ export const IconSpool = (p: IconProps) => (
   </Svg>
 );
 
+// A pipe resting on two supports: the span is the gap between them.
+export const IconSupport = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2 7h20" />
+    <path d="M2 11h20" />
+    <path d="M6 11v6" />
+    <path d="M18 11v6" />
+    <path d="M3 20h18" />
+  </Svg>
+);
+
 export const IconBox = (p: IconProps) => (
   <Svg {...p}>
     <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />

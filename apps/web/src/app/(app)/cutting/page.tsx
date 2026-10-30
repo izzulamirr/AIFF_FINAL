@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { documents, extractedTags, extractionJobs, projects } from "@easy/db";
-import { outlineExtentMm, type CutPart, type CutShape } from "@easy/shared";
+import { currentDocuments, outlineExtentMm, type CutPart, type CutShape } from "@easy/shared";
 import { getSessionUser } from "@/lib/session";
 import { visibleOrganizations } from "@/lib/access";
 import { getDb } from "@/lib/db";
@@ -80,7 +80,7 @@ export default async function CuttingPage({
   }
 
   const projectDocs = await db.select().from(documents).where(eq(documents.projectId, projectId));
-  const cuttingDocs = projectDocs.filter((d) => d.docType === "cutting");
+  const cuttingDocs = currentDocuments(projectDocs.filter((d) => d.docType === "cutting"));
 
   const jobs = cuttingDocs.length
     ? await db

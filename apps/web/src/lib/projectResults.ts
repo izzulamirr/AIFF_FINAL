@@ -21,7 +21,7 @@ export interface LineResult {
   failed: boolean;
 }
 
-const EMPTY: LineResult["byCheck"] = { designBasis: 0, bom: 0, pid: 0, hookup: 0, spooling: 0, containers: 0 };
+const EMPTY: LineResult["byCheck"] = { designBasis: 0, bom: 0, pid: 0, hookup: 0, spooling: 0, containers: 0, supports: 0 };
 
 /** Every current ISO line of one project, with what its checks found. */
 export async function resultsOfProject(projectId: string): Promise<LineResult[]> {

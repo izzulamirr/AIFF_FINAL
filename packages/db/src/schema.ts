@@ -86,6 +86,10 @@ export const documents = pgTable(
     pageCount: integer("page_count"),
     uploadedBy: uuid("uploaded_by").references(() => authUsers.id),
     uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
+    // The revision this document is at, where it is set by hand -- for a document
+    // whose file name carries none (a pipe spec named AC03N.xlsx). Wins over a
+    // revision read from the file name; an ISO still takes its REV off the drawing.
+    revision: text("revision"),
   },
   (table) => [
     uniqueIndex("documents_project_hash_unique").on(table.projectId, table.fileHash),
@@ -373,8 +377,44 @@ export const lineReviews = pgTable(
     // a drawing whose REV box could not be read; neither is evidence of a
     // change, so neither raises a re-check (see @easy/shared needsRecheck).
     revision: text("revision"),
+    // Every document the check was based on -- the ISO, the P&IDs carrying the
+    // line, the line list row, the pipe specs for its classes, the hook-up set --
+    // as they stood when it was marked done. A later revision of ANY of them puts
+    // the line back to re-check (see apps/web/src/lib/lineSources.ts). Null for a
+    // check recorded before sources were tracked: only its ISO revision is known.
+    basis: jsonb("basis"),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.lineKey] })]
+);
+
+// Check prints: a line's ISO is checked and sent back to the designer up to three
+// times (CP-01 .. CP-03), each recorded with the ISO revision it was made on and
+// how many errors it found, then issued FINAL -- which needs zero errors, and is
+// what marks the line done. Kept, never overwritten: the sequence is the record.
+export const lineCheckPrints = pgTable(
+  "line_check_prints",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    lineKey: text("line_key").notNull(),
+    lineNumber: text("line_number").notNull(),
+    /** "cp" for CP-01..03, "final" for the final issue. */
+    kind: text("kind").notNull(),
+    /** 1..3 for a check print; 0 for final. */
+    seq: integer("seq").notNull(),
+    isoRevision: text("iso_revision"),
+    isoDocumentIds: jsonb("iso_document_ids"),
+    errorCount: integer("error_count").notNull(),
+    issuedBy: uuid("issued_by").references(() => authUsers.id, { onDelete: "set null" }),
+    issuedByName: text("issued_by_name"),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("line_check_prints_line_idx").on(table.projectId, table.lineKey),
+    check("line_check_prints_kind_check", sql`${table.kind} in ('cp','final')`),
+  ]
 );
 
 // How far each person has read their notifications.

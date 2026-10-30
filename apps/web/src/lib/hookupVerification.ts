@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { documents, extractedTags } from "@easy/db";
-import { enrichIsoLineAttrs } from "@easy/shared";
+import { currentDocuments, enrichIsoLineAttrs } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { fluidPhaseOf, groupHookupSheets, verifyHookup } from "@/lib/verifyHookup";
 import { classifyComponent, classifyInstrument, isoBomRowText, mergeIsoLineSheets } from "@/lib/verifyIso";
@@ -76,7 +76,7 @@ export async function verifyIsoHookup({
     lineService = typeof attrs.service === "string" ? attrs.service : null;
     // The PLL states the fluid phase explicitly; prefer it over the ISO's
     // free-text service, which is a name ("HBFW") not a phase.
-    const pllDocs = projectDocs.filter((d) => d.docType === "pll");
+    const pllDocs = currentDocuments(projectDocs.filter((d) => d.docType === "pll"));
     if (pllDocs.length > 0) {
       const pllTags = await db
         .select()
@@ -93,7 +93,7 @@ export async function verifyIsoHookup({
     // asking: the hook-up set is indexed by phase, and no amount of
     // matching on "crd" will ever reach a sheet headed "LIQUID SERVICE".
     if (lineService && !fluidPhaseOf(lineService)) {
-      const legendDocs = projectDocs.filter((d) => d.docType === "pid_legend");
+      const legendDocs = currentDocuments(projectDocs.filter((d) => d.docType === "pid_legend"));
       if (legendDocs.length > 0) {
         const newest = [...legendDocs].sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime())[0];
         const codes = await db

@@ -6,6 +6,7 @@ import { MonitoringBoard } from "@/components/dashboard/MonitoringBoard";
 import { getSessionUser } from "@/lib/session";
 import { activeOrganization, activeProjectsOf, hiddenProjectsOf } from "@/lib/access";
 import { progressOfProjects, type ProjectProgress } from "@/lib/progress";
+import { changeSummary } from "@/lib/lineSources";
 import { ProgressBar } from "@/components/progress/ProgressBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert, Badge, EmptyState } from "@/components/ui/primitives";
@@ -182,8 +183,8 @@ function MonitoringSummary({ progress, scope }: { progress: ProjectProgress[]; s
   const pct = lines > 0 ? Math.min(100, Math.round((done / lines) * 100)) : 0;
   const tiles = [
     { label: "Lines checked", value: `${done} / ${lines}`, hint: `${pct}% of the ${scope === "project" ? "project" : "client"}'s lines`, tone: "" },
-    { label: "To re-check", value: String(recheck), hint: "checked against a replaced drawing", tone: recheck > 0 ? "text-warning" : "" },
-    { label: "Not yet checked", value: String(Math.max(0, lines - done - recheck)), hint: "still to review", tone: "" },
+    { label: "Need re-check", value: String(recheck), hint: "done, but a document changed since", tone: recheck > 0 ? "text-warning" : "" },
+    { label: "Not yet checked", value: String(Math.max(0, lines - done)), hint: "still to review", tone: "" },
     {
       label: "ISO lines read",
       value: String(uploaded),
@@ -220,14 +221,13 @@ function RecentChecks({ progress }: { progress: ProjectProgress[] }) {
         <h2 className="card-title">Recent checks</h2>
       </div>
       <div className="table-wrap">
-        <table className="table">
+        <table className="table [&_td]:align-middle">
           <thead>
             <tr>
               <th>Line</th>
               <th>Project</th>
               <th>Checked by</th>
-              <th>When</th>
-              <th className="w-32">Status</th>
+              <th className="min-w-[15rem]">Status</th>
               <th className="w-px">
                 <span className="sr-only">Report</span>
               </th>
@@ -244,13 +244,23 @@ function RecentChecks({ progress }: { progress: ProjectProgress[] }) {
                   </Link>
                 </td>
                 <td>{r.project}</td>
-                <td>{r.reviewedByName ?? "-"}</td>
-                <td className="whitespace-nowrap text-xs text-muted-foreground">{when.format(r.reviewedAt)}</td>
                 <td>
+                  <span className="block">{r.reviewedByName ?? "-"}</span>
+                  <span className="block whitespace-nowrap text-xs text-muted-foreground">{when.format(r.reviewedAt)}</span>
+                </td>
+                <td>
+                  {/* One badge, and -- for a re-check -- what changed, on one line. */}
                   {r.state === "recheck" ? (
-                    <Badge tone="warning" dot title={`Checked against revision ${r.revision ?? "?"}; now ${r.currentRevision ?? "?"}`}>
-                      Re-check
-                    </Badge>
+                    <span className="flex flex-col items-start gap-1">
+                      <Badge tone="warning" dot title="Checked, but a document it was based on has changed since">
+                        Re-check
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {r.revision && r.currentRevision && r.revision !== r.currentRevision
+                          ? `ISO now Rev ${r.currentRevision}`
+                          : changeSummary(r.sources)}
+                      </span>
+                    </span>
                   ) : (
                     <Badge tone="success" dot>
                       Checked
@@ -297,7 +307,7 @@ function ProjectProgressStrip({ progress, overview }: { progress: ProjectProgres
           </Badge>
         )}
       </div>
-      <ProgressBar value={done} max={Math.max(total, 1)} label="Lines checked in this project" />
+      <ProgressBar value={done} max={Math.max(total, 1)} recheck={recheck} label="Lines checked in this project" />
     </section>
   );
 }
@@ -331,7 +341,7 @@ function ProjectProgressRow({ project }: { project: ProjectProgress }) {
         </span>
       </div>
 
-      <ProgressBar value={project.done} max={max} label={`${project.projectName} lines checked`} />
+      <ProgressBar value={project.done} max={max} recheck={project.recheck} label={`${project.projectName} lines checked`} />
 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
         <span>{project.uploaded} ISO lines read from the drawings</span>
@@ -340,7 +350,13 @@ function ProjectProgressRow({ project }: { project: ProjectProgress }) {
         {/* Every percentage on this page is measured against this figure, so it
             is set where the percentages are compared. Also on the project's own
             page, from the same component. */}
-        <TotalLinesForm projectId={project.projectId} total={project.total} className="ml-auto" />
+        {project.lineList ? (
+          <span className="ml-auto" title="Counted from the project's current line list, and updated when a new revision of it is uploaded">
+            {project.lineList.count} lines in the line list ({project.lineList.fileName})
+          </span>
+        ) : (
+          <TotalLinesForm projectId={project.projectId} total={project.total} className="ml-auto" />
+        )}
       </div>
     </li>
   );

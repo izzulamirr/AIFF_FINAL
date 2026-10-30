@@ -5,6 +5,7 @@ import type { DesignBasisRow, RoutingFittingRow } from "@/lib/verifyIso";
 import { splitMergedRow } from "@/lib/verifyBomCrossCheck";
 import type { AdminAttributeMismatch } from "@/lib/parseSheetPage";
 import { instrumentPendingRemark, type HoldStatus } from "@/lib/pending";
+import { supportProblems } from "@/lib/supports";
 
 // Every finding from one ISO line's checks -- what a checker hands to the designer.
 //
@@ -126,6 +127,7 @@ export interface DrawingReport {
   hookup: HookupIssue[];
   spooling: SpoolingIssue[];
   containers: ContainerIssue[];
+  supports: SupportIssue[];
   /** Checks that could not be run for this drawing, and why. */
   notChecked: string[];
   /** Checks that ran and found nothing wrong. */
@@ -138,7 +140,45 @@ export interface DrawingReport {
 
 export interface IsoReport {
   drawings: DrawingReport[];
-  totals: { designBasis: number; bom: number; pid: number; hookup: number; spooling: number; containers: number; all: number; info: number; pending: number };
+  totals: {
+    designBasis: number;
+    bom: number;
+    pid: number;
+    hookup: number;
+    spooling: number;
+    containers: number;
+    supports: number;
+    all: number;
+    info: number;
+    pending: number;
+  };
+}
+
+/**
+ * A pipe-support problem on one sheet, as lib/supports.ts words it: what is
+ * wrong and the fix. "error" breaches the span standard; "check" needs a person
+ * to look and is reported for information, not counted as an error.
+ */
+export interface SupportIssue {
+  sheet: string;
+  /** How many supports the drawing shows on this sheet. */
+  supports: number;
+  severity: "error" | "check";
+  what: string;
+  fix: string;
+}
+
+function supportIssues(doc: NonNullable<LineSummary["supports"]>["docs"][number] | undefined): SupportIssue[] {
+  // Not read off the drawing yet: its BOM's supports have not been located, so
+  // judging its spans now would report every one of them as missing.
+  if (!doc || !doc.read) return [];
+  // In SHEET order, the way the drawing is read -- sheet 1 first. Which rows are
+  // errors is already plain from their colour; sorting by it put sheet 4 on top.
+  return [...doc.sheets]
+    .sort((a, b) => (a.page ?? 0) - (b.page ?? 0))
+    .flatMap((s) =>
+      supportProblems(s).map((p) => ({ sheet: s.sheetLabel || (s.page != null ? `page ${s.page}` : "?"), supports: s.points.length, ...p }))
+    );
 }
 
 const dash = (v: string | null | undefined) => (v == null || v.trim() === "" ? "-" : v);
@@ -383,13 +423,13 @@ function containerIssues(spools: NonNullable<LineSummary["containers"]>["docs"][
   for (const s of spools) {
     const sheet = s.sheetLabel || (s.page != null ? `page ${s.page}` : "?");
     const fit = fitOf(s);
-    const allowance = s.fieldWelds > 0 ? ` (incl. 150 mm per field weld × ${s.fieldWelds})` : "";
+    const allowance = s.fieldWelds > 0 ? ` (150 mm added for ${s.fieldWelds} field weld${s.fieldWelds === 1 ? "" : "s"})` : "";
     if (!fit || !s.envelope) {
       out.push({
         sheet,
         spool: s.spoolNo,
         size: "not read",
-        problem: "Size not readable, fit not checked",
+        problem: "Size not read, so not checked",
         note: "Not a drawing fault.",
       });
       continue;
@@ -402,7 +442,7 @@ function containerIssues(spools: NonNullable<LineSummary["containers"]>["docs"][
           sheet,
           spool: s.spoolNo,
           size,
-          problem: `Fits with only ${best.tightestMm} mm to spare${allowance}`,
+          problem: `Fits, but only ${best.tightestMm} mm to spare${allowance}`,
           note: "Heads-up only.",
         });
       }
@@ -413,8 +453,8 @@ function containerIssues(spools: NonNullable<LineSummary["containers"]>["docs"][
       sheet,
       spool: s.spoolNo,
       size,
-      problem: close ? `Too long by ${close.shortfallMm} mm${allowance}` : `Does not fit${allowance}`,
-      note: close ? "Near miss: containers vary by this much." : null,
+      problem: close ? `Too big by ${close.shortfallMm} mm${allowance}` : `Too big for a 20ft container${allowance}`,
+      note: close ? "Near miss. Real containers vary by this much." : null,
     });
   }
   // Errors first.
@@ -542,8 +582,19 @@ function containerFindings(issues: ContainerIssue[]): Finding[] {
     itemDetail: `Sheet ${r.sheet} · ${r.size}`,
     requirement: "Fits a 20ft container",
     discrepancy: r.problem,
-    action: r.size === "not read" ? null : r.note ? "Checker: measure the container" : "Re-cut the spool",
+    action: r.size === "not read" ? null : r.note ? "Measure the actual container" : "Split the spool into shorter pieces",
     info: r.note,
+  }));
+}
+
+function supportFindings(issues: SupportIssue[]): Finding[] {
+  return issues.map((r) => ({
+    item: `Sheet ${r.sheet}`,
+    itemDetail: r.supports > 0 ? `${plural(r.supports, "support")} on this sheet` : "No supports on this sheet",
+    requirement: "Pipe properly supported",
+    discrepancy: r.what,
+    action: r.severity === "error" ? r.fix : null,
+    info: r.severity === "check" ? r.fix : null,
   }));
 }
 
@@ -556,6 +607,7 @@ export function reportSections(d: DrawingReport): ReportSection[] {
     { title: "Instrument hook-up", reference: "hook-up typical", findings: hookupFindings(d.hookup) },
     { title: "Spooling", reference: null, findings: spoolingFindings(d.spooling) },
     { title: "Container check (20ft)", reference: null, findings: containerFindings(d.containers) },
+    { title: "Pipe supports", reference: "pipe span standard", findings: supportFindings(d.supports) },
   ].filter((s) => s.findings.length > 0);
 }
 
@@ -575,6 +627,8 @@ export function buildIsoReport(summary: LineSummary): IsoReport | null {
     const hookup = hookupIssues(hookupDrawing);
     const spooling = spoolingIssues(spoolDoc?.sheets);
     const containers = containerIssues(containerDoc?.spools);
+    const supportDoc = summary.supports?.docs.find((x) => x.id === d.documentId);
+    const supports = supportIssues(supportDoc);
     // Sheet by sheet, in sheet order, so "sheet 4" reads in one place.
     const pending = [...(d.mto.available ? bomPending(d.mto.sheetData) : []), ...hookupPending(hookupDrawing)].sort((a, b) =>
       a.sheet.localeCompare(b.sheet, undefined, { numeric: true })
@@ -606,6 +660,12 @@ export function buildIsoReport(summary: LineSummary): IsoReport | null {
     if (!summary.containers || !containerDoc) notChecked.push("Container: no spools read");
     else if (containers.length === 0) clear.push("Container");
 
+    const supportErrors = supports.filter((s) => s.severity === "error").length;
+    if (!summary.supports) notChecked.push("Supports: could not run");
+    else if (!supportDoc) notChecked.push("Supports: no pipe in the BOM");
+    else if (!supportDoc.read) notChecked.push("Supports: not read off the drawing yet");
+    else if (supportErrors === 0) clear.push("Supports");
+
     const isInfo = (x: { note: string | null }) => x.note != null;
     const errors =
       designBasis.issues.length +
@@ -614,8 +674,14 @@ export function buildIsoReport(summary: LineSummary): IsoReport | null {
       fittings.filter((f) => !isInfo(f)).length +
       hookup.filter((h) => h.noTypical == null).length +
       spooling.length +
-      containers.filter((c) => !isInfo(c)).length;
-    const info = bom.filter((b) => b.kind === "notChecked").length + fittings.filter(isInfo).length + hookup.filter((h) => h.noTypical != null).length + containers.filter(isInfo).length;
+      containers.filter((c) => !isInfo(c)).length +
+      supportErrors;
+    const info =
+      bom.filter((b) => b.kind === "notChecked").length +
+      fittings.filter(isInfo).length +
+      hookup.filter((h) => h.noTypical != null).length +
+      containers.filter(isInfo).length +
+      supports.filter((s) => s.severity === "check").length;
 
     return {
       documentId: d.documentId,
@@ -628,6 +694,7 @@ export function buildIsoReport(summary: LineSummary): IsoReport | null {
       hookup,
       spooling,
       containers,
+      supports,
       notChecked,
       clear,
       issueCount: errors,
@@ -643,6 +710,7 @@ export function buildIsoReport(summary: LineSummary): IsoReport | null {
     hookup: sum((d) => d.hookup.filter((h) => h.noTypical == null).length),
     spooling: sum((d) => d.spooling.length),
     containers: sum((d) => d.containers.filter((c) => c.note == null).length),
+    supports: sum((d) => d.supports.filter((s) => s.severity === "error").length),
     all: sum((d) => d.issueCount),
     info: sum((d) => d.infoCount),
     pending: sum((d) => d.pending.length),

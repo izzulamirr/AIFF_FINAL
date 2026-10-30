@@ -2222,6 +2222,357 @@ runs have returned `spool_tags` as objects (`{spool_tag, ends_at_mainline_weld}`
 rather than the declared `string[]`, so the worker unwraps both shapes. Expect
 field-name/shape drift and parse defensively.
 
+## Pipe supports — the span check
+
+`/supports` (`apps/web/src/app/(app)/supports/`), its own tab beside Spooling.
+It reads the ISO extraction and nothing else, which is the point: support
+adequacy is answered off ONE drawing.
+
+**It used to be "gate 6" of the cross-document ISO compile, and has been moved
+out.** What lived there was two string tests — does a support BOM row name a
+type designation, and does that designation appear on the GA. Neither is the
+question anyone has about supports. The question is **whether the pipe is held
+up often enough**, and nothing about answering it needs a P&ID, a line list or
+a GA, so it should not sit behind a compile that stops when one is missing.
+
+### DO NOT TRY TO RECOGNISE A SUPPORT SYMBOL
+
+`apps/worker/src/extraction/isoPipeSupports.ts`. Same lesson the cut finder
+learned about valves: a support symbol is whatever the CAD library contained —
+a shoe, a clamp, a guide and a rest are all drawn differently, and the
+reference ISO draws **both** its types as a bare short bar across the pipe with
+nothing to tell them apart.
+
+What is always the same is that a support is a **BOM item**, so it carries a
+square item balloon on a leader like everything else on the sheet — and the BOM
+already says which item numbers are supports. So the job is not "find a
+support", it is "find the balloons and keep the ones the BOM calls supports".
+Recognition replaced by a lookup against a table that was already read.
+
+Three numbered shapes on this drawing, and they are disjoint:
+
+| shape | what it is | module |
+|---|---|---|
+| **SQUARE** box | a BOM item balloon | `isoPipeSupports.ts` |
+| HEXAGON flag | a weld number (BW7, FW12) | `isoWeldMarks.ts` |
+| wide ROUNDED box | a spool tag | `isoSpoolTags.ts` |
+
+**A box with no leader is a table cell.** The BOM table puts several hundred
+boxes of almost exactly balloon size on page 1. Requiring a leader that lands
+on the run is what separates them, which is why the size bounds are loose and
+must stay loose — a three-digit item number widens the box.
+
+**Measured on the reference ISO, page 1: 23 balloons, 5 of them supports —
+exactly the BOM's 3 × item 18 and 2 × item 19.** `supportCountCheck` makes that
+a real check, not a formality: the BOM is a table and its quantities are the
+number to trust, so a detector that found four of five has not finished.
+
+### THE SPAN IS A SUM OF PRINTED LENGTHS, NEVER A PAGE MEASUREMENT
+
+An isometric is not to scale — this repo has one run at 14.3 mm/pt and another
+at 11.0 on the same sheet. Page geometry is good for exactly one thing here:
+saying WHICH printed lengths lie between two supports.
+
+**What makes that work is that the draughtsman breaks the dimension chain AT
+each support.** Page 1's east run reads elbow → 1500 → support → 1000 →
+support → 937 → corner, so every span is a whole number of printed legs and
+nothing is interpolated. `supportSpans` chains the dimension attach segments
+(the same end-to-end join `chainLegs` uses, 6pt), places each support on a
+node, and sums the legs between consecutive ones:
+
+```
+1-8  -> 1-10   1000mm   printed 1-19           0 turns -> straight run
+1-10 -> 1-13   2437mm   printed 1-17 + 1-5     1 turn  -> L or V
+```
+
+- **A support 12pt or more from any node sits MID-LEG and gets no span.**
+  Apportioning the leg by page distance would be measuring off the drawing
+  again. Measured: the three real supports land 3.6, 5.8 and 6.7pt from their
+  node, because the leader stops at the support bar rather than the centreline,
+  and the next node is never nearer than ~90pt.
+- **A leg whose label was never read leaves the span null, not short.**
+- **A PRIMARY and the SECONDARY installed on it are ONE support point.** They
+  land on the same node; two points there reports a zero-length span between a
+  support and the one bolted on top of it.
+- Forks are refused rather than walked, for the reason `chainLegs` refuses
+  them: the dropped arm is real pipe carrying real weight.
+
+### READ THE SUPPORTS THROUGH FIRST, THEN DO THE SPAN
+
+`supportSpansWhenComplete` is the gate, and the order is not housekeeping.
+A span is the gap between two CONSECUTIVE supports, and *consecutive* is only
+knowable once they have all been found. Miss one and the two either side pair
+with each other:
+
+```
+found  18-1 ...... 18-2 ...... 18-3     spans 1000, 2437   correct
+missed 18-1 ................. 18-3      span 3437          invented
+```
+
+Both failures follow, and they point opposite ways. The invented gap can
+exceed the standard and send someone to add a support that is already there;
+and where the missed one was at the END of a run, the last real span is never
+reported at all, so an over-long gap passes in silence. A check that can fail
+in both directions on the same input is not a check.
+
+**The BOM's quantity is the gate**, because it is a TABLE: read once, not
+dependent on finding a symbol, and the only thing on the sheet that knows how
+many supports there are meant to be. Where the count does not match, NO span
+is computed and the reason is stored in `spans_withheld` and shown on the
+page. Same rule the spool cut finder follows when its cut count disagrees with
+the printed spool count — leave the sheet alone, never guess at it.
+
+Verified both ways on the reference ISO: with all five balloons read the
+spans come out 1000 and 2437; blank one label and the sheet reports *"the BOM
+calls for 5 supports and 4 were located (item 18: 2 of 3)"* and no spans at
+all, where the ungated version had happily produced 3437.
+
+**Withheld is not the same as none**, and the page must not render them alike
+— a silently empty span column reads as "nothing wrong here".
+
+### THE RUN HAS TWO ENDS
+
+Reporting only the gaps BETWEEN supports passes a sheet in silence while the
+pipe hangs off either end of it. `supportSpans` emits those stretches too,
+as `kind: "run-end"`.
+
+On the reference ISO that is the difference between "both spans fine" and the
+actual picture: **2912mm of pipe before the first support, 1412 of it
+vertical.** Judged as a hanging drop the sheet caps that leg at 1100, so it
+flags 312mm over; judged as a riser supported at its base (3400) it is fine,
+and the drawing does not say which.
+
+**A run-end is REPORTED, not failed.** The end of a dimension chain can be an
+anchor, an equipment nozzle, a dead end, or the point where the line carries
+on to the next sheet, and what holds it there is usually not on this drawing.
+The length and the verdict are given; the reader decides.
+
+### SUPPORTS ON SHEET 1 ONLY -- and that is the finding
+
+Measured on the reference ISO, two independent ways: the BOM lists supports
+on sheet 1 alone, and the geometry finds no support balloon among the 37 on
+sheets 2-5.
+
+| sheet | pipe | supports |
+|---|---|---|
+| 1 | 9.8 m of 8" | 3 primary + 2 secondary |
+| 2 | 4.1 m of 8" | **none** |
+| 3 | 7.1 m of 6" | **none** |
+| 4 | **30.8 m of 8"** | **none** |
+| 5 | 2.7 m of 8" | **none** |
+
+At the 7200mm straight-run limit sheet 4 alone needs at least four
+intermediate supports. Worth knowing before reading a clean span report as a
+clean drawing: **every span on this document passes, and 45 metres of its
+pipe has nothing under it.** A rack run is often held by structure drawn on a
+separate support drawing rather than ballooned on the ISO, so this is a "go
+and check", not a defect -- but on the ISO's own terms the pipe is unheld.
+
+Sheet 3 is 6" and no 6" span sheet has been supplied, so it would return "no
+standard" rather than a guess even if it had supports.
+
+### A SPAN IS NOT ONE FIGURE PER SIZE
+
+`packages/shared/src/pipeSpan.ts`. Four things decide it, and the fourth is the
+one that gets dropped: SIZE (heavier wins over stiffer), MATERIAL (stainless
+sags further), AREA (process is shorter than a rack), and **SHAPE**.
+
+The project's span sheet draws the same 8" pipe six ways:
+
+| case | max span |
+|---|---|
+| straight run | 7200 |
+| turning through one elbow (L) | **7700** |
+| turning down and back up through a low elbow (V) | 6400 |
+| carrying a branch tee | 6000 |
+| vertical leg supported at its base (leg ≤ 3400) | 7200 |
+| hanging an unsupported drop leg (leg ≤ 1100) | 5500 |
+
+**The L turn carries FURTHER than the straight run.** It reads like a
+transcription error and it is what the sheet draws — pinned as a test, because
+"correcting" 7700 to 7200 overrides the standard with an assumption.
+
+**THE SHORTEST APPLICABLE CASE GOVERNS.** A real span is several cases at once,
+and taking any but the smallest permits a span the sheet does not. `checkSpan`
+names the cases it beat so the choice is checkable.
+
+**The two "Max" cases are a READING of the drawing, not a quotation.** The only
+reading under which a *shorter* permitted leg goes with a *shorter* permitted
+span is that they are different cases: the 3400 riser has its own support at
+the base so the horizontal keeps 7200; the 1100 drop hangs off the horizontal
+with nothing under it, so its weight lands on that span and it falls to 5500.
+Confirm it against the sheet.
+
+**The vertical leg is checked SEPARATELY from the span it hangs off** — two
+different corrections, and one combined figure sends a designer to fix the
+wrong thing.
+
+**Only the supplied sheet is in the table.** 8" NPS Sch-20 carbon steel,
+process area; everything else returns "no standard" with the missing input
+named, the rule `nominalBoreOdMm` follows. A guessed span is a number that
+makes an unsupported run look supported. The standard is chosen off the
+**largest PIPE row in the sheet's own BOM** — not a valve, whose body is a
+different material in the same BOM.
+
+### THE SPAN'S LENGTHS ARE THE CONTAINER CHECK'S LENGTHS
+
+`printedLengths` in `apps/web/src/lib/supports.ts` reads the spool envelopes
+already stored on the sheet and indexes them by contact-sheet cell. The spans
+resolve their legs through that map, so **the drawing is read once and used
+twice** — the support page and the shipping page can never quote different
+figures for one piece of pipe, and there is no second dimension file to keep
+in step.
+
+It prefers `printedMm` over `mm` where they differ. They differ when a length
+runs past the weld that closes its spool, and `mm` is then the SPOOL'S SHARE —
+but a support span does not care where a spool ends. The pipe is continuous
+once erected, so the whole printed figure is the length between two supports,
+not the part on one side of a field weld.
+
+### AND THE FLOW FOLLOWS THE SAME SOURCE
+
+Each envelope part carries `drawnAs`, the plant direction the flow-arrow and
+run-order work already resolved. So the SHAPE of a span comes from the same
+rows as its length and the two cannot disagree.
+
+`configurationsFromDirections` in `pipeSpan.ts`:
+
+| legs run | it is | max |
+|---|---|---|
+| all one way | straight run | 7200 |
+| two horizontals, no change of elevation | **an L** — one corner in plan | 7700 |
+| both UP and DOWN | **a V** — down and back up through a low elbow | 6400 |
+| a vertical among horizontals | either vertical case; shortest governs | 5500 |
+
+**This closed the open limitation.** With only a turn COUNT to go on, both the
+L and the V had to be offered and the shorter governed, so every genuine L was
+judged 1300mm tighter than the sheet allows. The reference ISO's second span —
+937 EAST then 1500 SOUTH — now reads **L, 7700mm** instead of V, 6400mm.
+
+Still conservative where the drawing genuinely does not say: a vertical leg
+among horizontals could be a riser carrying its own support (7200) or a drop
+hanging off the run (5500), and nothing on the sheet says which, so both are
+offered.
+
+### Running it, all free
+
+```
+pnpm --filter @easy/worker exec tsx scripts/fetch-document.ts <id|name> out.pdf
+cd packages/db && node scripts/dump-bom.mjs bom.json <documentId>
+pnpm --filter @easy/worker exec tsx scripts/export-dimensions.ts <pdf> dims.json --labels-from dim-labels.json
+pnpm --filter @easy/worker exec tsx scripts/export-pipe-supports.ts <pdf> bom.json supports.json --labels-from balloon-labels.json --dims dims.json [--preview balloons.png]
+cd packages/db && node scripts/import-pipe-supports.mjs supports.json <documentId> --write
+```
+
+`fetch-document.ts` is worth knowing about generally: **every geometric probe
+in this repo takes a PDF path, and the PDFs live in Supabase Storage, not the
+working tree.** Without it the free tools can only be run on a file someone
+downloaded by hand.
+
+Reading the number inside each balloon is the only step needing eyes, and
+`--preview` writes the exact contact sheet a call would send instead of sending
+it — all 23 of page 1's balloons and all 27 of its dimension labels were read
+off previews for **$0.00**. Same arrangement as the weld flags and spool tags.
+
+The importer **replaces** this document's `pipe_support` rows rather than
+adding to them. A support is a position on a drawing, not an accumulating
+fact — and the older shape of this data is exactly what happens otherwise: the
+same support 18-1 was in the database four times with four different spans
+(2500, 0, 2437, 3623), because it had been measured by eye off a drawing that
+is not to scale. That older data had **no producer at all** — it came from an
+extraction schema that no longer existed, so a re-extraction wiped it the way
+one wiped `geometry_spool`.
+
+### What is still open
+
+- **A vertical leg's case is still ambiguous.** Riser (7200) or drop (5500)
+  depends on whether it carries its own support at the base, which the sheet
+  does not state; both are offered and the shorter governs.
+- **The branch-tee case is unreachable** until the span walk reads a tee on
+  the run between two supports.
+- **A span whose legs are not all in a spool envelope falls back** to the
+  export's own `span_mm` and a turn count, which cannot tell an L from a V.
+  That happens on a sheet whose envelopes were never built.
+- Only page 1 of the reference ISO has been run end to end; the other four
+  sheets need their balloon labels read off the preview, which is free.
+
+## Instrument hook-up verification
+
+`/hookup` checks an ISO against the project's typical hook-up set. The chain is
+short and every link has to hold: the ISO BOM row names a device, the device
+picks a typical, and the typical's piping-scope rows are looked for in the BOM.
+
+### THE HYPHEN IN AN ISA TAG IS A CONVENTION, NOT PART OF THE TAG
+
+`classifyInstrument` in `apps/web/src/lib/verifyIso.ts`. This broke the whole
+page on a real drawing and the symptom named nothing useful:
+
+```
+FT0003  instrument (other)
+  No typical in this set covers a instrument instrument on liquid service.
+```
+
+The ISO lists its instruments as `component_type "INSTRUMENT"`, description
+**`FT0003`** — no hyphen. The tag decoder required one (`\b[A-Z]{2,4}-`), so
+all three instruments fell through to the `instrument (other)` catch-all, which
+names no measured variable. `matchHookupSheet` keys on the variable, so nothing
+could ever match, and the set it was looking for was sitting right there in the
+same project.
+
+**The hyphen was never the evidence.** It is a cheap stand-in for "this token is
+a tag, not a material code", and it is load-bearing: without it `SS316L` decodes
+as a speed switch and `ASME B16.5` as an analysis element, and both appear in
+nearly every BOM description. So the bare form is read LAST, after the spelled
+out words and the hyphenated tag, and only with the evidence the hyphen stood
+in for:
+
+- the row has to SAY it is an instrument (the same `DEVICE_WORDS` the instrument
+  branch of `classifyComponent` gates on — one regex, shared, because two
+  answers to "is this an instrument" is the split that lets one of them rot)
+- the prefix must not be in `NON_INSTRUMENT_PREFIXES`
+- the letters must decode to a variable AND a function
+- **the token must not FOLLOW a hyphen.** `XI-VKA102` is a tag whose loop
+  number carries a three-letter area prefix, which defeats the hyphenated
+  pattern; reading its `VKA102` as a letter group turns an indicator into a
+  vibration alarm. This was the only false positive the measurement found, and
+  it found three of them.
+- scan EVERY candidate token, not the first — `INSTRUMENT, SS316 BODY, FT0003`
+  otherwise stops at the blacklisted `SS316` and never reaches the tag
+
+**Measured before it was applied**, across every BOM, valve, fitting, instrument
+and hook-up row in the database — 1,112 rows: **18 change answer, and they are
+the three instruments on this ISO.** Nothing else in the corpus moves.
+
+```
+cd packages/db && node scripts/probe-isa-tags.mjs     # free, prints the diff
+```
+
+Ruled out along the way: a minimum loop-number LENGTH. At 3 digits it admits
+the pipe-support type codes (`SC101` → "speed controller", `SW100` → "speed
+well"); 4 digits is clean on this corpus but is a number fitted to one plant's
+numbering, where "the row says it is an instrument" is a reason.
+
+`isaTagOf` takes the same rule and **normalises the bare form INTO the
+hyphenated one**, which is its whole job — the ISO writes `FT0003` and the P&ID
+`FT-0003`, and pairing them is what stops one instrument being reported twice,
+once as missing from each drawing.
+
+**Name the failure by the DEVICE, not the variable.** "a pressure instrument"
+leaves a reviewer unable to tell whether the set lacks a gauge, a transmitter or
+a differential one — and where the tag would not decode at all, the variable IS
+"instrument", which is what printed `a instrument instrument`.
+
+### A MISSING TYPICAL IS SOMETIMES THE RIGHT ANSWER
+
+With the above fixed, this project's ISO resolves `FT0003` → flow transmitter /
+liquid and `PT0004` → pressure transmitter / liquid, both matching every
+piping-scope row. **`TT0003` still reports no typical, and that is correct**:
+the uploaded set is 27 pages, pages 5–27 are its 23 typicals, all 23 extracted,
+and not one of them is temperature. The page is reporting a gap in the hook-up
+set, not a gap in itself. Check the page coverage before assuming otherwise — a
+set whose typicals stop short looks exactly like a classifier that stopped
+working.
+
 ### Windows/tooling gotchas hit while working on this
 - A long-running `tsx watch` worker process does **not** reliably reload changes made
   to a sibling workspace package (e.g. `packages/extraction-schemas`) even though it

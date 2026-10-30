@@ -12,7 +12,8 @@ import { BRAND_FULL_NAME, BRAND_NAME, BrandLockup } from "@/components/ui/Brand"
 import { IconArrowLeft } from "@/components/ui/icons";
 import { HOLD_LABEL } from "@/lib/pending";
 import { isMissingTable } from "@/lib/progress";
-import { markLineReviewed } from "../progressActions";
+import { checkPrintLabel, checkPrintsOf, nextStep, printsOfRevision } from "@/lib/checkPrints";
+import { issueCheckPrint, issueFinal } from "../progressActions";
 import { PrintButton } from "./PrintButton";
 
 // The errors found on one ISO line, laid out to be handed to the designer: print it
@@ -127,7 +128,7 @@ function FindingTable({ n, findings }: { n: number; findings: Finding[] }) {
             <td>{f.requirement}</td>
             <td className={f.info ? "" : "text-danger"}>{f.discrepancy}</td>
             <td>
-              {f.info ? <span className="italic">Info only: {f.info}</span> : (f.action ?? "-")}
+              {f.info ? <span className="italic">Note: {f.info}</span> : (f.action ?? "-")}
             </td>
           </tr>
         ))}
@@ -239,16 +240,27 @@ export default async function IsoReportPage({
 
   const [summary, review] = await Promise.all([summariseLine(id, line), reviewOf(id, line.key)]);
   const report = buildIsoReport(summary);
-  // A checker's print marks the line done (see PrintButton); Document Control's
-  // does not, because only a checker's mark counts as progress.
+  // A checker's print issues the next check print (see PrintButton); Document
+  // Control's does not, because only a checker's mark counts as progress.
   const canMark = !session.isDcc;
-  // Who signed the line off. A checker about to print is about to become that
-  // person; anyone else sees the recorded mark, or a blank box to sign by hand.
-  const checkedBy = review
-    ? `${review.reviewedByName ?? "—"} · ${review.reviewedAt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}${review.revision ? ` · REV ${review.revision}` : ""}`
-    : canMark
-      ? (session.name ?? session.email)
-      : "";
+  const fmt = (d: Date) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+
+  // WHICH CHECK PRINT THIS REPORT IS. The cycle runs per ISO revision. A checker
+  // printing it issues the next one -- CP-01..03 while errors remain, Final once
+  // there are none -- so the report carries that number and their name. Anyone
+  // else sees the check print last issued on this revision, and who issued it.
+  const revisionPrints = printsOfRevision((await checkPrintsOf(id)) ?? [], line);
+  const lastPrint = revisionPrints[revisionPrints.length - 1];
+  const next = report ? nextStep(revisionPrints, line, report.totals.all) : undefined;
+  const issuing = canMark && next && (next.step === "cp" || next.step === "final") ? next : undefined;
+  const checkPrint = issuing ? issuing.label : lastPrint ? checkPrintLabel(lastPrint) : "Not issued";
+  const checkedBy = issuing
+    ? `${session.name ?? session.email} · ${fmt(new Date())}`
+    : lastPrint
+      ? `${lastPrint.issuedByName ?? "—"} · ${fmt(lastPrint.issuedAt)}`
+      : review
+        ? `${review.reviewedByName ?? "—"} · ${fmt(review.reviewedAt)}`
+        : "";
   const back = session.isDcc ? `/review?project=${id}&line=${encodeURIComponent(line.lineNumber)}` : `/projects/${id}?line=${encodeURIComponent(line.lineNumber)}`;
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
@@ -261,14 +273,25 @@ export default async function IsoReportPage({
           <IconArrowLeft size={14} />
           Back to the line
         </Link>
-        {report && <PrintButton markDone={canMark ? markLineReviewed.bind(null, id, line.lineNumber) : undefined} />}
+        {report && (
+          <PrintButton
+            markDone={issuing ? (issuing.step === "final" ? issueFinal : issueCheckPrint).bind(null, id, line.lineNumber) : undefined}
+            issueLabel={issuing?.label}
+          />
+        )}
       </div>
 
       <article className="report card">
         <header className="border-b-2 border-foreground pb-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <BrandLockup size={30} full />
-            <p className="text-right text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">ISO Check Report</p>
+            <div className="text-right">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">ISO Check Report</p>
+              {/* The check print this report is, large enough to read off a printed page. */}
+              <p className="mt-1 font-mono text-lg font-semibold">
+                {checkPrint === "Not issued" ? "Check print not issued" : checkPrint === "Final" ? "FINAL" : checkPrint}
+              </p>
+            </div>
           </div>
           <p className="mt-5 text-xs uppercase tracking-[0.12em] text-muted-foreground">Line number</p>
           <h1 className="mt-1 break-all font-mono text-xl font-semibold">{line.lineNumber}</h1>
@@ -338,7 +361,7 @@ export default async function IsoReportPage({
 
         <footer className="mt-6 border-t pt-3 text-[11px] leading-relaxed text-muted-foreground">
           <p>
-            Prepared with {BRAND_NAME} ({BRAND_FULL_NAME}). Quote the Ref (e.g. 2.3) when replying. &ldquo;Info only&rdquo; rows are not errors. This
+            Prepared with {BRAND_NAME} ({BRAND_FULL_NAME}). Quote the Ref (e.g. 2.3) when replying. &ldquo;Note&rdquo; rows are not errors. This
             report supports the checker&apos;s review; it does not replace it.
           </p>
         </footer>

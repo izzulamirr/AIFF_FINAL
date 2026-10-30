@@ -21,6 +21,19 @@ export interface DecodedLineNumber {
   heat_trace?: string;
 }
 
+// An ISO's drawing number is its line number plus a two-digit suffix
+// (18"-22-214-01-CRD-0005-AC03N-P-01), and the extraction sometimes reads that
+// whole drawing number as the line number. The line number itself ends at the
+// insulation code, so the suffix is dropped: otherwise a revised ISO files
+// under a "new" line that matches neither the line list nor its earlier
+// revision. Needs a class segment (has a digit), a letters-only insulation
+// segment and a 1-2 digit tail, so a line that merely ends in digits is left alone.
+export function stripDrawingSuffix(lineNumber: string): string {
+  const trimmed = lineNumber.trim();
+  const m = /^(.+-[A-Z0-9]*\d[A-Z0-9]*-[A-Z]{1,2})-\d{1,2}$/i.exec(trimmed);
+  return m ? m[1] : trimmed;
+}
+
 export function decodeLineNumber(lineNumber: string): DecodedLineNumber | null {
   const segments = lineNumber
     .trim()

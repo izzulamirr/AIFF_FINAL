@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { and, eq, inArray } from "drizzle-orm";
 import { cuttingPartQuantities, cuttingStockPlates, documents, extractedTags } from "@easy/db";
-import { nestTrueShapePlan, outlineExtentMm, type CutPart, type NestResult } from "@easy/shared";
+import { currentDocuments, nestTrueShapePlan, outlineExtentMm, type CutPart, type NestResult } from "@easy/shared";
 import { createClient } from "@/lib/supabase/server";
 import { isDcc } from "@/lib/roles";
 import { getDb } from "@/lib/db";
@@ -174,10 +174,12 @@ export async function runTrueShapeNest(
   }
 
   const db = getDb();
-  const projectDocs = await db
-    .select({ id: documents.id })
-    .from(documents)
-    .where(and(eq(documents.projectId, projectId), eq(documents.docType, "cutting")));
+  const projectDocs = currentDocuments(
+    await db
+      .select({ id: documents.id, docType: documents.docType, fileName: documents.fileName, uploadedAt: documents.uploadedAt })
+      .from(documents)
+      .where(and(eq(documents.projectId, projectId), eq(documents.docType, "cutting")))
+  );
   const docIds = drawingId ? projectDocs.filter((d) => d.id === drawingId).map((d) => d.id) : projectDocs.map((d) => d.id);
   if (docIds.length === 0) return { ok: false, error: "No cutting drawings in this project." };
 

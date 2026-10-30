@@ -11,7 +11,7 @@ import {
   sliceText,
   type PageRange,
 } from "@easy/extraction-schemas";
-import { enrichIsoLineAttrs, normalizeSlope, assignItemSpec, parsePressureRating, buildSpoolsFromWeldTopology, type WeldTopology } from "@easy/shared";
+import { enrichIsoLineAttrs, stripDrawingSuffix, normalizeSlope, assignItemSpec, parsePressureRating, buildSpoolsFromWeldTopology, type WeldTopology } from "@easy/shared";
 import { callTool, callWithRetry } from "./claudeClient";
 import { renderPdfPages, renderPdfPageTiles, renderMultiPageContactSheet } from "../pdfImages";
 import { flagRegions, locateWeldFlags, numberingComplete, readGeometrySpools, spoolTagRegions, type FlagRegion } from "./isoGeometrySpools";
@@ -671,7 +671,7 @@ export function buildIsoTags(
     }
 
     if (result.line_number) {
-      const lineNumber = n(result.line_number) ?? result.line_number;
+      const lineNumber = stripDrawingSuffix(n(result.line_number) ?? result.line_number);
       tags.push({
         tagType: "line",
         tagNumber: lineNumber,
@@ -777,7 +777,7 @@ export function buildIsoTags(
         sourcePage: pageNumber,
         attributes: {
           drawing_number,
-          line_number: result.line_number,
+          line_number: stripDrawingSuffix(result.line_number),
           item_no: n(item.item_no),
           material_section: materialSection,
           description: item.description,

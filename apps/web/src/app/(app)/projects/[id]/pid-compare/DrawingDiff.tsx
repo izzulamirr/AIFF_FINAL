@@ -256,16 +256,41 @@ export function DrawingDiff({ projectId, before, after }: { projectId: string; b
     };
   }, [loadDocs, pageBefore, pageAfter]);
 
+  // THE VIEWER IS ALWAYS THE CARD'S FULL WIDTH -- a landscape box -- and the
+  // sheet is scaled to fit inside it. Sizing the box by the sheet's shape with
+  // CSS (aspect-ratio under a max-width) narrowed it to a tall strip on a short
+  // window, so the box and the fit are measured here instead.
+  const [box, setBox] = useState({ w: 0, vh: 800 });
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const measure = () => setBox({ w: el.clientWidth, vh: window.innerHeight });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+  // No taller than 80% of the window, and no taller than the sheet needs at full width.
+  const boxHeight = box.w > 0 ? Math.min(box.vh * 0.8, box.w / aspect) : 0;
+  // The sheet's width at Fit: the whole width, unless the height limit binds first.
+  const fitWidth = Math.min(box.w, boxHeight * aspect);
+
   // Show the chosen canvas, scaled by the zoom.
   useEffect(() => {
     const el = host.current;
     const canvas = canvases.current[view];
-    if (!el || !canvas || status.state !== "ready") return;
-    canvas.style.width = `${zoom * 100}%`;
+    if (!el || !canvas || status.state !== "ready" || fitWidth <= 0) return;
+    canvas.style.width = `${fitWidth * zoom}px`;
     canvas.style.height = "auto";
     canvas.style.display = "block";
+    // Centred at Fit when the height limit leaves room either side.
+    canvas.style.margin = zoom === 1 ? "0 auto" : "0";
     el.replaceChildren(canvas);
-  }, [view, zoom, status]);
+  }, [view, zoom, status, fitWidth]);
 
   function goTo(r: Region) {
     const target = Math.max(zoom, 3);
@@ -275,7 +300,7 @@ export function DrawingDiff({ projectId, before, after }: { projectId: string; b
       const box = scroller.current;
       const canvas = canvases.current.changes;
       if (!box || !canvas) return;
-      const scale = (box.clientWidth * target) / canvas.width;
+      const scale = (fitWidth * target) / canvas.width;
       box.scrollTo({ left: (r.x + r.w / 2) * scale - box.clientWidth / 2, top: (r.y + r.h / 2) * scale - box.clientHeight / 2, behavior: "smooth" });
     });
   }
@@ -358,12 +383,11 @@ export function DrawingDiff({ projectId, before, after }: { projectId: string; b
         </p>
       )}
 
-      {/* Shaped like the sheet, so Fit shows all of it: as wide as the card allows, but no
-          taller than 80vh, narrowing to keep the shape on a short screen. */}
+      {/* Full width, landscape; its height follows the sheet (see boxHeight). */}
       <div
         ref={scroller}
-        className={`relative mx-auto w-full rounded-lg border bg-white ${zoom === 1 ? "overflow-hidden" : "overflow-auto"}`}
-        style={{ aspectRatio: `${aspect}`, maxWidth: `calc(80vh * ${aspect})` }}
+        className={`relative w-full rounded-lg border bg-white ${zoom === 1 ? "overflow-hidden" : "overflow-auto"}`}
+        style={{ height: boxHeight > 0 ? `${boxHeight}px` : "60vh" }}
       >
         {status.state !== "ready" && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">

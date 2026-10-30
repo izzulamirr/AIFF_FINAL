@@ -1,8 +1,9 @@
-import { desc, eq, inArray } from "drizzle-orm";
-import { lineReviews, projectLineTotals } from "@easy/db";
-import { needsRecheck } from "@easy/shared";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { documents, extractedTags, extractionJobs, lineReviews, projectLineTotals } from "@easy/db";
+import { currentDocuments, needsRecheck, normalizeTagNumber } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { isoLinesOf } from "@/lib/isoLines";
+import { CHANGED, compareSources, sourcesOfLines, type LineSource, type SourceComparison } from "@/lib/lineSources";
 
 // Line progress: how many of a project's lines have been checked, against the
 // total Document Control says there are.
@@ -27,6 +28,8 @@ export interface LineReview {
   reviewedAt: Date;
   /** The drawing revision this check was made against. Null if it was not known at the time. */
   revision: string | null;
+  /** Every document the check was based on. Null for a check made before sources were tracked. */
+  basis: LineSource[] | null;
 }
 
 const toReview = (row: typeof lineReviews.$inferSelect): LineReview => ({
@@ -35,6 +38,7 @@ const toReview = (row: typeof lineReviews.$inferSelect): LineReview => ({
   reviewedByName: row.reviewedByName,
   reviewedAt: row.reviewedAt,
   revision: row.revision,
+  basis: Array.isArray(row.basis) ? (row.basis as LineSource[]) : null,
 });
 
 /**
@@ -47,9 +51,12 @@ const toReview = (row: typeof lineReviews.$inferSelect): LineReview => ({
  */
 export type LineState = "done" | "recheck" | "open";
 
-export function lineStateOf(review: LineReview | undefined, currentRevision: string | null): LineState {
+export function lineStateOf(review: LineReview | undefined, currentRevision: string | null, currentSources?: LineSource[]): LineState {
   if (!review) return "open";
-  return needsRecheck(review.revision, currentRevision) ? "recheck" : "done";
+  if (needsRecheck(review.revision, currentRevision)) return "recheck";
+  // Any document the check was based on having changed since -- a P&ID revision,
+  // a new line list row, a newer spec -- means it no longer stands either.
+  return currentSources && compareSources(review.basis, currentSources, review.reviewedAt).some((c) => CHANGED.has(c.status)) ? "recheck" : "done";
 }
 
 /** A review with the revision now in force beside the one it was made against. */
@@ -57,6 +64,8 @@ export interface ClassifiedReview extends LineReview {
   /** The revision in force for this line now. Null where it could not be read. */
   currentRevision: string | null;
   state: Exclude<LineState, "open">;
+  /** The basis as checked against as it is now, one entry per document. Empty where none was recorded. */
+  sources: SourceComparison[];
 }
 
 /**
@@ -66,11 +75,19 @@ export interface ClassifiedReview extends LineReview {
  * has no current revision to compare with, so it stands. Absence of a drawing is
  * not evidence of a revision.
  */
-export function classifyReviews(reviews: LineReview[], lines: Array<{ key: string; revision: string | null }>): ClassifiedReview[] {
+export function classifyReviews(
+  reviews: LineReview[],
+  lines: Array<{ key: string; revision: string | null }>,
+  currentSources?: Map<string, LineSource[]>
+): ClassifiedReview[] {
   const revisionOf = new Map(lines.map((l) => [l.key, l.revision]));
   return reviews.map((review) => {
     const currentRevision = revisionOf.get(review.lineKey) ?? null;
-    return { ...review, currentRevision, state: needsRecheck(review.revision, currentRevision) ? "recheck" : "done" };
+    // A line no longer in the project has no sources now; that is not a change.
+    const now = revisionOf.has(review.lineKey) ? currentSources?.get(review.lineKey) : undefined;
+    const sources = now ? compareSources(review.basis, now, review.reviewedAt) : [];
+    const state = needsRecheck(review.revision, currentRevision) || sources.some((c) => CHANGED.has(c.status)) ? "recheck" : "done";
+    return { ...review, currentRevision, state, sources };
   });
 }
 
@@ -81,17 +98,74 @@ export function classifyReviews(reviews: LineReview[], lines: Array<{ key: strin
  * five of them were checked against superseded drawings is a figure that reads
  * as finished and is not.
  */
-export function countProgress(reviews: LineReview[], lines: Array<{ key: string; revision: string | null }>) {
-  const classified = classifyReviews(reviews, lines);
+export function countProgress(
+  reviews: LineReview[],
+  lines: Array<{ key: string; revision: string | null }>,
+  currentSources?: Map<string, LineSource[]>
+) {
+  const classified = classifyReviews(reviews, lines, currentSources);
   return {
-    done: classified.filter((r) => r.state === "done").length,
+    // Every line a checker has marked done counts as done -- a document changing
+    // afterwards does not undo the work. Those it applies to are counted again
+    // in `recheck`, a SUBSET of `done`, so they can be flagged without vanishing.
+    done: classified.length,
     recheck: classified.filter((r) => r.state === "recheck").length,
   };
 }
 
-/** One project: the total Document Control stated (null if it has not), and every line checked, newest first. */
+// HOW MANY LINES A PROJECT HAS comes from its line list. The current PLL lists
+// every line the project will have, so its count is the total -- worked out, not
+// typed in, and it follows the PLL when a new revision of it is uploaded. A figure
+// Document Control typed in is only used where no line list has been read yet.
+
+/** The project's line list as a total: its distinct line numbers, and which file they came from. */
+export interface LineListTotal {
+  count: number;
+  fileName: string;
+}
+
+/** Each project's current, read line list, counted. A project with none is absent from the map. */
+export async function lineListTotals(projectIds: string[]): Promise<Map<string, LineListTotal>> {
+  const out = new Map<string, LineListTotal>();
+  if (projectIds.length === 0) return out;
+  const db = getDb();
+  const plls = await db.select().from(documents).where(and(inArray(documents.projectId, projectIds), eq(documents.docType, "pll")));
+  if (plls.length === 0) return out;
+
+  const jobs = await db
+    .select({ documentId: extractionJobs.documentId, status: extractionJobs.status, createdAt: extractionJobs.createdAt })
+    .from(extractionJobs)
+    .where(inArray(extractionJobs.documentId, plls.map((d) => d.id)));
+  const latest = new Map<string, (typeof jobs)[number]>();
+  for (const j of jobs) {
+    const seen = latest.get(j.documentId);
+    if (!seen || j.createdAt > seen.createdAt) latest.set(j.documentId, j);
+  }
+  // Only a line list that has been read, and only the revision in force -- an
+  // older upload of it would count lines the new one dropped.
+  const read = plls.filter((d) => latest.get(d.id)?.status === "succeeded");
+  const inForce = projectIds.flatMap((p) => currentDocuments(read.filter((d) => d.projectId === p)));
+  if (inForce.length === 0) return out;
+
+  const rows = await db
+    .select({ documentId: extractedTags.documentId, tagNumber: extractedTags.tagNumber })
+    .from(extractedTags)
+    .where(and(inArray(extractedTags.documentId, inForce.map((d) => d.id)), eq(extractedTags.tagType, "line")));
+  for (const p of projectIds) {
+    const docs = inForce.filter((d) => d.projectId === p);
+    const ids = new Set(docs.map((d) => d.id));
+    // Distinct numbers: a line printed on two sheets of the list is one line.
+    const keys = new Set(rows.filter((r) => ids.has(r.documentId)).map((r) => normalizeTagNumber(r.tagNumber)).filter(Boolean));
+    if (keys.size > 0) out.set(p, { count: keys.size, fileName: docs.map((d) => d.fileName).join(", ") });
+  }
+  return out;
+}
+
+/** One project: how many lines it has (null if neither a line list nor a typed figure says), and every line checked, newest first. */
 export interface ProjectLineProgress {
   total: number | null;
+  /** Where the total came from: the line list, counted (null where it was typed in, or there is none). */
+  lineList: LineListTotal | null;
   reviews: LineReview[];
 }
 
@@ -101,7 +175,8 @@ export async function progressOfProject(projectId: string): Promise<ProjectLineP
     const db = getDb();
     const [totalRow] = await db.select().from(projectLineTotals).where(eq(projectLineTotals.projectId, projectId)).limit(1);
     const rows = await db.select().from(lineReviews).where(eq(lineReviews.projectId, projectId)).orderBy(desc(lineReviews.reviewedAt));
-    return { total: totalRow?.totalLines ?? null, reviews: rows.map(toReview) };
+    const lineList = (await lineListTotals([projectId])).get(projectId) ?? null;
+    return { total: lineList?.count ?? totalRow?.totalLines ?? null, lineList, reviews: rows.map(toReview) };
   } catch (err) {
     if (isMissingTable(err)) return null;
     throw err;
@@ -113,9 +188,9 @@ export interface ProjectProgress extends ProjectLineProgress {
   projectName: string;
   /** ISO lines uploaded so far -- usually fewer than the total, since drawings arrive over time. */
   uploaded: number;
-  /** Checked against the drawing now in force. */
+  /** Marked done by a checker -- including those that now need a re-check. */
   done: number;
-  /** Checked, but against a drawing a later revision has replaced. */
+  /** Of those, how many were checked against a document that has since changed. A subset of `done`. */
   recheck: number;
   /** Every review, each judged against the revision now in force. */
   classified: ClassifiedReview[];
@@ -129,6 +204,8 @@ export async function progressOfProjects(projects: Array<{ id: string; name: str
   // The lines are kept, not just counted: each carries the revision now in force,
   // which is what says whether a check still stands.
   const linesOf = await Promise.all(projects.map((p) => isoLinesOf(p.id)));
+  const sourcesOf = await Promise.all(projects.map((p, i) => sourcesOfLines(p.id, linesOf[i])));
+  const lineLists = await lineListTotals(ids);
 
   try {
     const db = getDb();
@@ -138,15 +215,16 @@ export async function progressOfProjects(projects: Array<{ id: string; name: str
 
     return projects.map((p, i) => {
       const reviews = rows.filter((r) => r.projectId === p.id).map(toReview);
-      const classified = classifyReviews(reviews, linesOf[i]);
+      const classified = classifyReviews(reviews, linesOf[i], sourcesOf[i]);
       return {
         projectId: p.id,
         projectName: p.name,
-        total: totalOf.get(p.id) ?? null,
+        total: lineLists.get(p.id)?.count ?? totalOf.get(p.id) ?? null,
+        lineList: lineLists.get(p.id) ?? null,
         uploaded: linesOf[i].length,
         reviews,
         classified,
-        done: classified.filter((r) => r.state === "done").length,
+        done: classified.length,
         recheck: classified.filter((r) => r.state === "recheck").length,
       };
     });

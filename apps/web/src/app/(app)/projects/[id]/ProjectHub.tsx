@@ -79,12 +79,13 @@ export async function ProjectHub({ projectId, projectName, libraryHref }: { proj
   const classes = new Set(classTags.map((t) => normalizeSpecClassCode(t.tagNumber))).size;
 
   const cutting = docs.filter((d) => d.docType === "cutting").length;
+  const pids = docs.filter((d) => d.docType === "pid").length;
 
   const features: Feature[] = [
     {
       href: `/projects/${projectId}?feature=iso`,
       title: "ISO checking",
-      text: "Check each line number: design basis, bill of material, P&ID, instrument hook-up, spools and container fit.",
+      text: "Check each line number: design basis, bill of material, P&ID, instrument hook-up, spools, container fit and pipe supports.",
       icon: IconClipboard,
       facts: lines.length > 0 ? [plural(lines.length, "line")] : [],
       emptyNote: "No isometrics have been uploaded yet.",
@@ -96,6 +97,14 @@ export async function ProjectHub({ projectId, projectName, libraryHref }: { proj
       icon: IconCompare,
       facts: classes > 0 ? [plural(classes, "class", "classes"), plural(adminDocs.length, "admin list")] : [],
       emptyNote: "No client spec has been read yet.",
+    },
+    {
+      href: `/projects/${projectId}/pid-compare`,
+      title: "P&ID checking",
+      text: "Lay an earlier P&ID over the revision that replaced it, with every change on the drawing highlighted.",
+      icon: IconCompare,
+      facts: pids > 0 ? [plural(pids, "P&ID")] : [],
+      emptyNote: "No P&IDs have been uploaded yet.",
     },
     {
       href: `/cutting?project=${projectId}`,
@@ -120,7 +129,7 @@ export async function ProjectHub({ projectId, projectName, libraryHref }: { proj
           </Link>
         }
       />
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {features.map((f) => (
           <FeatureCard key={f.href} feature={f} />
         ))}

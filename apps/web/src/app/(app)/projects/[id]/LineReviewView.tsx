@@ -5,13 +5,29 @@ import { CollapsibleCard } from "@/components/ui/CollapsibleCard";
 import { Alert, Badge, EmptyState, Stat } from "@/components/ui/primitives";
 import { BomSheets, DesignBasisTable, FittingsMatchGroups, MtoSheets, RoutingTable } from "@/components/checks/IsoCheckTables";
 import { HookupResults } from "@/components/checks/HookupResults";
-import { IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconSpool, IconTable } from "@/components/ui/icons";
+import { IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconSpool, IconSupport, IconTable } from "@/components/ui/icons";
+import { supportProblems } from "@/lib/supports";
 import { ProgressBar } from "@/components/progress/ProgressBar";
 import { findLine, isoLinesOf, type IsoLine } from "@/lib/isoLines";
 import { summariseLine, type IsoDrawingChecks, type LineSummary } from "@/lib/lineSummary";
 import { countProgress, lineStateOf, progressOfProject } from "@/lib/progress";
+import {
+  CHANGED,
+  changeSummary,
+  compareSources,
+  sourcesOfLines,
+  type LineSource,
+  type SourceComparison,
+  type SourceKind,
+} from "@/lib/lineSources";
+import { CheckedAgainst } from "./CheckedAgainst";
+import { CheckPrints } from "./CheckPrints";
+import { checkPrintLabel, checkPrintsOf, nextStep, printsOfLine, printsOfRevision } from "@/lib/checkPrints";
+import { buildIsoReport } from "@/lib/isoReport";
+import { documentFamily } from "@easy/shared";
 import { ContainerFit } from "../../containers/ContainerFit";
 import { SpoolSheets } from "../../spooling/SpoolSheets";
+import { SupportSheets } from "../../supports/SupportSheets";
 import { MarkingNotSetUp, MarkingNotSetUpBadge, ReviewControl } from "./ReviewControl";
 
 // A project's ISO line numbers and, once one is chosen, every review of that line
@@ -57,6 +73,90 @@ const UNAVAILABLE = "This could not be worked out. Try again in a moment.";
 
 const uploaded = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
 
+// A document's revision as a register writes it: the letter or number from its
+// file name, or -- where it carries none -- the date it was uploaded.
+const revLabel = (s: LineSource) => s.revision ?? uploaded.format(new Date(s.uploadedAt));
+
+// The documents a line is checked against, as one quiet strip under its number.
+// Most of the time every one of them is unchanged, and then it reads as plain
+// reference text. Only a revision that has moved on since the line was checked --
+// or, on a line nobody has checked yet, one issued after an earlier revision --
+// is lifted out as an amber "D → E", so the eye goes straight to what changed.
+// A kind of document the line does not use is left out rather than listed empty.
+const STRIP_KINDS: Array<{ kinds: SourceKind[]; label: string }> = [
+  { kinds: ["iso"], label: "ISO" },
+  { kinds: ["pid"], label: "P&ID" },
+  { kinds: ["pll"], label: "Line list" },
+  { kinds: ["client_spec"], label: "Client spec" },
+  { kinds: ["hookup"], label: "Hook-up" },
+  { kinds: ["legend"], label: "Legend" },
+];
+
+function DocumentStrip({
+  now,
+  comparisons,
+  state,
+  checkedAt,
+}: {
+  now: LineSource[];
+  comparisons: SourceComparison[];
+  state: "open" | "done" | "recheck";
+  checkedAt?: Date;
+}) {
+  const items = STRIP_KINDS.flatMap(({ kinds, label }) => {
+    const docs = now.filter((s) => kinds.includes(s.kind));
+    const moved = comparisons.find((c) => kinds.includes(c.kind) && CHANGED.has(c.status));
+    const current = [...new Set(docs.map(revLabel))];
+    const files = docs.map((d) => d.fileName).join("\n");
+
+    if (moved) {
+      const was = moved.was ? revLabel(moved.was) : checkedAt ? `before ${uploaded.format(checkedAt)}` : "earlier";
+      const to = moved.now ? revLabel(moved.now) : "removed";
+      const hint =
+        moved.status === "rowChanged"
+          ? "A new line list was issued and this line's row in it changed."
+          : `Checked at ${was}; ${to} has been issued since.`;
+      return [{ label, text: moved.status === "rowChanged" ? "row changed" : `${was} → ${to}`, changed: true, hint }];
+    }
+    if (docs.length === 0) return [];
+    // Never checked, but already revised: the first revision is the one it was
+    // issued against, and the current one has come after it.
+    const first =
+      state === "open"
+        ? docs
+            .flatMap((d) => (d.earlier ?? []).slice(0, 1))
+            .map((e) => e.revision ?? uploaded.format(new Date(e.uploadedAt)))
+            .find((rev) => !current.includes(rev))
+        : undefined;
+    if (first) {
+      return [{ label, text: `${first} → ${current.join(", ")}`, changed: true, hint: `${first} was issued first and never checked; ${current.join(", ")} has been issued since.` }];
+    }
+    return [{ label, text: current.join(", "), changed: false, hint: files }];
+  });
+
+  return (
+    <ul className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+      {items.map((item) =>
+        item.changed ? (
+          <li
+            key={item.label}
+            title={item.hint}
+            className="inline-flex items-center gap-1.5 rounded-full border border-warning-border bg-warning-soft px-2.5 py-0.5 font-medium text-warning"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-warning-solid" aria-hidden="true" />
+            <span className="text-foreground">{item.label}</span>
+            {item.text}
+          </li>
+        ) : (
+          <li key={item.label} title={item.hint} className="text-muted-foreground">
+            <span className="font-medium text-foreground/80">{item.label}</span> {item.text}
+          </li>
+        )
+      )}
+    </ul>
+  );
+}
+
 // Earlier revisions of this line, and -- the case that matters more -- a warning
 // when the revisions could NOT be read.
 //
@@ -70,7 +170,7 @@ const uploaded = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
 // showing an extra drawing beats hiding the real one -- but silently merging two
 // revisions' spools and BOM is exactly the confusion this feature exists to end,
 // so it must not be quiet about it.
-function SupersededDrawings({ projectId, line }: { projectId: string; line: IsoLine }) {
+function SupersededDrawings({ line, hrefOf }: { line: IsoLine; hrefOf: (documentId: string) => string }) {
   const multipleUnordered = !line.revisionKnown && line.documentIds.length > 1;
   if (line.superseded.length === 0 && !multipleUnordered) return null;
 
@@ -94,7 +194,7 @@ function SupersededDrawings({ projectId, line }: { projectId: string; line: IsoL
         {line.superseded.map((d) => (
           <li key={d.documentId}>
             <Link
-              href={`/projects/${projectId}/documents/${d.documentId}`}
+              href={hrefOf(d.documentId)}
               className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
             >
               <IconFile size={17} className="flex-none text-muted-foreground" />
@@ -279,6 +379,60 @@ function ContainersBody({ containers: c }: { containers: LineSummary["containers
   );
 }
 
+// ---- Pipe supports --------------------------------------------------------
+// Counted the way the line's error report counts them (lib/isoReport.ts): a
+// breach of the span standard is an error, a "check" is for a person to look
+// at, and a drawing whose supports have not been located yet is not judged.
+function SupportsBadges({ supports: s }: { supports: LineSummary["supports"] }) {
+  if (!s) return null;
+  if (s.docs.length === 0) return <Badge>No pipe in the BOM</Badge>;
+  const read = s.docs.filter((d) => d.read);
+  if (read.length === 0) return <Badge>Not read off the drawing yet</Badge>;
+  const sheets = read.flatMap((d) => d.sheets);
+  const problems = sheets.flatMap((sheet) => supportProblems(sheet));
+  const errors = problems.filter((p) => p.severity === "error").length;
+  const checks = problems.length - errors;
+  const located = sheets.reduce((n, sheet) => n + sheet.points.length, 0);
+  return (
+    <>
+      <Badge>{plural(located, "support")} on the drawing</Badge>
+      {errors === 0 ? (
+        <Badge tone="success" dot>
+          Within the span standard
+        </Badge>
+      ) : (
+        <Badge tone="danger" dot>
+          {plural(errors, "problem")}
+        </Badge>
+      )}
+      {checks > 0 && (
+        <Badge tone="warning" dot>
+          {checks} to check
+        </Badge>
+      )}
+      {read.length < s.docs.length && <Badge>{s.docs.length - read.length} drawing not read yet</Badge>}
+    </>
+  );
+}
+
+function SupportsBody({ supports: s }: { supports: LineSummary["supports"] }) {
+  if (!s) return <Note>{UNAVAILABLE}</Note>;
+  if (s.docs.length === 0) return <Note>This line&apos;s bill of material has no pipe, so there is nothing to support.</Note>;
+  return (
+    <Drawings
+      items={s.docs.map((d) => ({
+        key: d.id,
+        fileName: d.fileName,
+        body: d.read ? (
+          <SupportSheets sheets={d.sheets} />
+        ) : (
+          <Note>The BOM calls for supports, but they have not been located on this drawing yet, so the spans between them are not checked.</Note>
+        ),
+      }))}
+    />
+  );
+}
+
 // ---- ISO vs PLL -----------------------------------------------------------
 function PllBadges({ drawings }: { drawings: IsoDrawingChecks[] }) {
   if (drawings.every((d) => d.pll.state === "none")) return <Badge>No PLL yet</Badge>;
@@ -328,8 +482,22 @@ function PllBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
 }
 
 // ---- ISO vs P&ID ----------------------------------------------------------
-function PidBadges({ drawings }: { drawings: IsoDrawingChecks[] }) {
+function PidBadges({ drawings, upRev }: { drawings: IsoDrawingChecks[]; upRev?: string }) {
   if (drawings.every((d) => d.pid.state === "none")) return <Badge>No P&amp;ID yet</Badge>;
+  // Against a P&ID issued after the ISO, a difference is the ISO being behind, not
+  // wrong: one amber count of the P&ID's changes instead of red error badges.
+  if (upRev) {
+    const changes = most(drawings.map((d) => d.pid.routing.mismatch + d.pid.fittings.isoOnly + d.pid.fittings.pidOnly + d.pid.fittings.countMismatch));
+    return changes > 0 ? (
+      <Badge tone="warning" dot>
+        {`${plural(changes, "change")} in P&ID ${upRev} — ISO not revised yet`}
+      </Badge>
+    ) : (
+      <Badge tone="success" dot>
+        Matches P&amp;ID {upRev}
+      </Badge>
+    );
+  }
   if (drawings.some((d) => d.pid.state === "notFound")) {
     return (
       <Badge tone="danger" dot>
@@ -366,8 +534,58 @@ function PidBadges({ drawings }: { drawings: IsoDrawingChecks[] }) {
   );
 }
 
-function PidBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
+/** Which revisions the ISO vs P&ID comparison is between, and the choices of each. */
+interface PidContext {
+  isoChoices: Array<{ label: string; note?: string; href: string; active: boolean }>;
+  families: Array<{ name: string; choices: Array<{ label: string; note?: string; href: string; active: boolean }> }>;
+  /** Set when the P&ID compared was issued after the one the ISO was drawn against. */
+  upRev?: string;
+  baseline?: string;
+  baselineHref?: string;
+}
+
+function RevisionPicker({ context }: { context: PidContext }) {
+  const chip = (c: { label: string; note?: string; href: string; active: boolean }) => (
+    <Link key={c.href} href={c.href} scroll={false} className={`btn btn-xs ${c.active ? "btn-primary" : "btn-secondary"}`} aria-current={c.active ? "true" : undefined}>
+      {c.label}
+      {c.note && <span className="opacity-70">&middot; {c.note}</span>}
+    </Link>
+  );
   return (
+    <div className={`flex flex-col gap-2.5 rounded-lg border px-4 py-3 ${context.upRev ? "border-warning-border bg-warning-soft" : "bg-muted/30"}`}>
+      <p className="text-sm font-medium">Comparing these revisions</p>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="w-16 text-muted-foreground">ISO</span>
+        {context.isoChoices.map(chip)}
+      </div>
+      {context.families.map((f) => (
+        <div key={f.name} className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="w-16 text-muted-foreground" title={f.name}>
+            P&amp;ID
+          </span>
+          {f.choices.map(chip)}
+          <span className="break-all text-xs text-muted-foreground">{f.name}</span>
+        </div>
+      ))}
+      {context.upRev && (
+        <p className="text-xs">
+          <strong>This ISO was drawn against P&amp;ID {context.baseline}.</strong> P&amp;ID {context.upRev} was issued after it, so the
+          differences below are changes in the P&amp;ID that the ISO has not been revised to yet, not errors in the ISO.{" "}
+          {context.baselineHref && (
+            <Link href={context.baselineHref} scroll={false} className="link font-medium">
+              Compare with P&amp;ID {context.baseline} instead
+            </Link>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PidBody({ drawings, context }: { drawings: IsoDrawingChecks[]; context?: PidContext }) {
+  return (
+    <div className="flex flex-col gap-5">
+    {context && (context.families.some((f) => f.choices.length > 1) || context.isoChoices.length > 1) && <RevisionPicker context={context} />}
     <Drawings
       items={drawings.map((d) => ({
         key: d.documentId,
@@ -386,16 +604,21 @@ function PidBody({ drawings }: { drawings: IsoDrawingChecks[] }) {
               {d.pid.against.length > 0 && <p className="text-xs text-muted-foreground">Compared against {d.pid.against.join(", ")}</p>}
               <div>
                 <p className="eyebrow mb-3">Routing &amp; fittings</p>
-                <RoutingTable rows={d.pid.routingRows} />
+                <RoutingTable rows={d.pid.routingRows} upRev={context?.upRev} />
               </div>
               <div>
                 <p className="eyebrow mb-3">Fittings match</p>
-                {d.pid.fittingGroups.length > 0 ? <FittingsMatchGroups groups={d.pid.fittingGroups} /> : <Note>No in-line components to pair.</Note>}
+                {d.pid.fittingGroups.length > 0 ? (
+                  <FittingsMatchGroups groups={d.pid.fittingGroups} upRev={context?.upRev} />
+                ) : (
+                  <Note>No in-line components to pair.</Note>
+                )}
               </div>
             </div>
           ),
       }))}
     />
+    </div>
   );
 }
 
@@ -482,6 +705,8 @@ export async function LineReviewView({
   projectName,
   listTitle,
   requestedLine,
+  requestedDrawing,
+  requestedPid,
   links,
   canMark,
 }: {
@@ -496,6 +721,10 @@ export async function LineReviewView({
    */
   listTitle?: string;
   requestedLine: string | undefined;
+  /** An EARLIER revision of the line to show instead of the current one (`?rev=<documentId>`). */
+  requestedDrawing?: string;
+  /** A P&ID revision to compare against instead of the latest (`?pid=<documentId>`). */
+  requestedPid?: string;
   links: LineReviewLinks;
   /** Whether this person can mark a line done. Only a checker can; it is what counts as progress. */
   canMark: boolean;
@@ -506,10 +735,88 @@ export async function LineReviewView({
   // progress tables exist (see lib/progress.ts): the controls are then left off
   // rather than shown to fail.
   const progress = await progressOfProject(projectId);
-  const counts = countProgress(progress?.reviews ?? [], lines);
+  // Every check print in the project -- null until the table exists.
+  const prints = await checkPrintsOf(projectId);
+  // What each line's checks are based on now -- the ISO, its P&IDs, its line list
+  // row, its specs -- so a "Done" made against something since replaced shows as
+  // needing a re-check, here and on every line.
+  const sources = await sourcesOfLines(projectId, lines);
+  const counts = countProgress(progress?.reviews ?? [], lines, sources);
+
+  // Each line's state, and in a few words what changed where it needs a re-check.
+  const rows = lines.map((line) => {
+    const review = progress?.reviews.find((r) => r.lineKey === line.key);
+    const state = progress ? lineStateOf(review, line.revision, sources.get(line.key)) : "open";
+    const isoMoved = Boolean(state === "recheck" && review?.revision && line.revision && review.revision !== line.revision);
+    const now = sources.get(line.key) ?? [];
+    // Only a line still standing as done is compared: an open line has nothing
+    // to have changed since, and a re-check is what the comparison is for.
+    const comparisons = review && state !== "open" ? compareSources(review.basis, now, review.reviewedAt) : [];
+    // The check print out on the revision now in force -- a new revision starts at CP-01.
+    const lastPrint = printsOfRevision(prints ?? [], line).filter((p) => p.kind === "cp").pop();
+    return { line, review, state, isoMoved, comparisons, now, lastPrint };
+  });
 
   if (line) {
-    const summary = await summariseLine(projectId, line);
+    // An earlier revision is reviewed exactly as the current one is -- same cards,
+    // same checks -- just run on that drawing alone. Marking it done is not
+    // offered: progress belongs to the revision in force.
+    const earlier = requestedDrawing ? line.superseded.find((d) => d.documentId === requestedDrawing) : undefined;
+    const viewed: IsoLine = earlier
+      ? { ...line, documentIds: [earlier.documentId], current: [earlier], sheets: earlier.sheets, revision: earlier.revision, superseded: [] }
+      : line;
+    const currentHref = links.line(line.lineNumber);
+    const drawingHref = (documentId: string) => `${currentHref}&rev=${encodeURIComponent(documentId)}`;
+    const review = progress?.reviews.find((r) => r.lineKey === line.key);
+    // WHICH P&ID REVISION this ISO is compared against, and which it was drawn
+    // against. Each P&ID the line is on can be compared at any of its revisions
+    // (?pid=); the latest is the default. The "drawn against" revision is the one
+    // the line was checked against where that was recorded, otherwise the one in
+    // force when the ISO was uploaded. Comparing with a revision issued after it
+    // turns the differences into P&ID changes the ISO is behind on, not ISO errors.
+    const isoUploadedAt = viewed.current[0]?.uploadedAt;
+    const pidFamilies = (sources.get(line.key) ?? [])
+      .filter((s) => s.kind === "pid")
+      .map((cur) => {
+        const revisions = [...(cur.earlier ?? []), { documentId: cur.documentId, fileName: cur.fileName, revision: cur.revision, uploadedAt: cur.uploadedAt }];
+        const family = documentFamily("pid", cur.fileName);
+        const recorded = review?.basis?.find((b) => b.kind === "pid" && documentFamily("pid", b.fileName) === family);
+        const inForceAtIso = isoUploadedAt ? revisions.filter((r) => new Date(r.uploadedAt) <= isoUploadedAt).pop() : undefined;
+        const baseline = (recorded && revisions.find((r) => r.documentId === recorded.documentId)) ?? inForceAtIso ?? null;
+        const compared = revisions.find((r) => r.documentId === requestedPid) ?? revisions[revisions.length - 1];
+        const ahead = Boolean(baseline && compared.documentId !== baseline.documentId && new Date(compared.uploadedAt) > new Date(baseline.uploadedAt));
+        return { cur, revisions, baseline, compared, ahead };
+      });
+    const chosenPid = pidFamilies.some((f) => f.revisions.some((r) => r.documentId === requestedPid)) ? requestedPid : undefined;
+    const pidRevLabel = (r: { revision: string | null; uploadedAt: string }) => (r.revision ? `Rev ${r.revision}` : uploaded.format(new Date(r.uploadedAt)));
+    const aheadFamily = pidFamilies.find((f) => f.ahead);
+    const lineHref = (opts: { rev?: string; pid?: string }) =>
+      `${currentHref}${opts.rev ? `&rev=${encodeURIComponent(opts.rev)}` : ""}${opts.pid ? `&pid=${encodeURIComponent(opts.pid)}` : ""}`;
+    const pidContext: PidContext = {
+      isoChoices: [
+        { label: `REV ${line.revision ?? "?"}`, note: "latest", href: lineHref({ pid: chosenPid }), active: !earlier },
+        ...line.superseded.map((d) => ({ label: `REV ${d.revision ?? "?"}`, href: lineHref({ rev: d.documentId, pid: chosenPid }), active: earlier?.documentId === d.documentId })),
+      ],
+      families: pidFamilies.map((f) => ({
+        name: f.cur.fileName,
+        choices: f.revisions.map((r, i) => ({
+          label: pidRevLabel(r),
+          note: [i === f.revisions.length - 1 ? "latest" : "", f.baseline?.documentId === r.documentId ? "ISO drawn against" : ""].filter(Boolean).join(", "),
+          href: lineHref({ rev: earlier?.documentId, pid: r.documentId }),
+          active: f.compared.documentId === r.documentId,
+        })),
+      })),
+      upRev: aheadFamily ? pidRevLabel(aheadFamily.compared) : undefined,
+      baseline: aheadFamily?.baseline ? pidRevLabel(aheadFamily.baseline) : undefined,
+      baselineHref: aheadFamily?.baseline ? lineHref({ rev: earlier?.documentId, pid: aheadFamily.baseline.documentId }) : undefined,
+    };
+    const summary = await summariseLine(projectId, viewed, { pidChoice: chosenPid ? [chosenPid] : [] });
+    // The line's errors as the error report counts them -- what a check print
+    // records, and what must be zero for Final.
+    const errorCount = buildIsoReport(summary)?.totals.all ?? null;
+    const linePrints = printsOfLine(prints, line.key);
+    const revisionPrints = printsOfRevision(linePrints, line);
+    const next = prints !== null && errorCount !== null && !earlier ? nextStep(linePrints, line, errorCount) : undefined;
     const checks = summary.checks;
 
     return (
@@ -525,12 +832,16 @@ export async function LineReviewView({
                 <IconClipboard size={16} />
                 Error report
               </Link>
-              {progress ? (
+              {earlier ? null : progress ? (
                 <ReviewControl
                   projectId={projectId}
                   lineNumber={line.lineNumber}
                   review={progress.reviews.find((r) => r.lineKey === line.key)}
                   currentRevision={line.revision}
+                  currentSources={sources.get(line.key)}
+                  next={next}
+                  lastPrint={revisionPrints.filter((p) => p.kind === "cp").pop()}
+                  errorCount={errorCount}
                   readOnly={!canMark}
                 />
               ) : (
@@ -540,18 +851,58 @@ export async function LineReviewView({
           }
           meta={
             <>
-              {line.revision && (
-                <Badge tone="info" title="The revision printed in this drawing's title block">
-                  REV {line.revision}
+              {viewed.revision && (
+                <Badge tone={earlier ? "warning" : "info"} title="The revision printed in this drawing's title block">
+                  REV {viewed.revision}
+                  {earlier ? " · superseded" : ""}
                 </Badge>
               )}
-              <Badge>{plural(line.sheets, "sheet")}</Badge>
+              <Badge>{plural(viewed.sheets, "sheet")}</Badge>
               {summary.drawings.length > 1 && <Badge>{summary.drawings.length} drawings</Badge>}
             </>
           }
         />
 
-        <SupersededDrawings projectId={projectId} line={line} />
+        {earlier ? (
+          <Alert tone="warning">
+            <strong>
+              You are viewing REV {earlier.revision} ({earlier.fileName}), superseded by REV {line.revision}.
+            </strong>{" "}
+            These checks are for that earlier drawing only.{" "}
+            <Link href={currentHref} className="link font-medium">
+              Back to REV {line.revision}
+            </Link>
+          </Alert>
+        ) : (
+          <SupersededDrawings line={line} hrefOf={drawingHref} />
+        )}
+
+        {/* The first thing on the page when a done line has gone stale: who checked
+            it, at which revision, and what has been issued since -- then the cards
+            below to see the change, and the button to mark it done again. */}
+        {!earlier && review && lineStateOf(review, line.revision, sources.get(line.key)) === "recheck" && (
+          <Alert tone="warning">
+            <strong>
+              {review.reviewedByName ?? "A checker"} marked this line done
+              {review.revision ? ` at REV ${review.revision}` : ""} on {uploaded.format(review.reviewedAt)}
+              {review.revision && line.revision && review.revision !== line.revision
+                ? `, and REV ${line.revision} has been issued since.`
+                : `, and since then: ${changeSummary(compareSources(review.basis, sources.get(line.key) ?? [], review.reviewedAt)) || "a document it was based on changed"}.`}
+            </strong>{" "}
+            Look at what changed below, then mark it done again.
+          </Alert>
+        )}
+
+        {!earlier && prints !== null && <CheckPrints prints={revisionPrints} allPrints={linePrints} revision={line.revision} next={next} errorCount={errorCount} done={Boolean(review)} />}
+
+        {!earlier && review && (
+          <CheckedAgainst
+            projectId={projectId}
+            review={review}
+            comparisons={compareSources(review.basis, sources.get(line.key) ?? [], review.reviewedAt)}
+            drawingHref={drawingHref}
+          />
+        )}
 
         {/* Where "Mark as done" would be. Saying why it is absent is the whole
             point -- an empty header reads as "this app has no such feature". */}
@@ -596,9 +947,9 @@ export async function LineReviewView({
           icon={IconCompare}
           title="ISO vs P&ID"
           text="This line's routing and in-line components against the project's P&IDs."
-          badges={checks ? <PidBadges drawings={checks} /> : undefined}
+          badges={checks ? <PidBadges drawings={checks} upRev={pidContext.upRev} /> : undefined}
         >
-          {checks ? <PidBody drawings={checks} /> : <Note>{UNAVAILABLE}</Note>}
+          {checks ? <PidBody drawings={checks} context={pidContext} /> : <Note>{UNAVAILABLE}</Note>}
         </CollapsibleCard>
 
         <CollapsibleCard
@@ -627,6 +978,15 @@ export async function LineReviewView({
         >
           <ContainersBody containers={summary.containers} />
         </CollapsibleCard>
+
+        <CollapsibleCard
+          icon={IconSupport}
+          title="Pipe supports"
+          text="Whether the gaps between this line's supports are within the span standard for its pipe."
+          badges={<SupportsBadges supports={summary.supports} />}
+        >
+          <SupportsBody supports={summary.supports} />
+        </CollapsibleCard>
       </div>
     );
   }
@@ -651,22 +1011,33 @@ export async function LineReviewView({
           absent belongs here too, not only inside a line. */}
       {!progress && lines.length > 0 && <MarkingNotSetUp canMark={canMark} />}
 
-      {/* How far through the project the checkers are -- against the total Document
-          Control stated, or, if it has not stated one, the lines uploaded so far.
-          A line in re-check is NOT counted as checked: it was checked against a
-          drawing that has since been replaced, and a bar that counts it reads as
-          finished work that nobody has done. It is reported beside the bar
-          instead, so the number does not merely drop with no explanation. */}
+      {/* How far through the project the checkers are, against the line list's
+          total (or the lines uploaded so far). A line needing a re-check is still
+          done -- it is drawn amber in the bar rather than taken out of it. */}
       {progress && lines.length > 0 && (
         <div className="card flex flex-col gap-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="text-sm font-medium">Progress</p>
-            <p className="text-sm text-muted-foreground">
-              {counts.done} of {progress.total ?? lines.length} {progress.total == null ? "uploaded " : ""}lines checked
-              {counts.recheck > 0 && <span className="text-warning"> &middot; {counts.recheck} need re-checking</span>}
+            <p className="text-sm tabular-nums text-muted-foreground">
+              <span className="font-semibold text-foreground">{counts.done}</span> of {progress.total ?? lines.length} lines checked
+              {progress.lineList && <span title={`Counted from ${progress.lineList.fileName}`}> &middot; from the line list</span>}
             </p>
           </div>
-          <ProgressBar value={counts.done} max={progress.total ?? lines.length} label="Lines checked" />
+          <ProgressBar value={counts.done} max={progress.total ?? lines.length} recheck={counts.recheck} label="Lines checked" />
+          <p className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-success-solid" aria-hidden="true" />
+              {counts.done - counts.recheck} done
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-warning-solid" aria-hidden="true" />
+              {counts.recheck} need re-check
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+              {Math.max(0, (progress.total ?? lines.length) - counts.done)} not started
+            </span>
+          </p>
         </div>
       )}
 
@@ -683,40 +1054,58 @@ export async function LineReviewView({
               Line numbers <span className="font-normal text-muted-foreground">({lines.length})</span>
             </h2>
           </div>
+          {/* One row per line: the number and its ISO revision, the documents it is
+              checked against underneath, and where it stands on the right. A line
+              done against something since revised carries an amber edge, and the
+              document that moved is the only thing in its strip shown in colour. */}
           <ul className="divide-y divide-border">
-            {lines.map((l) => {
-              // A line checked against a superseded drawing must NOT read "Done"
-              // here -- the list is what a checker works down, and a green tick
-              // is exactly what stops them opening it.
-              const state = progress ? lineStateOf(progress.reviews.find((r) => r.lineKey === l.key), l.revision) : "open";
-              return (
-                <li key={l.key}>
-                  <Link
-                    href={links.line(l.lineNumber)}
-                    className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/60"
-                  >
-                    <IconFile size={17} className="flex-none text-muted-foreground" />
-                    <span className="break-all font-mono text-[0.8125rem] font-medium">{l.lineNumber}</span>
-                    {l.revision && <Badge tone="info">REV {l.revision}</Badge>}
-                    <Badge>{plural(l.sheets, "sheet")}</Badge>
-                    {state === "done" && (
-                      <Badge tone="success" dot>
-                        Done
-                      </Badge>
-                    )}
-                    {state === "recheck" && (
-                      <Badge tone="warning" dot title="Checked against an earlier revision of this drawing">
-                        Re-check
-                      </Badge>
-                    )}
-                    <IconChevronRight
-                      size={16}
-                      className="ml-auto flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5"
-                    />
-                  </Link>
-                </li>
-              );
-            })}
+            {rows.map(({ line: l, review: lineReview, state, comparisons, now, lastPrint }) => (
+              <li key={l.key} className={`relative ${state === "recheck" ? "bg-warning-soft/40" : ""}`}>
+                {state === "recheck" && <span className="absolute inset-y-0 left-0 w-1 bg-warning-solid" aria-hidden="true" />}
+                <Link
+                  href={links.line(l.lineNumber)}
+                  className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 px-5 py-3.5 transition-colors hover:bg-muted/50"
+                >
+                  <div className="min-w-0">
+                    <p className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                      <span className="break-all font-mono text-[0.8125rem] font-semibold text-foreground group-hover:text-link">{l.lineNumber}</span>
+                      <span className="text-xs text-muted-foreground">
+                        REV {l.revision ?? "—"} &middot; {plural(l.sheets, "sheet")}
+                      </span>
+                    </p>
+                    <DocumentStrip now={now} comparisons={comparisons} state={state} checkedAt={lineReview?.reviewedAt} />
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex flex-col items-end gap-0.5 text-right">
+                      {state === "open" &&
+                        (lastPrint ? (
+                          <Badge tone="info" dot title="Sent back to the designer; the line is done once it is issued Final.">
+                            {checkPrintLabel(lastPrint)} &middot; with designer
+                          </Badge>
+                        ) : (
+                          <Badge>Not started</Badge>
+                        ))}
+                      {state === "done" && (
+                        <Badge tone="success" dot>
+                          Done
+                        </Badge>
+                      )}
+                      {state === "recheck" && (
+                        <Badge tone="warning" dot title="Marked done, but a document it was checked against has been revised since">
+                          Re-check
+                        </Badge>
+                      )}
+                      {lineReview && (
+                        <span className="text-[0.6875rem] text-muted-foreground">
+                          {lineReview.reviewedByName ?? "Checked"} &middot; {uploaded.format(lineReview.reviewedAt)}
+                        </span>
+                      )}
+                    </div>
+                    <IconChevronRight size={16} className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                  </div>
+                </Link>
+              </li>
+            ))}
           </ul>
         </section>
       )}

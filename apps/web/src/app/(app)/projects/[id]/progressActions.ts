@@ -2,9 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { and, eq } from "drizzle-orm";
-import { lineReviews, projectLineTotals } from "@easy/db";
+import { lineCheckPrints, lineReviews, projectLineTotals } from "@easy/db";
 import { getDb } from "@/lib/db";
+import { checkPrintsOf, MAX_CHECK_PRINTS, nextStep } from "@/lib/checkPrints";
+import { buildIsoReport } from "@/lib/isoReport";
 import { findLine, isoLinesOf, lineKey } from "@/lib/isoLines";
+import { sourcesOfLines } from "@/lib/lineSources";
+import { summariseLine } from "@/lib/lineSummary";
 import { getSessionUser } from "@/lib/session";
 import { requireProjectMembership } from "./actions";
 
@@ -86,6 +90,9 @@ export async function markLineReviewed(projectId: string, lineNumber: string) {
     reviewedByName: session.name ?? session.email,
     reviewedAt: new Date(),
     revision: line.revision,
+    // Everything the check was based on, so a later revision of any of it -- not
+    // only of the ISO -- puts the line back to re-check.
+    basis: (await sourcesOfLines(projectId, [line])).get(line.key) ?? [],
   };
 
   await getDb()
@@ -93,6 +100,69 @@ export async function markLineReviewed(projectId: string, lineNumber: string) {
     .values({ projectId, lineKey: line.key, lineNumber: line.lineNumber, ...review })
     .onConflictDoUpdate({ target: [lineReviews.projectId, lineReviews.lineKey], set: review });
   refresh(projectId);
+}
+
+// ---- Check prints ----------------------------------------------------------
+//
+// The error count is worked out HERE, from the same report the designer is sent,
+// not taken from the page: the page can be stale, and Final on a line that has
+// gained an error would be a sign-off nobody checked.
+
+async function lineErrorCount(projectId: string, line: NonNullable<ReturnType<typeof findLine>>): Promise<number> {
+  const report = buildIsoReport(await summariseLine(projectId, line));
+  if (!report) throw new Error("This line's checks could not be run, so it cannot be issued.");
+  return report.totals.all;
+}
+
+async function recordCheckPrint(
+  projectId: string,
+  line: NonNullable<ReturnType<typeof findLine>>,
+  session: Awaited<ReturnType<typeof requireSession>>,
+  print: { kind: "cp" | "final"; seq: number; errorCount: number }
+) {
+  await getDb()
+    .insert(lineCheckPrints)
+    .values({
+      projectId,
+      lineKey: line.key,
+      lineNumber: line.lineNumber,
+      ...print,
+      isoRevision: line.revision,
+      isoDocumentIds: line.documentIds,
+      issuedBy: session.id,
+      issuedByName: session.name ?? session.email,
+    });
+}
+
+// Issue the next check print -- CP-01 .. CP-03 -- on a line that still has errors.
+export async function issueCheckPrint(projectId: string, lineNumber: string) {
+  const session = await requireSession();
+  if (session.isDcc) throw new Error(CHECKERS_ONLY);
+  const line = findLine(await isoLinesOf(projectId), lineNumber);
+  if (!line) throw new Error("That line is not in this project.");
+
+  const errorCount = await lineErrorCount(projectId, line);
+  const next = nextStep((await checkPrintsOf(projectId)) ?? [], line, errorCount);
+  if (next.step === "final") throw new Error("This line has no errors -- issue it Final instead.");
+  if (next.step === "waiting") throw new Error(`${next.label} was already issued on this ISO revision. Wait for the revised ISO.`);
+  if (next.step === "blocked") throw new Error(`All ${MAX_CHECK_PRINTS} check prints have been issued. Final needs the remaining errors fixed.`);
+
+  await recordCheckPrint(projectId, line, session, { kind: "cp", seq: Number(next.label.slice(3)), errorCount });
+  refresh(projectId);
+}
+
+// Issue the line Final: only with zero errors, and it marks the line done.
+export async function issueFinal(projectId: string, lineNumber: string) {
+  const session = await requireSession();
+  if (session.isDcc) throw new Error(CHECKERS_ONLY);
+  const line = findLine(await isoLinesOf(projectId), lineNumber);
+  if (!line) throw new Error("That line is not in this project.");
+
+  const errorCount = await lineErrorCount(projectId, line);
+  if (errorCount > 0) throw new Error(`Final needs zero errors; this line still has ${errorCount}.`);
+
+  await recordCheckPrint(projectId, line, session, { kind: "final", seq: 0, errorCount: 0 });
+  await markLineReviewed(projectId, lineNumber);
 }
 
 // Take a line back out of "done". Matched on the number alone, so a line whose

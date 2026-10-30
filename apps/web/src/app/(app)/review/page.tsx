@@ -31,7 +31,7 @@ export const metadata: Metadata = { title: "ISO checking" };
 //
 // The route stays `/review`: it is the same page, and a rename would break every
 // link already saved to it.
-export default async function ReviewPage({ searchParams }: { searchParams: Promise<{ project?: string; line?: string }> }) {
+export default async function ReviewPage({ searchParams }: { searchParams: Promise<{ project?: string; line?: string; rev?: string; pid?: string }> }) {
   const params = await searchParams;
   const session = await getSessionUser();
   if (!session) return null;
@@ -77,6 +77,8 @@ export default async function ReviewPage({ searchParams }: { searchParams: Promi
         projectName={project.name}
         listTitle="ISO checking"
         requestedLine={params.line}
+        requestedDrawing={params.rev}
+        requestedPid={params.pid}
         canMark={false}
         links={{
           list: `/review?project=${project.id}`,

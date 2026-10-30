@@ -15,6 +15,7 @@ export * from "./weldTypes";
 export * from "./isoAxes";
 export * from "./spoolEnvelope";
 export * from "./spoolShape";
+export * from "./pipeSpan";
 export * from "./spoolTagClash";
 export * from "./revisions";
 export * from "./pidCompare";

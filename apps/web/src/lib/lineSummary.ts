@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { buildSpoolSheets, spoolingTotals, type SpoolSheet } from "@/lib/spooling";
 import { buildContainerSpools, type ContainerSpool } from "@/lib/containers";
 import { summariseFits, type FitSummary } from "@/lib/containerFit";
+import { buildSupportSheets, type SupportSheet } from "@/lib/supports";
 import { loadHookupSheets, verifyIsoHookup, type HookupVerification } from "@/lib/hookupVerification";
 import { buildIsoChecks, type IsoChecks } from "@/lib/isoChecks";
 import { lineKey, type IsoLine } from "@/lib/isoLines";
@@ -106,6 +107,15 @@ export interface LineSummary {
   containers: {
     fit: FitSummary;
     docs: Array<{ id: string; fileName: string; spools: ContainerSpool[] }>;
+  } | null;
+  supports: {
+    /**
+     * Per document, as the pipe-supports page lists them. `read` is false where
+     * the BOM calls for supports but none has been located on the drawing yet:
+     * the support read is a separate step (scripts/export-pipe-supports.ts), and
+     * a sheet it has not run on would otherwise report its pipe as unsupported.
+     */
+    docs: Array<{ id: string; fileName: string; sheets: SupportSheet[]; read: boolean }>;
   } | null;
   hookup: {
     /** Typicals extracted from the project's hook-up drawings. None means nothing can be checked. */
@@ -221,7 +231,7 @@ function summariseDrawingChecks(doc: { id: string; fileName: string }, checks: I
   return { documentId: doc.id, fileName: doc.fileName, pll, pid, bom, mto };
 }
 
-export async function summariseLine(projectId: string, line: IsoLine): Promise<LineSummary> {
+export async function summariseLine(projectId: string, line: IsoLine, options: { pidChoice?: string[] } = {}): Promise<LineSummary> {
   const db = getDb();
 
   const projectDocs = await db
@@ -263,6 +273,24 @@ export async function summariseLine(projectId: string, line: IsoLine): Promise<L
     console.error("Line summary: could not read the spools for", line.lineNumber, err);
   }
 
+  // Pipe supports, off the same tags. Its own try, so a support fault cannot
+  // take the spooling and container answers down with it.
+  let supports: LineSummary["supports"] = null;
+  try {
+    const supportDocs: NonNullable<LineSummary["supports"]>["docs"] = [];
+    for (const doc of isoDocs) {
+      const tags = await tagsOf(doc.id);
+      const rows = tags.map((t) => ({ id: t.id, tagType: t.tagType, tagNumber: t.tagNumber, sourcePage: t.sourcePage, attributes: t.attributes }));
+      const sheets = buildSupportSheets(rows).filter((s) => s.lineNumber != null && lineKey(s.lineNumber) === line.key);
+      if (sheets.length === 0) continue;
+      const read = rows.some((t) => t.tagType === "pipe_support") || !sheets.some((s) => s.items.length > 0);
+      supportDocs.push({ id: doc.id, fileName: doc.fileName, sheets, read });
+    }
+    supports = { docs: supportDocs };
+  } catch (err) {
+    console.error("Line summary: could not read the supports for", line.lineNumber, err);
+  }
+
   let hookup: LineSummary["hookup"] = null;
   try {
     const typicals = await loadHookupSheets(projectDocs.filter((d) => d.docType === "hookup").map((d) => d.id));
@@ -296,7 +324,7 @@ export async function summariseLine(projectId: string, line: IsoLine): Promise<L
   try {
     checks = [];
     for (const doc of isoDocs) {
-      const isoChecks = await buildIsoChecks({ projectId, docId: doc.id, document: doc, tags: await tagsOf(doc.id) });
+      const isoChecks = await buildIsoChecks({ projectId, docId: doc.id, document: doc, tags: await tagsOf(doc.id), pidChoice: options.pidChoice });
       checks.push(summariseDrawingChecks(doc, isoChecks, line.key));
     }
   } catch (err) {
@@ -304,5 +332,5 @@ export async function summariseLine(projectId: string, line: IsoLine): Promise<L
     console.error("Line summary: could not run the ISO checks for", line.lineNumber, err);
   }
 
-  return { drawings: isoDocs.map((d) => ({ id: d.id, fileName: d.fileName })), spooling, containers, hookup, checks };
+  return { drawings: isoDocs.map((d) => ({ id: d.id, fileName: d.fileName })), spooling, containers, supports, hookup, checks };
 }

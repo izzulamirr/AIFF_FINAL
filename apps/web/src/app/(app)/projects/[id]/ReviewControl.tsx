@@ -1,7 +1,9 @@
 import { Alert, Badge } from "@/components/ui/primitives";
 import { IconCheckCircle } from "@/components/ui/icons";
 import { lineStateOf, type LineReview } from "@/lib/progress";
-import { markLineReviewed, reopenLine } from "./progressActions";
+import { changeSummary, compareSources, type LineSource } from "@/lib/lineSources";
+import { checkPrintLabel, type CheckPrint, type NextStep } from "@/lib/checkPrints";
+import { issueCheckPrint, issueFinal, markLineReviewed, reopenLine } from "./progressActions";
 
 const when = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
@@ -67,6 +69,10 @@ export function ReviewControl({
   lineNumber,
   review,
   currentRevision,
+  currentSources,
+  next,
+  lastPrint,
+  errorCount,
   readOnly = false,
 }: {
   projectId: string;
@@ -74,22 +80,81 @@ export function ReviewControl({
   review: LineReview | undefined;
   /** The revision in force, to judge the review against. */
   currentRevision: string | null;
+  /** What the line is based on now, to judge the review's recorded sources against. */
+  currentSources?: LineSource[];
+  /** The line's next check-print step. Absent where check prints are not set up: plain "Mark as done" then. */
+  next?: NextStep;
+  /** The line's most recent check print, if any. */
+  lastPrint?: CheckPrint;
+  /** Errors on the line now, as the error report counts them. */
+  errorCount?: number | null;
   readOnly?: boolean;
 }) {
-  const state = lineStateOf(review, currentRevision);
+  const state = lineStateOf(review, currentRevision, currentSources);
 
-  const mark = (label: string) => (
-    <form action={markLineReviewed.bind(null, projectId, lineNumber)}>
-      <button type="submit" className="btn btn-primary">
-        <IconCheckCircle size={16} />
-        {label}
-      </button>
-    </form>
-  );
+  // The next step in the check-print cycle: CP-01..03 while errors remain, Final
+  // (which marks the line done) once there are none.
+  const errors = errorCount ?? 0;
+  const mark = (fallback: string) => {
+    if (!next) {
+      return (
+        <form action={markLineReviewed.bind(null, projectId, lineNumber)}>
+          <button type="submit" className="btn btn-primary">
+            <IconCheckCircle size={16} />
+            {fallback}
+          </button>
+        </form>
+      );
+    }
+    if (next.step === "final") {
+      return (
+        <form action={issueFinal.bind(null, projectId, lineNumber)}>
+          <button type="submit" className="btn btn-primary" title="No errors on this line. Issuing Final marks it done.">
+            <IconCheckCircle size={16} />
+            Issue Final
+          </button>
+        </form>
+      );
+    }
+    if (next.step === "cp") {
+      return (
+        <form action={issueCheckPrint.bind(null, projectId, lineNumber)}>
+          <button type="submit" className="btn btn-secondary" title={`Send the ISO back to the designer with its ${errors} error${errors === 1 ? "" : "s"}.`}>
+            Issue {next.label}
+          </button>
+        </form>
+      );
+    }
+    if (next.step === "waiting") {
+      return (
+        <Badge tone="info" dot title="The next check print can be issued once the revised ISO is uploaded.">
+          {next.label} with designer &middot; waiting for revised ISO
+        </Badge>
+      );
+    }
+    return (
+      <Badge tone="danger" dot title="All three check prints have been issued. Final is only possible with zero errors.">
+        {next.label} issued &middot; fix {errors} error{errors === 1 ? "" : "s"} for Final
+      </Badge>
+    );
+  };
 
   if (state === "open") {
-    const status = <Badge>Not marked done by a checker yet</Badge>;
-    return readOnly ? status : mark("Mark as done");
+    const status = lastPrint ? (
+      <Badge tone="info" dot title={`Issued ${when.format(lastPrint.issuedAt)}${lastPrint.issuedByName ? ` by ${lastPrint.issuedByName}` : ""}`}>
+        {checkPrintLabel(lastPrint)} issued &middot; {lastPrint.errorCount} error{lastPrint.errorCount === 1 ? "" : "s"}
+      </Badge>
+    ) : (
+      <Badge>Not checked yet</Badge>
+    );
+    return readOnly ? (
+      status
+    ) : (
+      <div className="flex flex-wrap items-center gap-3">
+        {lastPrint && status}
+        {mark("Mark as done")}
+      </div>
+    );
   }
 
   // Non-null from here: only a review can produce "done" or "recheck".
@@ -100,17 +165,38 @@ export function ReviewControl({
     // The revision is named on BOTH sides. "Needs re-checking" alone invites the
     // question this badge exists to answer -- which drawing was checked, and
     // which is in front of you now.
+    // Said in plain words: WHAT changed, not just that something did. The ISO's
+    // own revision comes first where it moved; otherwise the other documents.
+    const isoMoved = checked.revision && currentRevision && checked.revision !== currentRevision;
+    const reason = isoMoved
+      ? `ISO was Rev ${checked.revision}, now Rev ${currentRevision}`
+      : currentSources
+        ? changeSummary(compareSources(checked.basis, currentSources, checked.reviewedAt))
+        : "";
+    // It stays DONE -- the check was made, by this person, on this day -- and the
+    // warning sits beside it saying what has changed since.
     const status = (
-      <Badge tone="warning" dot title={`Checked${who} on ${when.format(checked.reviewedAt)}, against rev ${checked.revision}`}>
-        Re-check &middot; checked at rev {checked.revision}, now rev {currentRevision}
-      </Badge>
+      <>
+        <Badge tone="success" dot>
+          Done{who} &middot; {when.format(checked.reviewedAt)}
+          {checked.revision ? ` · rev ${checked.revision}` : ""}
+        </Badge>
+        <Badge tone="warning" dot title="A document this check was based on has changed since it was marked done">
+          Needs re-check{reason ? ` · ${reason}` : ""}
+        </Badge>
+      </>
     );
     return readOnly ? (
-      status
+      <div className="flex flex-wrap items-center gap-2">{status}</div>
     ) : (
       <div className="flex flex-wrap items-center gap-3">
         {status}
-        {mark(`Mark as done at rev ${currentRevision}`)}
+        {mark("Mark as done again")}
+        <form action={reopenLine.bind(null, projectId, lineNumber)}>
+          <button type="submit" className="btn btn-secondary btn-sm">
+            Reopen
+          </button>
+        </form>
       </div>
     );
   }

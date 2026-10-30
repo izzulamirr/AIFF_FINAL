@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { inArray } from "drizzle-orm";
 import { documents, extractionJobs } from "@easy/db";
+import { resolveDocumentVersions, type DocumentVersion } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { activeOrganization, activeProjectsOf } from "@/lib/access";
@@ -28,7 +29,8 @@ export const metadata: Metadata = { title: "Overall libraries" };
 // Read-only, same as before: uploading, deleting and moving a document stay
 // on the page each file actually belongs to (a project's own page, or its
 // Library page).
-export default async function OverallLibrariesPage() {
+export default async function OverallLibrariesPage({ searchParams }: { searchParams: Promise<{ type?: string }> }) {
+  const { type: requestedType } = await searchParams;
   const session = await getSessionUser();
   if (!session) return null;
   if (!session.isDcc) redirect("/clients");
@@ -65,6 +67,13 @@ export default async function OverallLibrariesPage() {
     if (!existing || job.createdAt > existing.createdAt) latestJobByDoc.set(job.documentId, job);
   }
 
+  // Revisions per PROJECT: two projects can each hold a file of the same name,
+  // and those are two documents, not one replacing the other.
+  const versions = new Map<string, DocumentVersion>();
+  for (const projectId of projectIds) {
+    for (const [docId, v] of resolveDocumentVersions(referenceDocRows.filter((d) => d.projectId === projectId))) versions.set(docId, v);
+  }
+
   const referenceDocs: ReferenceDocEntry[] = referenceDocRows.map((d) => ({
     id: d.id,
     fileName: d.fileName,
@@ -73,6 +82,8 @@ export default async function OverallLibrariesPage() {
     projectId: d.projectId,
     projectName: projectNameOf.get(d.projectId) ?? "Unknown project",
     job: latestJobByDoc.get(d.id),
+    uploadedAt: d.uploadedAt,
+    version: versions.get(d.id) ?? null,
   }));
 
   // Null means the library tables do not exist yet (see lib/library.ts).
@@ -89,7 +100,7 @@ export default async function OverallLibrariesPage() {
         meta={<Badge>{client.name}</Badge>}
       />
 
-      <ReferenceLibrarySection clientName={client.name} docs={referenceDocs} />
+      <ReferenceLibrarySection clientName={client.name} docs={referenceDocs} activeType={requestedType ?? null} basePath="/dashboard/libraries" />
       <KeptLibrarySection clientName={client.name} items={libraryItemEntries} />
     </div>
   );

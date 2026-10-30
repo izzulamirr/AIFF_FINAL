@@ -5,9 +5,10 @@ import { documents, extractionResults, extractedTags, projects } from "@easy/db"
 import { normalizeTagNumber } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { canReadOrganization } from "@/lib/access";
-import { labelForDocument } from "@/lib/docTypes";
+import { kindOfDocument, labelForDocument } from "@/lib/docTypes";
 import { getSessionUser } from "@/lib/session";
 import { buildIsoChecks } from "@/lib/isoChecks";
+import { isoLinesOf } from "@/lib/isoLines";
 import type { ValveMatchGroup } from "@/lib/verifyIso";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { BomSheets, DesignBasisTable, FittingsMatchGroups, RoutingTable } from "@/components/checks/IsoCheckTables";
@@ -73,6 +74,22 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
   const tagGroups: TagGroup[] = topLevelTags.map((t) => ({ tag: toRow(t), accessories: (accessoriesByParent.get(t.id) ?? []).map(toRow) }));
 
   const isIso = document.docType === "iso";
+
+  // An ISO is reviewed in ISO checking, line by line -- that is where its checks
+  // are laid out, so opening the drawing goes there rather than to a second,
+  // older rendering of the same checks. A superseded revision opens as itself
+  // (`&rev=`), with a banner saying what replaced it.
+  if (isIso) {
+    const isoLine = (await isoLinesOf(projectId)).find(
+      (l) => l.documentIds.includes(docId) || l.superseded.some((d) => d.documentId === docId)
+    );
+    if (isoLine) {
+      const lineHref = session.isDcc
+        ? `/review?project=${projectId}&line=${encodeURIComponent(isoLine.lineNumber)}`
+        : `/projects/${projectId}?feature=iso&line=${encodeURIComponent(isoLine.lineNumber)}`;
+      redirect(isoLine.documentIds.includes(docId) ? lineHref : `${lineHref}&rev=${docId}`);
+    }
+  }
   // The ISO's cross-document checks -- design basis against the PLL, routing and
   // fittings against the P&IDs, and the BOM by spec -- are in lib/isoChecks.ts,
   // shared with a line's summary so the two cannot disagree.
@@ -86,6 +103,17 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
   // classes/[classCode]/page.tsx.
   const isSpecSheet = document.docType === "spec_sheet";
   const specClassTags = isSpecSheet ? tags.filter((t) => t.tagType === "spec_class") : [];
+
+  // A client spec is only ever opened to compare it with the admin item list, so
+  // it goes straight to that comparison rather than to its raw extracted rows: the
+  // class page for a one-class spec, the Pipe specs list to choose from otherwise.
+  if (isSpecSheet && kindOfDocument(document.docType, document.fileName)?.key === "client_spec") {
+    redirect(
+      specClassTags.length === 1
+        ? `/projects/${projectId}/documents/${docId}/classes/${encodeURIComponent(specClassTags[0].tagNumber)}`
+        : `/projects/${projectId}/specs`
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">

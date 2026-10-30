@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { and, eq, inArray } from "drizzle-orm";
 import { documentPages, documents, extractedTags, projects } from "@easy/db";
+import { currentDocuments } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import { canReadOrganization } from "@/lib/access";
 import { getSessionUser } from "@/lib/session";
@@ -34,8 +35,8 @@ export default async function ProjectSpecsPage({ params }: { params: Promise<{ i
 
   const docs = await db.select().from(documents).where(eq(documents.projectId, id));
   const specDocs = docs.filter((d) => d.docType === "spec_sheet");
-  const clientDocs = specDocs.filter((d) => kindOfDocument(d.docType, d.fileName)?.key === "client_spec");
-  const adminDocs = specDocs.filter((d) => kindOfDocument(d.docType, d.fileName)?.key === "admin_spec");
+  const clientDocs = currentDocuments(specDocs.filter((d) => kindOfDocument(d.docType, d.fileName)?.key === "client_spec"));
+  const adminDocs = currentDocuments(specDocs.filter((d) => kindOfDocument(d.docType, d.fileName)?.key === "admin_spec"));
 
   // One entry per class: where the client spec has it, and how much of it was read. More
   // than one upload can hold the same class; the richer reading wins, as everywhere else.

@@ -23,8 +23,7 @@ import { isoSpecClasses } from "@/lib/verifyIso";
 import { crossCheckBomItem, resolveBomItemSpecClass, normalizeBomSpecClass, BOM_STATUS_TONE, type BomCrossCheckResult } from "@/lib/verifyBomCrossCheck";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert, Badge, EmptyState } from "@/components/ui/primitives";
-import { IconAlert, IconChevronDown, IconFile } from "@/components/ui/icons";
-import { recheckClassAction } from "./actions";
+import { IconChevronDown, IconFile } from "@/components/ui/icons";
 import { AdminMatchesTable, type AdminMatchRow } from "./AdminMatchesTable";
 
 // Ported from the sibling AIFF_LATEST project -- checking a client spec_sheet's
@@ -374,22 +373,15 @@ export default async function ClassDetailPage({
   const tempRange = typeof attrs.temp_range === "string" && attrs.temp_range ? attrs.temp_range : "-";
   const ends = typeof attrs.ends === "string" && attrs.ends ? attrs.ends : "-";
 
-  const warnings = [
-    ...((attrs.band_validation_issues as string[] | undefined) ?? []),
-    ...((attrs.notes_validation_issues as string[] | undefined) ?? []),
-  ];
-
   const isoFileName = isoOptions.find((d) => d.id === isoDocId)?.fileName;
 
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
         title={<span className="break-all">Class Detail: {classTag.tagNumber}</span>}
-        back={
-          session.isDcc
-            ? { href: `/projects/${projectId}/documents/${docId}`, label: "Back to spec sheet" }
-            : { href: `/projects/${projectId}/specs`, label: "Pipe specs" }
-        }
+        // Back to the list of specs to choose from -- the spec sheet's own page
+        // now forwards to this one, so linking there would bounce straight back.
+        back={{ href: `/projects/${projectId}/specs`, label: "Pipe specs" }}
         description={headerLine || undefined}
         meta={
           <>
@@ -399,34 +391,6 @@ export default async function ClassDetailPage({
           </>
         }
       />
-
-      {warnings.length > 0 && (
-        <details className="card card-flush card-warning group">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-2.5 text-sm font-medium [&::-webkit-details-marker]:hidden">
-            <span className="flex items-center gap-2">
-              <IconAlert size={16} />
-              {plural(warnings.length, "extraction warning")} &mdash; re-verify against the source page
-            </span>
-            <IconChevronDown size={16} className="flex-none transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="border-t p-4">
-            {session.isDcc && (
-              <form action={recheckClassAction.bind(null, docId, classTag.tagNumber)} className="flex flex-wrap items-center gap-3">
-                <button className="btn btn-secondary btn-sm">Recheck extracted data</button>
-                <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-                  Re-sorts every category into true ascending size order and re-runs the overlap/notes checks on that corrected data. No AI
-                  call &mdash; gap checks against the source page still need a full re-extraction.
-                </p>
-              </form>
-            )}
-            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-              {warnings.map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ul>
-          </div>
-        </details>
-      )}
 
       {/* The two documents this page compares against, in ONE row. It was two
           cards with a form each, every one carrying hidden fields to preserve

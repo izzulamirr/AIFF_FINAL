@@ -27,7 +27,8 @@ export interface BoardData {
 }
 
 const v = (name: string) => `var(--${name})`;
-const PALETTE = [v("primary"), v("info-solid"), v("success-solid"), v("warning-solid"), v("danger-solid"), "#8b5cf6"];
+// One colour per check in CHECK_LABEL; a repeat would make two slices read as one.
+const PALETTE = [v("primary"), v("info-solid"), v("success-solid"), v("warning-solid"), v("danger-solid"), "#8b5cf6", "#14b8a6"];
 const fill = (color: string): CSSProperties => ({ fill: color });
 const stroke = (color: string): CSSProperties => ({ stroke: color });
 const gridStyle: CSSProperties = { stroke: v("border") };

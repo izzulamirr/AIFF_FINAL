@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { Alert, Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
+import { Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
 import { IconDownload, IconFile, IconLibrary } from "@/components/ui/icons";
 import { LIBRARY_UPLOAD_KINDS, labelForDocument } from "@/lib/docTypes";
+import type { DocumentVersion } from "@easy/shared";
 import { CATEGORY_LABEL, LIBRARY_CATEGORIES, isLibraryCategory, type LibraryItem } from "@/lib/library";
 
 // Every project's reference, in one place, GROUPED BY TYPE -- the roll-up the
@@ -35,6 +36,9 @@ export interface ReferenceDocEntry {
   job:
     | { status: string; progressPhase: string | null; progressCurrent: number | null; progressTotal: number | null; errorMessage: string | null }
     | undefined;
+  uploadedAt: Date;
+  /** Revision tracking: which upload is in force. Null where it was not worked out. */
+  version: DocumentVersion | null;
 }
 
 export interface LibraryItemEntry extends LibraryItem {
@@ -69,8 +73,35 @@ function groupInOrder<T>(items: T[], keyOf: (item: T) => string, order: readonly
 // be) is the order worth grouping them in too.
 const REFERENCE_TYPE_ORDER = LIBRARY_UPLOAD_KINDS.map((k) => k.label);
 
-export function ReferenceLibrarySection({ clientName, docs }: { clientName: string; docs: ReferenceDocEntry[] }) {
-  const groups = groupInOrder(docs, (d) => labelForDocument(d.docType, d.fileName), REFERENCE_TYPE_ORDER);
+export function ReferenceLibrarySection({
+  clientName,
+  docs,
+  activeType = null,
+  basePath,
+}: {
+  clientName: string;
+  docs: ReferenceDocEntry[];
+  /** Show only this type (?type=<label>). Ignored when no document is of it. */
+  activeType?: string | null;
+  /** Where the filter links point; no filter is offered without it. */
+  basePath?: string;
+}) {
+  const typeOf = (d: ReferenceDocEntry) => labelForDocument(d.docType, d.fileName);
+  const allGroups = groupInOrder(docs, typeOf, REFERENCE_TYPE_ORDER);
+  const active = activeType && allGroups.some((g) => g.label === activeType) ? activeType : null;
+  // Revisions of one document next to each other, newest first.
+  const groups = allGroups
+    .filter((g) => !active || g.label === active)
+    .map((g) => ({
+      ...g,
+      items: [...g.items].sort(
+        (a, b) =>
+          a.projectName.localeCompare(b.projectName) ||
+          a.fileName.localeCompare(b.fileName, undefined, { numeric: true, sensitivity: "base" }) ||
+          b.uploadedAt.getTime() - a.uploadedAt.getTime()
+      ),
+    }));
+  const typeHref = (type: string | null) => `${basePath}${type ? `?type=${encodeURIComponent(type)}` : ""}`;
 
   return (
     <section className="card card-flush">
@@ -81,6 +112,22 @@ export function ReferenceLibrarySection({ clientName, docs }: { clientName: stri
         </div>
         {docs.length > 0 && <Badge className="ml-auto">{docs.length}</Badge>}
       </div>
+
+      {basePath && allGroups.length > 1 && (
+        <nav aria-label="Filter by type" className="flex flex-wrap gap-2 border-b border-border px-5 py-3">
+          {[null, ...allGroups.map((g) => g.label)].map((type) => (
+            <Link
+              key={type ?? "all"}
+              href={typeHref(type)}
+              aria-current={type === active ? "true" : undefined}
+              className={`btn btn-xs ${type === active ? "btn-primary" : "btn-secondary"}`}
+            >
+              {type ?? "All"}{" "}
+              <span className="opacity-70">{type ? allGroups.find((g) => g.label === type)!.items.length : docs.length}</span>
+            </Link>
+          ))}
+        </nav>
+      )}
 
       {docs.length === 0 ? (
         <EmptyState icon={<IconFile />} title="No reference yet">
@@ -95,7 +142,7 @@ export function ReferenceLibrarySection({ clientName, docs }: { clientName: stri
               </h3>
               <ul className="flex flex-col gap-2.5">
                 {group.items.map((doc) => (
-                  <li key={doc.id} className="flex flex-wrap items-center gap-2.5">
+                  <li key={doc.id} className={`flex flex-wrap items-center gap-2.5 ${doc.version && !doc.version.current ? "opacity-60" : ""}`}>
                     <IconFile size={15} className="flex-none text-muted-foreground" />
                     {doc.job?.status === "succeeded" ? (
                       <Link href={`/projects/${doc.projectId}/documents/${doc.id}`} className="link break-all text-sm font-medium">
@@ -103,6 +150,15 @@ export function ReferenceLibrarySection({ clientName, docs }: { clientName: stri
                       </Link>
                     ) : (
                       <span className="break-all text-sm font-medium">{doc.fileName}</span>
+                    )}
+                    {doc.version?.revision && <Badge tone={doc.version.current ? "info" : "neutral"}>Rev {doc.version.revision}</Badge>}
+                    {doc.version && !doc.version.current && (
+                      <Badge tone="warning" title="A later upload of this document is in force; checks do not read this one.">
+                        Superseded
+                      </Badge>
+                    )}
+                    {doc.version?.current && !doc.version.revision && doc.version.orderedBy === "upload date" && (
+                      <Badge title="The newest upload of this document">Latest</Badge>
                     )}
                     <Link href={`/projects/${doc.projectId}`} className="text-xs text-muted-foreground hover:text-foreground">
                       {doc.projectName}
@@ -128,12 +184,6 @@ export function KeptLibrarySection({ clientName, items }: { clientName: string; 
 
   return (
     <>
-      {items === null && (
-        <Alert tone="warning">
-          The library has not been set up in the database yet. Run <code>supabase/library.sql</code> in the Supabase SQL editor, then
-          reload.
-        </Alert>
-      )}
 
       <section className="card card-flush">
         <div className="card-header">

@@ -8,8 +8,9 @@ import { getDb } from "@/lib/db";
 import { isLibraryDocument, labelForDocument } from "@/lib/docTypes";
 import { canReadLibraryOf, libraryItemsOf } from "@/lib/library";
 import { getSessionUser } from "@/lib/session";
+import { resolveDocumentVersions } from "@easy/shared";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Alert, Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
+import { Badge, EmptyState, JobStatus } from "@/components/ui/primitives";
 import { IconFile, IconFolder } from "@/components/ui/icons";
 import { uploadDocument } from "../projects/[id]/actions";
 import { LibraryTable } from "./LibraryTable";
@@ -42,11 +43,11 @@ export const metadata: Metadata = { title: "Library" };
 //                              read, and shared by every project of the client
 //
 // Everybody can read and download; only Document Control adds and removes.
-export default async function LibraryPage({ searchParams }: { searchParams: Promise<{ project?: string; org?: string }> }) {
+export default async function LibraryPage({ searchParams }: { searchParams: Promise<{ project?: string; org?: string; type?: string }> }) {
   const session = await getSessionUser();
   if (!session) return null;
 
-  const { project: requestedProject, org: requestedOrg } = await searchParams;
+  const { project: requestedProject, org: requestedOrg, type: requestedType } = await searchParams;
   const db = getDb();
 
   // The client. Document Control's is the one it chose to work for; a checker
@@ -130,6 +131,28 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
     if (!existing || job.createdAt > existing.createdAt) latestJob.set(job.documentId, job);
   }
 
+  // Which uploads are in force. Every one stays listed -- the library is where
+  // they are managed -- but a replaced one says so, and no check reads it.
+  const versions = resolveDocumentVersions(referenceDocs);
+
+  // Filter by type (?type=<label>), with a chip per type present and its count.
+  // Listed by type, then name, so revisions of one document sit together.
+  const typeOf = (d: (typeof referenceDocs)[number]) => labelForDocument(d.docType, d.fileName);
+  const typeCounts = new Map<string, number>();
+  for (const d of referenceDocs) typeCounts.set(typeOf(d), (typeCounts.get(typeOf(d)) ?? 0) + 1);
+  const types = [...typeCounts.keys()].sort((a, b) => a.localeCompare(b));
+  const activeType = requestedType && typeCounts.has(requestedType) ? requestedType : null;
+  const shownDocs = referenceDocs
+    .filter((d) => !activeType || typeOf(d) === activeType)
+    .sort(
+      (a, b) =>
+        typeOf(a).localeCompare(typeOf(b)) ||
+        a.fileName.localeCompare(b.fileName, undefined, { numeric: true, sensitivity: "base" }) ||
+        b.uploadedAt.getTime() - a.uploadedAt.getTime()
+    );
+  const typeHref = (type: string | null) =>
+    `/library?project=${project.id}${type ? `&type=${encodeURIComponent(type)}` : ""}`;
+
   async function handleReferenceUpload(formData: FormData) {
     "use server";
     await uploadDocument(project!.id, formData);
@@ -143,12 +166,6 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
         meta={<Badge>{organizationName}</Badge>}
         description={`What ${project.name}'s checks are made against. Its own reference is read by the app; ${organizationName}'s specifications and standards, shared by every project, are kept and handed back.`}
       />
-
-      {(overall === null || own === null) && (
-        <Alert tone="warning">
-          The library has not been set up in the database yet. Run <code>supabase/library.sql</code> in the Supabase SQL editor, then reload.
-        </Alert>
-      )}
 
       {/* READ BY THE APP, and said so plainly. The library holds two kinds
           of thing and the difference matters: a file in the section below is
@@ -168,6 +185,24 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           {referenceDocs.length > 0 && <Badge className="ml-auto">{referenceDocs.length}</Badge>}
         </div>
 
+        {types.length > 1 && (
+          <nav aria-label="Filter by type" className="flex flex-wrap gap-2 border-b border-border px-5 py-3">
+            {[null, ...types].map((type) => {
+              const active = type === activeType;
+              return (
+                <Link
+                  key={type ?? "all"}
+                  href={typeHref(type)}
+                  aria-current={active ? "true" : undefined}
+                  className={`btn btn-xs ${active ? "btn-primary" : "btn-secondary"}`}
+                >
+                  {type ?? "All"} <span className="opacity-70">{type ? typeCounts.get(type) : referenceDocs.length}</span>
+                </Link>
+              );
+            })}
+          </nav>
+        )}
+
         {referenceDocs.length === 0 ? (
           <EmptyState icon={<IconFile />} title="No reference for this project yet">
             {session.isDcc
@@ -186,10 +221,11 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
                 </tr>
               </thead>
               <tbody>
-                {referenceDocs.map((doc) => {
+                {shownDocs.map((doc) => {
                   const job = latestJob.get(doc.id);
+                  const version = versions.get(doc.id);
                   return (
-                    <tr key={doc.id}>
+                    <tr key={doc.id} className={version && !version.current ? "opacity-60" : undefined}>
                       <td>
                         <span className="flex items-center gap-2.5">
                           <IconFile size={16} className="flex-none text-muted-foreground" />
@@ -199,6 +235,15 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
                             </Link>
                           ) : (
                             <span className="break-all font-medium">{doc.fileName}</span>
+                          )}
+                          {version?.revision && <Badge tone={version.current ? "info" : "neutral"}>Rev {version.revision}</Badge>}
+                          {version && !version.current && (
+                            <Badge tone="warning" title="A later upload of this document is in force; checks do not read this one.">
+                              Superseded
+                            </Badge>
+                          )}
+                          {version?.current && !version.revision && version.orderedBy === "upload date" && (
+                            <Badge title="The newest upload of this document">Latest</Badge>
                           )}
                         </span>
                       </td>

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { documents, documentPages, extractionJobs, extractedTags } from "@easy/db";
-import { normalizeTagNumber, enrichIsoLineAttrs } from "@easy/shared";
+import { normalizeTagNumber, enrichIsoLineAttrs, currentDocuments, documentFamily } from "@easy/shared";
 import { getDb } from "@/lib/db";
 import {
   buildDesignBasisComparison,
@@ -59,11 +59,19 @@ export async function buildIsoChecks({
   docId,
   document,
   tags,
+  pidChoice = [],
 }: {
   projectId: string;
   docId: string;
   document: DocumentRow;
   tags: TagRow[];
+  /**
+   * P&ID revisions to compare against INSTEAD of the latest of their document --
+   * comparing an ISO with the P&ID revision it was drawn from, not one issued
+   * after it. Each replaces the current upload of its own family; anything else
+   * stays at its latest.
+   */
+  pidChoice?: string[];
 }) {
   const db = getDb();
   let pllOptions: (typeof documents.$inferSelect)[] = [];
@@ -139,8 +147,16 @@ export async function buildIsoChecks({
   const latestStatusByDoc = new Map([...latestJobByDoc].map(([docId2, job]) => [docId2, job.status] as const));
 
   const succeeded = siblingDocs.filter((d) => d.id !== docId && latestStatusByDoc.get(d.id) === "succeeded");
-  pllOptions = succeeded.filter((d) => d.docType === "pll");
-  pidOptions = succeeded.filter((d) => d.docType === "pid");
+  // Only the revision in force of each reference document. A superseded one pooled
+  // with its replacement counts what the revision removed as still required (a
+  // valve on P&ID _D that _E took out), so it is never read.
+  pllOptions = currentDocuments(succeeded.filter((d) => d.docType === "pll"));
+  const pidRead = succeeded.filter((d) => d.docType === "pid");
+  pidOptions = currentDocuments(pidRead);
+  for (const chosen of pidRead.filter((d) => pidChoice.includes(d.id))) {
+    const family = documentFamily(chosen.docType, chosen.fileName);
+    pidOptions = [...pidOptions.filter((d) => documentFamily(d.docType, d.fileName) !== family), chosen];
+  }
 
   docNameById = new Map(siblingDocs.map((d) => [d.id, d.fileName]));
   docNameById.set(document.id, document.fileName);
@@ -178,7 +194,7 @@ export async function buildIsoChecks({
   // The admin's own item list, one flat sheet whose every line names the class
   // it belongs to. What each BOM item is looked up in, under the class the
   // extraction gave that item.
-  const adminSpecDocs = siblingDocs.filter((d) => d.docType === "spec_sheet" && kindOfDocument(d.docType, d.fileName)?.key === "admin_spec");
+  const adminSpecDocs = currentDocuments(siblingDocs.filter((d) => d.docType === "spec_sheet" && kindOfDocument(d.docType, d.fileName)?.key === "admin_spec"));
   const adminItems: SheetItem[] = [];
   if (adminSpecDocs.length > 0) {
     const adminPages = await db
@@ -303,10 +319,30 @@ export async function buildIsoChecks({
   // pattern as design basis, aggregated across every extracted P&ID (a
   // line legitimately spans several sheets/documents).
   if (pidOptions.length > 0 && isoLineTags.length > 0) {
-    const pidTags = await db
+    const pidTagsAll = await db
       .select()
       .from(extractedTags)
       .where(and(inArray(extractedTags.documentId, pidOptions.map((d) => d.id)), inArray(extractedTags.tagType, ["line", "valve", "fitting", "instrument"])));
+    // ONE SHEET, ONE READING. The same P&ID sheet can sit in two files -- a combined
+    // PDF of the line's sheets beside the sheet issued on its own -- and both files
+    // count as current, having different names. Read from both, every valve on that
+    // sheet is counted twice. So each sheet (its drawing number from the title
+    // block) is taken from the newest file carrying it, and the other file's rows
+    // for that sheet are dropped.
+    const sheetOf = (t: (typeof pidTagsAll)[number]) => String((t.attributes as Record<string, unknown>).sheet_number ?? "").trim().toUpperCase();
+    const pidDocById = new Map(pidOptions.map((d) => [d.id, d] as const));
+    const newestForSheet = new Map<string, (typeof pidOptions)[number]>();
+    for (const t of pidTagsAll) {
+      const sheet = sheetOf(t);
+      const doc = pidDocById.get(t.documentId);
+      if (!sheet || !doc) continue;
+      const seen = newestForSheet.get(sheet);
+      if (!seen || doc.uploadedAt > seen.uploadedAt) newestForSheet.set(sheet, doc);
+    }
+    const pidTags = pidTagsAll.filter((t) => {
+      const sheet = sheetOf(t);
+      return !sheet || newestForSheet.get(sheet)?.id === t.documentId;
+    });
     const isoBomTags = tags.filter((t) => t.tagType === "bom_item");
 
     // The legend's "P&ID REPRESENTATION vs DETAILS" typicals, scoped to
@@ -359,8 +395,11 @@ export async function buildIsoChecks({
       const pidValveCount = countPidValves(pidLineValveAttrs);
       const bomForLine = isoBomTags
         .filter((b) => {
-          const ln = (b.attributes as Record<string, unknown>).line_number;
-          return typeof ln === "string" && normalizeTagNumber(ln) === norm;
+          const a = b.attributes as Record<string, unknown>;
+          // A BOM row set aside from the P&ID comparison by hand (with its reason
+          // in hidden_from_pid_compare) stays in the BOM and the MTO check.
+          if (a.hidden_from_pid_compare) return false;
+          return typeof a.line_number === "string" && normalizeTagNumber(a.line_number) === norm;
         })
         .map((b) => b.attributes as Record<string, unknown>);
       const pidLineFittings = pidTags
@@ -409,7 +448,14 @@ export async function buildIsoChecks({
       return {
         lineNumber: line.tagNumber,
         pidDocNames,
-        rows: buildRoutingFittingComparison(isoAttrs, bomForLine, pidLineAttrs, pidValveCount, pidLineFittings),
+        rows: buildRoutingFittingComparison(
+          isoAttrs,
+          bomForLine,
+          pidLineAttrs,
+          pidValveCount,
+          pidLineFittings,
+          impliedValves.reduce((n, v) => n + v.count, 0)
+        ),
         valveMatch: buildValveMatch(bomForLine, pidLineValveAttrs, pidLineFittings, pidLineInstruments, impliedValves),
       };
     });

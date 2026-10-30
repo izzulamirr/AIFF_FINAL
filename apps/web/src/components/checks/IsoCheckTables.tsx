@@ -21,13 +21,31 @@ type MtoSheet = IsoChecks["mtoBySpec"][number];
 // bare "mismatch" that leaves the reader to decide which document is at fault.
 const ON_ISO = "text-danger font-medium";
 
-function ReferenceNote({ reference }: { reference: string }) {
+function ReferenceNote({ reference, upRev }: { reference: string; upRev?: string }) {
+  if (upRev) {
+    return (
+      <p className="border-b bg-warning-soft px-3 py-1.5 text-xs">
+        Reference: <span className="font-medium">{reference} {upRev}</span>, issued after this ISO was drawn. Differences are changes in
+        the P&amp;ID that the ISO has not been revised to yet &mdash; not errors in it.
+      </p>
+    );
+  }
   return (
     <p className="border-b bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
       Reference: <span className="font-medium text-foreground">{reference}</span>. Where they differ, the ISO is to be corrected.
     </p>
   );
 }
+
+// Against a P&ID revision issued AFTER the ISO, a difference is the P&ID having
+// moved on, so it is named as the P&ID's change and shown amber -- the ISO is
+// behind, not wrong. `upRev` is that revision ("Rev E").
+const upRevLabel = (status: string, upRev: string) =>
+  status === "pid only"
+    ? `Added in P&ID ${upRev}`
+    : status === "iso only"
+      ? `Not in P&ID ${upRev}`
+      : `Changed in P&ID ${upRev}`;
 
 const COMPARE_LABEL: Record<string, string> = {
   match: "Match",
@@ -72,10 +90,10 @@ export function DesignBasisTable({ rows }: { rows: DesignBasisRow[] }) {
 }
 
 // ISO vs P&ID: routing, and the fitting counts.
-export function RoutingTable({ rows }: { rows: RoutingFittingRow[] }) {
+export function RoutingTable({ rows, upRev }: { rows: RoutingFittingRow[]; upRev?: string }) {
   return (
     <div className="overflow-hidden rounded-lg border">
-      <ReferenceNote reference="the P&ID" />
+      <ReferenceNote reference="the P&ID" upRev={upRev} />
       <div className="table-wrap">
         <table className="table table-compact">
           <thead>
@@ -90,11 +108,16 @@ export function RoutingTable({ rows }: { rows: RoutingFittingRow[] }) {
             {rows.map((row) => (
               <tr key={row.field}>
                 <td className="font-medium">{row.field}</td>
-                <td className={row.status === "mismatch" || row.status === "iso only" ? ON_ISO : ""}>{row.isoValue ?? "-"}</td>
+                <td className={!upRev && (row.status === "mismatch" || row.status === "iso only") ? ON_ISO : ""}>{row.isoValue ?? "-"}</td>
                 <td>{row.pidValue ?? "-"}</td>
                 <td>
-                  <Badge tone={row.status === "match" ? "success" : row.status === "mismatch" || row.status === "iso only" ? "danger" : "neutral"} dot>
-                    {COMPARE_LABEL[row.status] ?? row.status}
+                  <Badge
+                    tone={
+                      row.status === "match" ? "success" : row.status === "mismatch" || row.status === "iso only" ? (upRev ? "warning" : "danger") : "neutral"
+                    }
+                    dot
+                  >
+                    {upRev && (row.status === "mismatch" || row.status === "iso only") ? upRevLabel(row.status, upRev) : (COMPARE_LABEL[row.status] ?? row.status)}
                   </Badge>
                 </td>
               </tr>
@@ -115,7 +138,7 @@ const FITTING_LABEL: Record<string, string> = {
 
 // ISO vs P&ID: every in-line component both documents show, paired, one block per
 // material class along the run.
-export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
+export function FittingsMatchGroups({ groups, upRev }: { groups: ValveMatchGroup[]; upRev?: string }) {
   return (
     <div className="flex flex-col gap-4">
       {groups.map((group) => (
@@ -129,7 +152,7 @@ export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
               ISO {group.isoTotal} / P&amp;ID {group.pidTotal}
             </span>
           </p>
-          <ReferenceNote reference="the P&ID" />
+          <ReferenceNote reference="the P&ID" upRev={upRev} />
           <div className="table-wrap">
             <table className="table table-compact">
               <thead>
@@ -148,7 +171,7 @@ export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
                   <tr key={`${row.category}-${row.size}`}>
                     <td className="font-medium">{row.category}</td>
                     <td className="font-mono text-xs">{row.size}</td>
-                    <td className={`tabular-nums ${row.status === "match" ? "" : ON_ISO}`}>{row.isoCount || "-"}</td>
+                    <td className={`tabular-nums ${row.status === "match" || upRev ? "" : ON_ISO}`}>{row.isoCount || "-"}</td>
                     <td className="tabular-nums">
                       {/* A root valve the legend declares is accounted for as
                           firmly as one the P&ID draws, so it is added into the
@@ -163,8 +186,8 @@ export function FittingsMatchGroups({ groups }: { groups: ValveMatchGroup[] }) {
                       {row.impliedDetail ?? row.pidDetail ?? "-"}
                     </td>
                     <td>
-                      <Badge tone={row.status === "match" ? "success" : "danger"} dot>
-                        {FITTING_LABEL[row.status] ?? row.status}
+                      <Badge tone={row.status === "match" ? "success" : upRev ? "warning" : "danger"} dot>
+                        {row.status !== "match" && upRev ? upRevLabel(row.status, upRev) : (FITTING_LABEL[row.status] ?? row.status)}
                       </Badge>
                     </td>
                   </tr>
