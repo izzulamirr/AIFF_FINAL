@@ -16,19 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // sheets that do not share a frame (a different sheet size or margin) will light up
 // everywhere; the page says so when the sizes differ.
 
-type PdfLib = typeof import("pdfjs-dist");
-type PdfDoc = Awaited<ReturnType<PdfLib["getDocument"]>["promise"]>;
-
-let pdfjs: Promise<PdfLib> | null = null;
-function loadPdfjs(): Promise<PdfLib> {
-  if (!pdfjs) {
-    pdfjs = import("pdfjs-dist").then((lib) => {
-      lib.GlobalWorkerOptions.workerPort = new Worker(new URL("pdfjs-dist/build/pdf.worker.min.js", import.meta.url));
-      return lib;
-    });
-  }
-  return pdfjs;
-}
+import { loadPdfjs, type PdfDoc } from "@/lib/pdfjsClient";
 
 export interface DiffDocument {
   id: string;

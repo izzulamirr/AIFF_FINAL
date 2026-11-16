@@ -17,6 +17,7 @@ import { isMissingTable } from "@/lib/progress";
 import { checkPrintLabel, checkPrintsOf, nextStep, printsOfRevision } from "@/lib/checkPrints";
 import { issueCheckPrint, issueFinal } from "../progressActions";
 import { PrintButton } from "./PrintButton";
+import { IsoMarkup, type MarkupFinding } from "@/components/report/IsoMarkup";
 
 // The errors found on one ISO line, laid out to be handed to the designer: print it
 // or save it as a PDF from the browser. Only what is wrong is listed -- what agreed
@@ -95,6 +96,7 @@ function Section({
 // requires, what is wrong on the ISO, and who does what about it. A finding shown
 // for information keeps its place, greyed, with the reason in place of an action.
 function FindingTable({ n, findings }: { n: number; findings: Finding[] }) {
+  // Each row is a link target for its marker on the drawing, and its ref links back.
   return (
     <table className="table table-compact w-full text-xs">
       <thead>
@@ -108,9 +110,17 @@ function FindingTable({ n, findings }: { n: number; findings: Finding[] }) {
       </thead>
       <tbody>
         {findings.map((f, i) => (
-          <tr key={i} className={`align-top ${f.info ? "text-muted-foreground" : "row-fault"}`}>
+          <tr key={i} id={`finding-${n}-${i + 1}`} className={`finding-row align-top ${f.info ? "text-muted-foreground" : "row-fault"}`}>
             <td className="tabular-nums text-muted-foreground">
-              {n}.{i + 1}
+              {f.locate ? (
+                <a href={`#mark-${n}-${i + 1}`} className="link" title="Show on the drawing">
+                  {n}.{i + 1}
+                </a>
+              ) : (
+                <>
+                  {n}.{i + 1}
+                </>
+              )}
             </td>
             <td>
               <span className={f.info ? "" : "font-medium"}>{f.item}</span>
@@ -139,8 +149,14 @@ function FindingTable({ n, findings }: { n: number; findings: Finding[] }) {
   );
 }
 
-function Drawing({ d, showName }: { d: DrawingReport; showName: boolean }) {
-  let n = 0;
+function Drawing({ d, showName, projectId }: { d: DrawingReport; showName: boolean; projectId: string }) {
+  // Numbered once, so the markers on the drawing and the rows below share refs.
+  const sections = reportSections(d).map((s, k) => ({ ...s, n: k + 1 }));
+  const marks: MarkupFinding[] = sections.flatMap((s) =>
+    s.findings.flatMap((f, i) =>
+      f.locate ? [{ ref: `${s.n}.${i + 1}`, page: f.locate.page, terms: f.locate.terms, describe: f.locate.describe, error: !f.info, label: f.item }] : []
+    )
+  );
   return (
     <div className="mt-6 first:mt-0">
       {showName && <p className="rounded bg-muted/60 px-3 py-1.5 font-mono text-xs">{d.fileName}</p>}
@@ -187,8 +203,21 @@ function Drawing({ d, showName }: { d: DrawingReport; showName: boolean }) {
         </section>
       )}
 
-      {reportSections(d).map((s) => {
-        const sectionNo = ++n;
+      {/* WHERE THE ERRORS ARE: the drawing itself, each error marked with its ref.
+          Ahead of the tables, so the designer sees the sheet before the list. */}
+      {marks.length > 0 && (
+        <section className="mt-6">
+          <h2 className="mb-1 border-b pb-1.5 font-heading text-base font-semibold">Where the errors are</h2>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Each error is marked on the drawing with its ref. Click a marker to go to its row, or a ref in the tables to see it on the
+            drawing. Errors that apply to the whole line (counts against the P&amp;ID) are not marked.
+          </p>
+          <IsoMarkup projectId={projectId} documentId={d.documentId} findings={marks} />
+        </section>
+      )}
+
+      {sections.map((s) => {
+        const sectionNo = s.n;
         const errors = s.findings.filter((f) => !f.info).length;
         return (
           <Section key={s.title} n={sectionNo} title={s.title} count={errors} info={s.findings.length - errors} reference={s.reference ?? undefined}>
@@ -332,7 +361,7 @@ export default async function IsoReportPage({
             </div>
 
             {report.drawings.map((d) => (
-              <Drawing key={d.documentId} d={d} showName={report.drawings.length > 1} />
+              <Drawing key={d.documentId} d={d} showName={report.drawings.length > 1} projectId={id} />
             ))}
 
             {/* Sign-off: the checks narrow the review; a person still signs the drawing. */}

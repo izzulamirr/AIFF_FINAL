@@ -1047,6 +1047,22 @@
     box-shadow: var(--shadow-card);
   }
 
+  /* ---- Errors marked on the drawing ---------------------------------------
+     A marker and its report row link to each other; whichever one was jumped
+     to is ringed, and lands clear of the sticky top bar. */
+  .iso-mark,
+  .finding-row {
+    scroll-margin-top: 6rem;
+  }
+  .iso-mark:target {
+    outline: 3px solid var(--ring);
+    outline-offset: 2px;
+    z-index: 1;
+  }
+  .table > tbody > tr.finding-row:target > td {
+    background: var(--primary-soft);
+  }
+
   /* ---- Report page --------------------------------------------------------
      The report is a document, so it gets a little more room than a panel. */
   .drawing-sheet {

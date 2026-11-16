@@ -430,6 +430,30 @@ export const notificationReads = pgTable("notification_reads", {
   lastReadAt: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Where on an ISO sheet a report finding was found by the VISION fallback -- only
+// for sheets with no text layer, where the free text search has nothing to read.
+// One row per (drawing, page, item asked about), so each item costs one call ever:
+// the report re-opens from here. `itemKey` is a hash of the item's description,
+// so a changed finding is asked about afresh. Box in page fractions (0-1).
+export const findingLocations = pgTable(
+  "finding_locations",
+  {
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    page: integer("page").notNull(),
+    itemKey: text("item_key").notNull(),
+    found: boolean("found").notNull(),
+    x: doublePrecision("x"),
+    y: doublePrecision("y"),
+    w: doublePrecision("w"),
+    h: doublePrecision("h"),
+    model: text("model"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.documentId, table.page, table.itemKey] })]
+);
+
 // A BOM item a person has marked ON HOLD or PENDING -- waiting on something
 // (client data, vendor data, a decision) rather than wrong. Marked items are not
 // counted as errors; the report lists them per sheet so it can be issued with a

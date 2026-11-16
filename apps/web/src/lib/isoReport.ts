@@ -52,6 +52,8 @@ export interface BomIssue {
    * such a description reads twice as long as its neighbours.
    */
   parts: string[];
+  /** The PDF page the row is on -- where the report marks it on the drawing. */
+  page?: number | null;
 }
 
 export interface RoutingIssue {
@@ -80,6 +82,7 @@ export interface HookupIssue {
   missing: Array<{ item: string; description: string; size: string; quantity: string }>;
   /** Set where no typical covers the instrument, so nothing could be checked. */
   noTypical: string | null;
+  page?: number | null;
 }
 
 export interface SpoolingIssue {
@@ -90,6 +93,7 @@ export interface SpoolingIssue {
   problem: string;
   /** The spool the drawing puts the weld in, where it differs from the stored one. */
   drawingSpool: string | null;
+  page?: number | null;
 }
 
 export interface ContainerIssue {
@@ -99,6 +103,7 @@ export interface ContainerIssue {
   problem: string;
   /** Set on a finding that is only a heads-up. Null on an error. */
   note: string | null;
+  page?: number | null;
 }
 
 /**
@@ -167,6 +172,7 @@ export interface SupportIssue {
   severity: "error" | "check";
   what: string;
   fix: string;
+  page?: number | null;
 }
 
 function supportIssues(doc: NonNullable<LineSummary["supports"]>["docs"][number] | undefined): SupportIssue[] {
@@ -178,7 +184,7 @@ function supportIssues(doc: NonNullable<LineSummary["supports"]>["docs"][number]
   return [...doc.sheets]
     .sort((a, b) => (a.page ?? 0) - (b.page ?? 0))
     .flatMap((s) =>
-      supportProblems(s).map((p) => ({ sheet: s.sheetLabel ? sheetLabel(s.sheetLabel) : s.page != null ? `page ${s.page}` : "?", supports: s.points.length, ...p }))
+      supportProblems(s).map((p) => ({ sheet: s.sheetLabel ? sheetLabel(s.sheetLabel) : s.page != null ? `page ${s.page}` : "?", supports: s.points.length, page: s.page, ...p }))
     );
 }
 
@@ -300,6 +306,7 @@ function bomIssues(sheets: IsoDrawingChecks["mto"]["sheetData"]): BomIssue[] {
           adminLine,
           action,
           parts,
+          page: sheet.page,
         });
       }
     }
@@ -366,6 +373,7 @@ function hookupIssues(drawing: NonNullable<LineSummary["hookup"]>["drawings"][nu
           .filter((c) => c.status === "unmatched")
           .map((c) => ({ item: c.item.itemNo ?? "-", description: c.item.description, size: dash(c.item.size), quantity: dash(c.item.quantity) })),
         noTypical: null,
+        page: r.isoPage,
       });
     }
     // An instrument no typical covers is PENDING client/vendor data, not an
@@ -397,7 +405,7 @@ function spoolingIssues(sheets: NonNullable<LineSummary["spooling"]>["docs"][num
     for (const group of sheet.weldsBySpool) {
       for (const w of group.welds) {
         if (w.spoolOf === "-") {
-          out.push({ sheet: label, weld: w.weldNo, weldType: w.weldType, size: w.size, problem: "No spool", drawingSpool: null });
+          out.push({ sheet: label, weld: w.weldNo, weldType: w.weldType, size: w.size, problem: "No spool", drawingSpool: null, page: sheet.page });
         } else if (w.drawingSpool && w.drawingSpool !== w.spoolOf) {
           out.push({
             sheet: label,
@@ -406,6 +414,7 @@ function spoolingIssues(sheets: NonNullable<LineSummary["spooling"]>["docs"][num
             size: w.size,
             problem: `Filed under spool ${w.spoolOf}`,
             drawingSpool: w.drawingSpool,
+            page: sheet.page,
           });
         }
       }
@@ -432,6 +441,7 @@ function containerIssues(spools: NonNullable<LineSummary["containers"]>["docs"][
         size: "not read",
         problem: "Size not read, so not checked",
         note: "Not a drawing fault.",
+        page: s.page,
       });
       continue;
     }
@@ -445,6 +455,7 @@ function containerIssues(spools: NonNullable<LineSummary["containers"]>["docs"][
           size,
           problem: `Fits, but only ${best.tightestMm} mm to spare${allowance}`,
           note: "Heads-up only.",
+          page: s.page,
         });
       }
       continue;
@@ -456,6 +467,7 @@ function containerIssues(spools: NonNullable<LineSummary["containers"]>["docs"][
       size,
       problem: close ? `Too big by ${close.shortfallMm} mm${allowance}` : `Too big for a 20ft container${allowance}`,
       note: close ? "Near miss. Real containers vary by this much." : null,
+      page: s.page,
     });
   }
   // Errors first.
@@ -487,7 +499,39 @@ export interface Finding {
   action: string | null;
   /** Set on a finding that is shown but is not an error; says why. */
   info: string | null;
+  /** How to find the item on the drawing, so the report can mark it there. Absent for a line-wide finding (a count across the run). */
+  locate?: FindingLocate;
 }
+
+/**
+ * Where on the ISO a finding is, as something to search for.
+ *
+ * `terms` are matched against the drawing's own text layer -- exact and free.
+ * `describe` is for a sheet with NO text layer (the CAD exported its lettering as
+ * lines), where a vision call looks for the item instead; null where it should not
+ * be looked for that way.
+ */
+export interface FindingLocate {
+  /** The PDF page the item is on. */
+  page: number;
+  /** Strings that identify the item on the drawing, most specific first. */
+  terms: string[];
+  /** The item in words, for the vision fallback. */
+  describe: string | null;
+}
+
+/** A BOM description's leading words -- what a BOM row prints first, and most distinctly. */
+function bomTerms(description: string, itemCode: string | null): string[] {
+  const segments = description.split(",").map((s) => s.trim()).filter(Boolean);
+  const terms = [segments.slice(0, 3).join(", "), segments.slice(0, 2).join(", "), segments[0] ?? ""];
+  if (itemCode && itemCode !== "-") terms.unshift(itemCode);
+  // Short or generic words ("PIPE") match half the sheet; the matcher rejects a term
+  // that hits too many places, so the specific ones are tried first.
+  return [...new Set(terms.filter((t) => t.replace(/\s+/g, "").length >= 6))];
+}
+
+const locateOn = (page: number | null | undefined, terms: string[], describe: string | null): FindingLocate | undefined =>
+  page != null && page > 0 ? { page, terms, describe } : undefined;
 
 export interface ReportSection {
   title: string;
@@ -507,6 +551,8 @@ function designBasisFindings(issues: DesignBasisIssue[]): Finding[] {
     discrepancy: r.iso === "-" ? "Missing on ISO" : `ISO has ${r.iso}`,
     action: `${r.iso === "-" ? "Add" : "Change to"} ${r.pll}`,
     info: null,
+    // A title-block field: the same on every sheet, so it is marked on the first.
+    locate: locateOn(1, r.iso === "-" ? [] : [r.iso], `the title-block field "${r.field}"${r.iso === "-" ? "" : ` (it reads ${r.iso})`}`),
   }));
 }
 
@@ -519,6 +565,7 @@ function bomFindings(issues: BomIssue[]): Finding[] {
     discrepancy: r.problem,
     action: r.kind === "notChecked" ? null : r.action,
     info: r.kind === "notChecked" ? "Not checked against the spec." : null,
+    locate: locateOn(r.page, bomTerms(r.description, null), `the bill-of-material row for item ${r.itemNo}, "${short(r.description)}"`),
   }));
 }
 
@@ -560,6 +607,7 @@ function hookupFindings(issues: HookupIssue[]): Finding[] {
       discrepancy: "Missing on ISO",
       action: "Add to ISO",
       info: null,
+      locate: locateOn(h.page, [h.instrument], `the instrument ${h.instrument} and where it connects to the pipe`),
     }));
   });
 }
@@ -574,6 +622,13 @@ function spoolingFindings(issues: SpoolingIssue[]): Finding[] {
     // reading, so it is the checker who puts it right.
     action: r.drawingSpool ? `Checker: move to spool ${r.drawingSpool}` : "Checker: assign a spool",
     info: null,
+    // A weld's flag prints its type and number together ("BW12", "FW6"), often as
+    // two text runs -- the matcher joins neighbouring runs, so "BW"+"12" still hits.
+    locate: locateOn(
+      r.page,
+      ["BW", "FW", "SW", "TH", "SO"].map((p) => `${p}${r.weld}`),
+      `the weld number flag for weld ${r.weld} (a hexagon labelled like BW${r.weld} or FW${r.weld}) and the weld dot it points to`
+    ),
   }));
 }
 
@@ -585,6 +640,7 @@ function containerFindings(issues: ContainerIssue[]): Finding[] {
     discrepancy: r.problem,
     action: r.size === "not read" ? null : r.note ? "Measure the actual container" : "Split the spool into shorter pieces",
     info: r.note,
+    locate: locateOn(r.page, [r.spool], `the spool tag ${r.spool}`),
   }));
 }
 
