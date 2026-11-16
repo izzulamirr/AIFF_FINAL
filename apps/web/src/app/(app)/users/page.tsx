@@ -8,11 +8,12 @@ import { APP_ROLES, ROLE_DESCRIPTION, ROLE_LABEL, type AppRole } from "@/lib/rol
 import { getSessionUser } from "@/lib/session";
 import { listAccounts, type AccountRow } from "@/lib/users";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Alert, Badge, EmptyState, Stat, type Tone } from "@/components/ui/primitives";
+import { Alert, Badge, EmptyState, type Tone } from "@/components/ui/primitives";
 import { IconTrash, IconUsers } from "@/components/ui/icons";
 import { ClientAccess, type ClientOption } from "./ClientAccess";
 import { RoleControl } from "./RoleControl";
 import { AccountAction } from "./AccountAction";
+import { ManageAccount } from "./ManageAccount";
 import { CreateAccountForm } from "./CreateAccountForm";
 import {
   confirmAccountEmail,
@@ -109,78 +110,165 @@ export default async function UsersPage() {
       )}
 
       {accounts.length > 0 && (
-        <>
-          <div className="flex flex-wrap gap-4">
-            <Stat label="Accounts" value={accounts.length} />
-            <Stat label="Super Admin" value={count("super_admin")} />
-            <Stat label="Document Control" value={count("dcc")} />
-            <Stat label="Users" value={count("user")} />
-            {deactivated > 0 && <Stat label="Deactivated" value={deactivated} hint="cannot sign in" />}
-            {noUsername > 0 && <Stat label="No username" value={noUsername} tone="warning" hint="signs in by email until set" />}
-            {unconfirmed > 0 && <Stat label="Email not confirmed" value={unconfirmed} tone="warning" hint="cannot sign in until confirmed" />}
-            {unassigned > 0 && <Stat label="Assigned to no client" value={unassigned} tone="warning" hint="they see an empty app" />}
+        <section className="card card-flush">
+          {/* The headline counts as one quiet line, with anything that needs
+              attention picked out after it, instead of a row of large tiles. */}
+          <div className="card-header flex-wrap gap-x-5 gap-y-2">
+            <h2 className="card-title">
+              Accounts <span className="font-normal text-muted-foreground">({accounts.length})</span>
+            </h2>
+            <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>{count("super_admin")} Super Admin</span>
+              <span>{count("dcc")} Document Control</span>
+              <span>{count("user")} Users</span>
+              {deactivated > 0 && <span>{deactivated} deactivated</span>}
+            </p>
+            {(noUsername > 0 || unconfirmed > 0 || unassigned > 0) && (
+              <p className="ml-auto flex flex-wrap gap-2">
+                {noUsername > 0 && (
+                  <Badge tone="warning" dot title="They sign in by email until one is set">
+                    {noUsername} without a username
+                  </Badge>
+                )}
+                {unconfirmed > 0 && (
+                  <Badge tone="warning" dot title="They cannot sign in until the email is confirmed">
+                    {unconfirmed} email not confirmed
+                  </Badge>
+                )}
+                {unassigned > 0 && (
+                  <Badge tone="warning" dot title="With no client they see an empty app">
+                    {unassigned} with no client
+                  </Badge>
+                )}
+              </p>
+            )}
           </div>
 
-          <section className="card card-flush">
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Person</th>
-                    <th>Role</th>
-                    <th>Clients</th>
-                    <th className="text-right">Lines</th>
-                    <th>Activity</th>
-                    <th className="w-px">
-                      <span className="sr-only">Account</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accounts.map((a) => {
-                    const label = a.name ?? a.email;
-                    const memberOf: ClientOption[] = (membershipsByUser.get(a.id) ?? []).map((o) => ({ id: o.id, name: o.name }));
-                    const isSelf = a.id === session.id;
-                    return (
-                      <tr key={a.id} className={a.deactivated ? "bg-muted/40 text-muted-foreground" : ""}>
-                        <td>
-                          <p className="font-medium">
-                            {a.name ?? a.email}
-                            {isSelf && <span className="ml-2 text-xs font-normal text-muted-foreground">(you)</span>}
-                          </p>
-                          {a.deactivated && (
-                            <Badge tone="danger" dot className="mt-1">
-                              Deactivated
-                            </Badge>
-                          )}
-                          {a.name && <p className="text-xs text-muted-foreground">{a.email}</p>}
-                          {/* The sign-in name, editable in place. An account with
-                              none still signs in by email, so it is a warning,
-                              not a lock-out. */}
-                          <form action={setUsername.bind(null, a.id)} className="mt-1.5 flex items-center gap-1.5">
-                            <span className="text-xs text-muted-foreground">@</span>
-                            <input
-                              name="username"
-                              required
-                              defaultValue={a.username ?? ""}
-                              placeholder="username"
-                              aria-label={`Username for ${label}`}
-                              autoCapitalize="none"
-                              spellCheck={false}
-                              className="input h-7 w-36 text-xs"
-                            />
-                            <button className="btn btn-secondary btn-xs">Save</button>
-                          </form>
-                          {!a.username && (
-                            <Badge tone="warning" dot className="mt-1">
-                              No username
-                            </Badge>
-                          )}
-                          {!a.confirmed && (
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <Badge tone="warning" dot>
-                                Email not confirmed
-                              </Badge>
+          <div className="table-wrap">
+            <table className="table [&_td]:align-middle">
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Role</th>
+                  <th>Clients</th>
+                  <th className="text-right">Lines</th>
+                  <th>Last active</th>
+                  <th className="w-px">
+                    <span className="sr-only">Manage</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts.map((a) => {
+                  const label = a.name ?? a.email;
+                  const memberOf: ClientOption[] = (membershipsByUser.get(a.id) ?? []).map((o) => ({ id: o.id, name: o.name }));
+                  const isSelf = a.id === session.id;
+                  // Your own account and a Super Admin fixed in code keep their
+                  // role and stay switched on: see actions.ts.
+                  const fixed = isSelf || a.bootstrap;
+                  const initials = label
+                    .replace(/@.*/, "")
+                    .split(/[\s._-]+/)
+                    .filter(Boolean)
+                    .slice(0, 2)
+                    .map((w) => w[0]!.toUpperCase())
+                    .join("");
+                  return (
+                    <tr key={a.id} className={a.deactivated ? "bg-muted/40" : ""}>
+                      <td>
+                        <div className={`flex items-center gap-3 ${a.deactivated ? "opacity-60" : ""}`}>
+                          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-primary-soft text-xs font-semibold text-link">
+                            {initials || "?"}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">
+                              {label}
+                              {isSelf && <span className="ml-1.5 text-xs font-normal text-muted-foreground">(you)</span>}
+                            </p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {a.username ? `@${a.username}` : "no username"}
+                              {a.name && <> &middot; {a.email}</>}
+                            </p>
+                            {(a.deactivated || !a.confirmed || !a.username) && (
+                              <p className="mt-1 flex flex-wrap gap-1.5">
+                                {a.deactivated && (
+                                  <Badge tone="danger" dot>
+                                    Deactivated
+                                  </Badge>
+                                )}
+                                {!a.confirmed && (
+                                  <Badge tone="warning" dot>
+                                    Email not confirmed
+                                  </Badge>
+                                )}
+                                {!a.username && !a.deactivated && (
+                                  <Badge tone="warning" dot>
+                                    No username
+                                  </Badge>
+                                )}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <Badge tone={ROLE_TONE[a.role]} dot>
+                          {ROLE_LABEL[a.role]}
+                        </Badge>
+                      </td>
+                      <td className="min-w-[14rem]">
+                        <ClientAccess
+                          personLabel={label}
+                          memberOf={memberOf}
+                          assignable={assignable}
+                          setAccess={setOrganizationAccess.bind(null, a.id)}
+                        />
+                      </td>
+                      <td className="text-right tabular-nums">{a.linesChecked ?? "-"}</td>
+                      {/* The full timestamp is kept on hover: the date is what is
+                          scanned, the minute is what is occasionally asked. */}
+                      <td className="whitespace-nowrap">
+                        <p title={a.lastSignInAt ? when.format(a.lastSignInAt) : undefined}>
+                          {a.lastSignInAt ? day.format(a.lastSignInAt) : <span className="text-muted-foreground">Never signed in</span>}
+                        </p>
+                        <p className="text-xs text-muted-foreground">Joined {day.format(a.createdAt)}</p>
+                      </td>
+                      <td className="text-right">
+                        <ManageAccount
+                          personLabel={label}
+                          email={a.email}
+                          usernameForm={
+                            <form action={setUsername.bind(null, a.id)} className="flex items-center gap-2">
+                              <span className="text-sm text-muted-foreground">@</span>
+                              <input
+                                name="username"
+                                required
+                                defaultValue={a.username ?? ""}
+                                placeholder="username"
+                                aria-label={`Username for ${label}`}
+                                autoCapitalize="none"
+                                spellCheck={false}
+                                className="input input-sm flex-1"
+                              />
+                              <button className="btn btn-secondary btn-sm">Save</button>
+                            </form>
+                          }
+                          role={
+                            fixed ? (
+                              <p className="flex items-center gap-2 text-sm">
+                                <Badge tone={ROLE_TONE[a.role]} dot>
+                                  {ROLE_LABEL[a.role]}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {a.bootstrap ? "Set in code, so it can't be changed here." : "Your own role can't be changed by you."}
+                                </span>
+                              </p>
+                            ) : (
+                              <RoleControl personLabel={label} role={a.role} options={roleOptions} setRole={setUserRole.bind(null, a.id)} />
+                            )
+                          }
+                          confirm={
+                            a.confirmed ? undefined : (
                               <AccountAction
                                 action={confirmAccountEmail.bind(null, a.id)}
                                 className="btn btn-secondary btn-xs"
@@ -188,79 +276,47 @@ export default async function UsersPage() {
                               >
                                 Confirm email
                               </AccountAction>
-                            </div>
-                          )}
-                        </td>
-                        <td>
-                          {/* Your own role and a Super Admin fixed in code are shown,
-                              not offered: see actions.ts for why neither changes here. */}
-                          {isSelf || a.bootstrap ? (
-                            <div className="flex flex-col items-start gap-1">
-                              <Badge tone={ROLE_TONE[a.role]} dot>
-                                {ROLE_LABEL[a.role]}
-                              </Badge>
-                              <span className="text-xs text-muted-foreground">{a.bootstrap ? "Set in code" : "Your own role"}</span>
-                            </div>
-                          ) : (
-                            <RoleControl personLabel={label} role={a.role} options={roleOptions} setRole={setUserRole.bind(null, a.id)} />
-                          )}
-                        </td>
-                        <td>
-                          <ClientAccess
-                            personLabel={label}
-                            memberOf={memberOf}
-                            assignable={assignable}
-                            setAccess={setOrganizationAccess.bind(null, a.id)}
-                          />
-                        </td>
-                        <td className="text-right tabular-nums">{a.linesChecked ?? "-"}</td>
-                        {/* The full timestamp is kept on hover: the date is what
-                            is scanned, the minute is what is occasionally asked. */}
-                        <td className="whitespace-nowrap">
-                          <p className="text-muted-foreground" title={a.lastSignInAt ? when.format(a.lastSignInAt) : undefined}>
-                            {a.lastSignInAt ? day.format(a.lastSignInAt) : "Never signed in"}
-                          </p>
-                          <p className="text-xs text-muted-foreground">Joined {day.format(a.createdAt)}</p>
-                        </td>
-                        <td className="text-right">
-                          {/* Not your own, and not a Super Admin fixed in code: see actions.ts. */}
-                          {isSelf || a.bootstrap ? null : a.deactivated ? (
-                            // Deleting is offered only once an account is off: see actions.ts.
-                            <div className="flex items-start justify-end gap-2">
+                            )
+                          }
+                          danger={
+                            fixed ? undefined : a.deactivated ? (
+                              // Deleting is offered only once an account is off: see actions.ts.
+                              <>
+                                <AccountAction
+                                  action={setAccountActive.bind(null, a.id, true)}
+                                  className="btn btn-secondary btn-sm"
+                                  message={`Reactivate ${label}?\n\nThey will be able to sign in again, with the same role and client access as before.`}
+                                >
+                                  Reactivate
+                                </AccountAction>
+                                <AccountAction
+                                  action={deleteAccount.bind(null, a.id)}
+                                  className="btn btn-danger btn-sm"
+                                  message={`Are you sure you want to delete ${label}?\n\nThe account is removed permanently and cannot be restored. Their projects, drawings and reviews stay, but will no longer show who made them.`}
+                                >
+                                  <IconTrash size={13} />
+                                  Delete
+                                </AccountAction>
+                              </>
+                            ) : (
                               <AccountAction
-                                action={setAccountActive.bind(null, a.id, true)}
-                                className="btn btn-secondary btn-xs"
-                                message={`Reactivate ${label}?\n\nThey will be able to sign in again, with the same role and client access as before.`}
+                                action={setAccountActive.bind(null, a.id, false)}
+                                className="btn btn-danger btn-sm"
+                                message={`Deactivate ${label}?\n\nThey will be signed out and unable to sign in. Nothing is deleted: their reviews and uploads stay, and you can reactivate them at any time.`}
                               >
-                                Reactivate
+                                Deactivate account
                               </AccountAction>
-                              <AccountAction
-                                action={deleteAccount.bind(null, a.id)}
-                                className="btn btn-danger btn-xs"
-                                message={`Are you sure you want to delete ${label}?\n\nThe account is removed permanently and cannot be restored. Their projects, drawings and reviews stay, but will no longer show who made them.`}
-                              >
-                                <IconTrash size={13} />
-                                Delete
-                              </AccountAction>
-                            </div>
-                          ) : (
-                            <AccountAction
-                              action={setAccountActive.bind(null, a.id, false)}
-                              className="btn btn-danger btn-xs"
-                              message={`Deactivate ${label}?\n\nThey will be signed out and unable to sign in. Nothing is deleted: their reviews and uploads stay, and you can reactivate them at any time.`}
-                            >
-                              Deactivate
-                            </AccountAction>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </>
+                            )
+                          }
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );

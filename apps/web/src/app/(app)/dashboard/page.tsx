@@ -9,11 +9,13 @@ import { progressOfProjects, type ProjectProgress } from "@/lib/progress";
 import { changeSummary } from "@/lib/lineSources";
 import { ProgressBar } from "@/components/progress/ProgressBar";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { RevMark } from "@/components/ui/RevMark";
 import { Alert, Badge, EmptyState } from "@/components/ui/primitives";
 import { IconBuilding, IconChevronRight, IconDownload, IconFolder, IconLibrary, IconPlus } from "@/components/ui/icons";
 import { createProject } from "../actions";
 import { TotalLinesForm } from "../projects/[id]/TotalLinesForm";
 import { DeleteProjectButton, HideProjectButton } from "../projects/DeleteProjectButton";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -45,10 +47,10 @@ function NewProjectForm({ organizationId, className = "" }: { organizationId: st
     <form action={createProject} className={`flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center ${className}`}>
       <input type="hidden" name="organizationId" value={organizationId} />
       <input name="name" placeholder="New project name" required aria-label="New project name" className="input sm:max-w-xs" />
-      <button className="btn btn-primary">
+      <SubmitButton className="btn btn-primary">
         <IconPlus size={16} />
         Create project
-      </button>
+      </SubmitButton>
     </form>
   );
 }
@@ -89,7 +91,7 @@ function LinesNeedingAttention({ overview, showProject }: { overview: ProjectOve
                   </Link>
                 </td>
                 {showProject && <td>{r.project}</td>}
-                <td className="tabular-nums">{r.revision ?? "-"}</td>
+                <td>{r.revision ? <RevMark rev={r.revision} /> : "-"}</td>
                 <td className="text-xs text-muted-foreground">
                   {CHECK_LABEL.filter(([k]) => r.byCheck[k] > 0)
                     .map(([k, label]) => `${label} ${r.byCheck[k]}`)
@@ -137,12 +139,11 @@ function HiddenProjects({ projects, className = "" }: { projects: Array<{ id: st
 function OverviewRow({ project }: { project: ProjectOverview }) {
   const errorLines = project.results.filter((r) => r.errors > 0).length;
   return (
-    <li className="flex flex-col gap-2 px-5 py-4">
+    <li className="flex flex-col gap-2.5 px-5 py-4 transition-colors hover:bg-muted/40">
       <div className="flex flex-wrap items-center gap-3">
-        <Link href={`/projects/${project.id}`} className="group flex min-w-0 items-center gap-2 font-medium">
-          <IconFolder size={17} className="flex-none text-muted-foreground" />
+        <Link href={`/projects/${project.id}`} className="group flex min-w-0 items-center gap-2 font-heading text-[1.0625rem] font-semibold hover:text-link">
           <span className="truncate">{project.name}</span>
-          <IconChevronRight size={16} className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+          <IconChevronRight size={16} className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" />
         </Link>
         <span className="ml-auto flex flex-wrap items-center gap-2">
           {errorLines > 0 && (
@@ -192,12 +193,13 @@ function MonitoringSummary({ progress, scope }: { progress: ProjectProgress[]; s
       tone: "",
     },
   ];
+  // One ruled frame, read like a title block, rather than four floating tiles.
   return (
-    <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <section className="ruled-strip" aria-label="Headline figures">
       {tiles.map((t) => (
-        <div key={t.label} className="card flex flex-col gap-1">
+        <div key={t.label} className="flex flex-col gap-0.5">
           <span className="text-xs text-muted-foreground">{t.label}</span>
-          <span className={`text-2xl font-semibold tabular-nums ${t.tone}`}>{t.value}</span>
+          <span className={`ruled-value ${t.tone}`}>{t.value}</span>
           <span className="text-xs text-muted-foreground">{t.hint}</span>
         </div>
       ))}
@@ -255,10 +257,14 @@ function RecentChecks({ progress }: { progress: ProjectProgress[] }) {
                       <Badge tone="warning" dot title="Checked, but a document it was based on has changed since">
                         Re-check
                       </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {r.revision && r.currentRevision && r.revision !== r.currentRevision
-                          ? `ISO now Rev ${r.currentRevision}`
-                          : changeSummary(r.sources)}
+                      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        {r.revision && r.currentRevision && r.revision !== r.currentRevision ? (
+                          <>
+                            ISO now <RevMark rev={r.currentRevision} tone="changed" size={20} />
+                          </>
+                        ) : (
+                          changeSummary(r.sources)
+                        )}
                       </span>
                     </span>
                   ) : (
@@ -312,53 +318,85 @@ function ProjectProgressStrip({ progress, overview }: { progress: ProjectProgres
   );
 }
 
-function ProjectProgressRow({ project }: { project: ProjectProgress }) {
-  // Against the total Document Control stated, or -- until it has stated one --
-  // the lines read off the drawings so far, which at least measures something.
-  const max = project.total ?? project.uploaded;
-  const complete = project.total != null && project.total > 0 && project.done >= project.total && project.recheck === 0;
-
+// The projects as a DRAWING REGISTER -- the ruled schedule a drawing office keeps
+// of what it holds and how far each item has got. One row per project, the same
+// facts in the same column every time, so a dozen projects read down the page
+// instead of as a dozen separate blocks.
+function ProjectRegister({ progress }: { progress: ProjectProgress[] }) {
   return (
-    <li className="flex flex-col gap-3 px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Link href={`/projects/${project.projectId}`} className="group flex min-w-0 items-center gap-2 font-medium">
-          <IconFolder size={17} className="flex-none text-muted-foreground" />
-          <span className="truncate">{project.projectName}</span>
-          <IconChevronRight size={16} className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-        </Link>
-
-        <span className="ml-auto flex flex-wrap items-center gap-2">
-          {project.recheck > 0 && (
-            <Badge tone="warning" dot title="Checked against a drawing a later revision has replaced">
-              {project.recheck} to re-check
-            </Badge>
-          )}
-          <Badge tone={complete ? "success" : "neutral"} dot={complete}>
-            {project.done} of {project.total ?? project.uploaded} {project.total == null ? "uploaded " : ""}lines checked
-          </Badge>
-          <HideProjectButton projectId={project.projectId} name={project.projectName} />
-          <DeleteProjectButton projectId={project.projectId} name={project.projectName} />
-        </span>
-      </div>
-
-      <ProgressBar value={project.done} max={max} recheck={project.recheck} label={`${project.projectName} lines checked`} />
-
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
-        <span>{project.uploaded} ISO lines read from the drawings</span>
-        {project.reviews[0] && <span>last checked {when.format(project.reviews[0].reviewedAt)}</span>}
-
-        {/* Every percentage on this page is measured against this figure, so it
-            is set where the percentages are compared. Also on the project's own
-            page, from the same component. */}
-        {project.lineList ? (
-          <span className="ml-auto" title="Counted from the project's current line list, and updated when a new revision of it is uploaded">
-            {project.lineList.count} lines in the line list ({project.lineList.fileName})
-          </span>
-        ) : (
-          <TotalLinesForm projectId={project.projectId} total={project.total} className="ml-auto" />
-        )}
-      </div>
-    </li>
+    <div className="table-wrap">
+      <table className="table min-w-[52rem]">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th className="w-[34%]">Lines checked</th>
+            <th>Last checked</th>
+            <th>Total lines</th>
+            <th className="w-px">
+              <span className="sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {progress.map((p) => {
+            const max = p.total ?? p.uploaded;
+            const complete = p.total != null && p.total > 0 && p.done >= p.total && p.recheck === 0;
+            return (
+              <tr key={p.projectId} className={p.recheck > 0 ? "row-pending" : ""}>
+                <td>
+                  <Link
+                    href={`/projects/${p.projectId}`}
+                    className="group inline-flex min-w-0 items-center gap-1.5 font-heading text-[1.0625rem] font-semibold hover:text-link"
+                  >
+                    <span className="truncate">{p.projectName}</span>
+                    <IconChevronRight
+                      size={15}
+                      className="flex-none text-muted-foreground transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none"
+                    />
+                  </Link>
+                  <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                    {p.uploaded} ISO line{p.uploaded === 1 ? "" : "s"} read
+                    {p.recheck > 0 && (
+                      <Badge tone="warning" dot title="Checked against a drawing a later revision has replaced">
+                        {p.recheck} to re-check
+                      </Badge>
+                    )}
+                    {complete && (
+                      <Badge tone="success" dot>
+                        Complete
+                      </Badge>
+                    )}
+                  </span>
+                </td>
+                <td>
+                  <ProgressBar value={p.done} max={max} recheck={p.recheck} of={p.total ?? `${p.uploaded} read`} label={`${p.projectName} lines checked`} />
+                </td>
+                <td className="whitespace-nowrap text-xs text-muted-foreground">{p.reviews[0] ? when.format(p.reviews[0].reviewedAt) : "-"}</td>
+                <td>
+                  {/* Every percentage is measured against this figure, so it is set
+                      in the row it governs. Counted from the line list where the
+                      project has one. */}
+                  {p.lineList ? (
+                    <span className="text-xs" title={`Counted from ${p.lineList.fileName}, and updated when a new revision of it is uploaded`}>
+                      <span className="font-semibold tabular-nums">{p.lineList.count}</span>
+                      <span className="text-muted-foreground"> from the line list</span>
+                    </span>
+                  ) : (
+                    <TotalLinesForm projectId={p.projectId} total={p.total} />
+                  )}
+                </td>
+                <td>
+                  <span className="flex items-center justify-end gap-1">
+                    <HideProjectButton projectId={p.projectId} name={p.projectName} />
+                    <DeleteProjectButton projectId={p.projectId} name={p.projectName} />
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -370,25 +408,19 @@ function ProjectProgressRow({ project }: { project: ProjectProgress }) {
 // projects -- an id from another client, or a stale one, falls back to the client
 // view rather than showing anything it should not.
 function ScopePicker({ projects, selected }: { projects: Array<{ id: string; name: string }>; selected: string | null }) {
+  // Tabs along a rule, like the sheets of a drawing set: the one in view sits
+  // open on the rule, the rest stand behind it.
   const item = (href: string, label: string, active: boolean, key: string) => (
     <li key={key}>
-      <Link
-        href={href}
-        aria-current={active ? "page" : undefined}
-        className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors ${
-          active ? "border-primary bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
-        }`}
-      >
+      <Link href={href} aria-current={active ? "page" : undefined} className="scope-tab">
         {label}
       </Link>
     </li>
   );
   return (
-    <nav aria-label="Dashboard scope" className="flex flex-col gap-2">
-      <p className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">Show</p>
-      <ul className="flex flex-wrap gap-2">
+    <nav aria-label="Dashboard scope">
+      <ul className="scope-tabs">
         {item("/dashboard", "All projects", selected === null, "all")}
-        <li aria-hidden="true" className="mx-1 w-px self-stretch bg-border" />
         {projects.map((p) => item(`/dashboard?project=${p.id}`, p.name, selected === p.id, p.id))}
       </ul>
     </nav>
@@ -524,11 +556,15 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                   </span>
                 )}
               </div>
-              <ul className="divide-y divide-border">
-                {progress !== null
-                  ? progress.map((p) => <ProjectProgressRow key={p.projectId} project={p} />)
-                  : overview.map((o) => <OverviewRow key={o.id} project={o} />)}
-              </ul>
+              {progress !== null ? (
+                <ProjectRegister progress={progress} />
+              ) : (
+                <ul className="divide-y divide-border">
+                  {overview.map((o) => (
+                    <OverviewRow key={o.id} project={o} />
+                  ))}
+                </ul>
+              )}
 
               {/* Creating a project is the other half of what the removed
                   "Projects" nav link used to be for -- kept here, at the foot of

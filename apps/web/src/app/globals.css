@@ -26,63 +26,77 @@
 :root {
   color-scheme: light;
 
+  /* Clean and modern: a near-white ground, white panels lifted by a soft
+     shadow, one confident blue, and red kept for faults. The engineering
+     STRUCTURE stays (title block, register, sheet labels); the styling does
+     not imitate paper. */
+
+  /* Slate neutrals and a trust blue: the palette a B2B dashboard is read in
+     (ui-ux-pro-max's B2B / analytics row). Body text slate-900, muted text
+     never lighter than slate-600, so every text pair clears 4.5:1. */
+
   /* Surfaces */
-  --background: #f4f6f9;
+  --background: #f8fafc;
   --foreground: #0f172a;
   --card: #ffffff;
   --card-foreground: #0f172a;
-  --muted: #eef1f6;
-  --muted-foreground: #566376;
+  --muted: #f1f5f9;
+  --muted-foreground: #475569;
 
   /* Lines and focus */
-  --border: #e1e6ee;
-  --border-strong: #c9d1dd;
-  --input: #c9d1dd;
-  --ring: #3b82f6;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --input: #cbd5e1;
+  --ring: #2563eb;
 
   /* Brand */
-  --primary: #1d4ed8;
-  --primary-hover: #1e40af;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
   --primary-foreground: #ffffff;
-  --primary-soft: #eaf0fe;
+  --primary-soft: #eff6ff;
   --link: #1d4ed8;
 
   /* Status: text colour, soft fill, border, and a solid for dots and bars */
-  --success: #146c43;
-  --success-soft: #e8f6ee;
-  --success-border: #b9e2c9;
-  --success-solid: #16a34a;
+  --success: #1d6a42;
+  --success-soft: #e6f3eb;
+  --success-border: #b3d9c1;
+  --success-solid: #2b9358;
 
-  --warning: #8a4a0b;
-  --warning-soft: #fff6e0;
-  --warning-border: #f3d38b;
-  --warning-solid: #d97706;
+  --warning: #7d4a0a;
+  --warning-soft: #fbf1dc;
+  --warning-border: #e4c88b;
+  --warning-solid: #c98612;
 
-  --danger: #b42318;
-  --danger-soft: #fdecea;
-  --danger-border: #f5b8b1;
-  --danger-solid: #dc2626;
+  /* Redline: the colour a checker marks a correction in. */
+  --danger: #a8251b;
+  --danger-soft: #fbecea;
+  --danger-border: #e9b5ae;
+  --danger-solid: #c8352a;
 
   --info: #1d4ed8;
-  --info-soft: #eaf0fe;
-  --info-border: #b9cdf9;
+  --info-soft: #eff6ff;
+  --info-border: #bfdbfe;
   --info-solid: #2563eb;
 
   /* Navigation rail: dark in both themes, deeper still in dark mode */
-  --sidebar: #0c1322;
-  --sidebar-border: #1a2540;
-  --sidebar-foreground: #b6c2d4;
-  --sidebar-strong: #f1f5f9;
-  --sidebar-muted: #8593a8;
+  --sidebar: #0f1823;
+  --sidebar-border: #1d2a3a;
+  --sidebar-foreground: #b4c0ce;
+  --sidebar-strong: #f0f4f8;
+  --sidebar-muted: #8592a3;
   --sidebar-hover: rgba(255, 255, 255, 0.06);
-  --sidebar-active: #16233f;
-  --sidebar-accent: #60a5fa;
+  --sidebar-active: #18283d;
+  --sidebar-accent: #86aee6;
 
-  --radius: 0.625rem;
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(15, 23, 42, 0.01);
-  --shadow-pop: 0 12px 32px -12px rgba(15, 23, 42, 0.3);
+  /* Radii by role: panels 12px, controls 8px, chips fully rounded. */
+  --radius: 0.75rem;
+  --radius-control: 0.5rem;
+  --radius-chip: 9999px;
+  /* A panel is lifted just off the ground; a menu or dialog floats clear of it. */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow-pop: 0 16px 40px -12px rgba(15, 23, 42, 0.22), 0 0 0 1px rgba(15, 23, 42, 0.04);
 
-  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23566376' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23556272' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /* `screen` is deliberate: a printed page never matches it, so paper always
@@ -91,58 +105,61 @@
   :root {
     color-scheme: dark;
 
-    --background: #0a0e16;
-    --foreground: #e6eaf1;
-    --card: #111826;
-    --card-foreground: #e6eaf1;
-    --muted: #182131;
-    --muted-foreground: #93a0b4;
+    --background: #0c0f14;
+    --foreground: #e7eaf0;
+    --card: #141820;
+    --card-foreground: #e7eaf0;
+    --muted: #1b2029;
+    --muted-foreground: #98a1b0;
 
-    --border: #212c3f;
-    --border-strong: #2f3c52;
-    --input: #2f3c52;
-    --ring: #5b8def;
+    --border: #262c37;
+    --border-strong: #353d4a;
+    --input: #353d4a;
+    --ring: #6b93f2;
 
-    --primary: #3b6cf0;
-    --primary-hover: #4d7bf4;
+    --primary: #3d6ff0;
+    --primary-hover: #5481f3;
     --primary-foreground: #ffffff;
-    --primary-soft: #14203a;
-    --link: #8db3ff;
+    --primary-soft: #172342;
+    --link: #8fb0ff;
 
-    --success: #5fd58d;
-    --success-soft: #0f2a1c;
-    --success-border: #1d5a38;
-    --success-solid: #22c55e;
+    --success: #74cf98;
+    --success-soft: #10261a;
+    --success-border: #24553a;
+    --success-solid: #34a866;
 
-    --warning: #f6c453;
-    --warning-soft: #2d2208;
-    --warning-border: #6b4e12;
-    --warning-solid: #f59e0b;
+    --warning: #e9c06a;
+    --warning-soft: #29200c;
+    --warning-border: #5f4917;
+    --warning-solid: #d39a2a;
 
-    --danger: #ff8a80;
-    --danger-soft: #341311;
-    --danger-border: #7a2a24;
-    --danger-solid: #ef4444;
+    --danger: #f0897e;
+    --danger-soft: #2c1513;
+    --danger-border: #6e2c25;
+    --danger-solid: #dd4a3e;
 
-    --info: #8db3ff;
-    --info-soft: #101f3d;
-    --info-border: #243f7a;
-    --info-solid: #5b8def;
+    --info: #8fb0ff;
+    --info-soft: #172342;
+    --info-border: #2a4482;
+    --info-solid: #5c86f2;
 
-    --sidebar: #080d18;
-    --sidebar-border: #151e31;
-    --sidebar-active: #14203a;
+    --sidebar: #090e14;
+    --sidebar-border: #18212c;
+    --sidebar-active: #16253a;
 
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-pop: 0 12px 32px -12px rgba(0, 0, 0, 0.7);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05);
 
-    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393a0b4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2396a2b1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
 }
 
 @theme inline {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: var(--font-ui), ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* `font-heading` -- page titles, card titles. The same face as the body,
+     set tighter and heavier: one family reads cleaner than two. */
+  --font-heading: var(--font-ui), ui-sans-serif, system-ui, "Segoe UI", Arial, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -218,7 +235,15 @@
   h1,
   h2,
   h3 {
+    font-family: var(--font-heading);
     text-wrap: balance;
+  }
+
+  /* Figures line up in columns everywhere -- this is a tool full of counts,
+     sizes and quantities read down a table. */
+  td,
+  th {
+    font-variant-numeric: tabular-nums;
   }
 
   ::selection {
@@ -228,6 +253,43 @@
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
+  }
+
+  /* Anything clickable says so. Tailwind v4's reset gives a <button> the
+     default arrow, which makes a working button look inert. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  label[for],
+  select {
+    cursor: pointer;
+  }
+
+  /* On a phone, a field under 16px makes iOS zoom the page on focus, and the
+     working 14px is small to read at arm's length. */
+  @media (max-width: 640px) {
+    .input,
+    select.input,
+    textarea.input {
+      font-size: 1rem;
+    }
+  }
+
+  /* On a touch screen, a control must be big enough for a finger: 44px for a
+     button, 40px for the small ones used inside tables. Desktop keeps its
+     compact sizes -- a mouse needs no such room. */
+  @media (pointer: coarse) {
+    .btn {
+      min-height: 2.75rem;
+    }
+    .btn-sm,
+    .btn-xs,
+    .input-sm {
+      min-height: 2.5rem;
+    }
+    .input {
+      min-height: 2.75rem;
+    }
   }
 
   input[type="checkbox"],
@@ -281,10 +343,10 @@
     padding: 1.25rem;
   }
   .card-title {
-    font-size: 0.9375rem;
+    font-family: var(--font-heading);
+    font-size: 1.0625rem;
     font-weight: 600;
-    letter-spacing: -0.01em;
-    line-height: 1.35;
+    line-height: 1.3;
   }
   .card-description {
     margin-top: 0.125rem;
@@ -292,15 +354,17 @@
     color: var(--muted-foreground);
   }
   .section-title {
-    font-size: 0.9375rem;
+    font-family: var(--font-heading);
+    font-size: 1.0625rem;
     font-weight: 600;
-    letter-spacing: -0.01em;
   }
+  /* A small label above a block. Sentence case in the heading face: an
+     ALL-CAPS tracked label over every block is decoration, and reads as a
+     template. */
   .eyebrow {
-    font-size: 0.6875rem;
+    font-family: var(--font-heading);
+    font-size: 0.8125rem;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     color: var(--muted-foreground);
   }
 
@@ -310,7 +374,7 @@
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
     text-underline-offset: 3px;
-    transition: text-decoration-color 0.12s;
+    transition: text-decoration-color 0.15s;
   }
   .link:hover {
     text-decoration-color: currentColor;
@@ -325,7 +389,7 @@
     height: 2.25rem;
     padding: 0 0.875rem;
     border: 1px solid transparent;
-    border-radius: 0.5rem;
+    border-radius: var(--radius-control);
     font-size: 0.875rem;
     font-weight: 500;
     line-height: 1;
@@ -333,10 +397,10 @@
     cursor: pointer;
     user-select: none;
     transition:
-      background-color 0.12s,
-      border-color 0.12s,
-      color 0.12s,
-      box-shadow 0.12s;
+      background-color 0.15s,
+      border-color 0.15s,
+      color 0.15s,
+      box-shadow 0.15s;
   }
   .btn:disabled,
   .btn[aria-disabled="true"] {
@@ -346,9 +410,6 @@
   .btn-primary {
     background: var(--primary);
     color: var(--primary-foreground);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.14),
-      0 1px 2px rgba(15, 23, 42, 0.18);
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--primary-hover);
@@ -357,7 +418,6 @@
     background: var(--card);
     color: var(--foreground);
     border-color: var(--input);
-    box-shadow: 0 1px 1px rgba(15, 23, 42, 0.04);
   }
   .btn-secondary:hover:not(:disabled) {
     background: var(--muted);
@@ -385,14 +445,12 @@
     padding: 0 0.625rem;
     gap: 0.375rem;
     font-size: 0.8125rem;
-    border-radius: 0.4375rem;
   }
   .btn-xs {
     height: 1.625rem;
     padding: 0 0.5rem;
     gap: 0.25rem;
     font-size: 0.75rem;
-    border-radius: 0.375rem;
   }
 
   /* ---- Fields ------------------------------------------------------------ */
@@ -413,13 +471,13 @@
     height: 2.25rem;
     padding: 0 0.75rem;
     border: 1px solid var(--input);
-    border-radius: 0.5rem;
+    border-radius: var(--radius-control);
     background-color: var(--card);
     color: var(--foreground);
     font-size: 0.875rem;
     transition:
-      border-color 0.12s,
-      box-shadow 0.12s;
+      border-color 0.15s,
+      box-shadow 0.15s;
   }
   .input::placeholder {
     color: var(--muted-foreground);
@@ -438,7 +496,6 @@
     height: 1.875rem;
     padding: 0 0.5rem;
     font-size: 0.8125rem;
-    border-radius: 0.4375rem;
   }
   select.input {
     appearance: none;
@@ -466,7 +523,7 @@
     font-size: 0.8125rem;
     font-weight: 500;
     cursor: pointer;
-    transition: background-color 0.12s;
+    transition: background-color 0.15s;
   }
   .input-file:hover::file-selector-button {
     background: var(--border);
@@ -484,16 +541,17 @@
   }
   /* Child combinators throughout: a cell can hold a small table of its own
      (a spool's workings, say) and that one must not inherit these rules. */
+  /* Column heads: small, sentence case, on a light band -- quiet enough that
+     the rows are what is read. */
   .table > thead > tr > th {
-    padding: 0.625rem 0.875rem;
-    background: var(--muted);
+    padding: 0.5625rem 0.875rem;
+    background: color-mix(in srgb, var(--muted) 70%, transparent);
     border-bottom: 1px solid var(--border);
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: 0.75rem;
+    font-weight: 500;
     color: var(--muted-foreground);
     white-space: nowrap;
+    vertical-align: bottom;
   }
   .table > tbody > tr > td {
     padding: 0.625rem 0.875rem;
@@ -512,6 +570,15 @@
   .table-compact > thead > tr > th {
     padding: 0.5rem 0.75rem;
   }
+  /* A row that FAILS a check carries a redline at its left edge, so faults
+     show while scanning down a long table, before any text is read. A row
+     waiting on someone (pending, on hold) carries the info colour instead. */
+  .table > tbody > tr.row-fault > td:first-child {
+    box-shadow: inset 3px 0 0 var(--danger-solid);
+  }
+  .table > tbody > tr.row-pending > td:first-child {
+    box-shadow: inset 3px 0 0 var(--info-solid);
+  }
   .table-compact > tbody > tr > td {
     padding: 0.4375rem 0.75rem;
   }
@@ -529,9 +596,9 @@
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    padding: 0.125rem 0.5rem;
+    padding: 0.0625rem 0.5625rem;
     border: 1px solid var(--border);
-    border-radius: 9999px;
+    border-radius: var(--radius-chip);
     background: var(--muted);
     color: var(--muted-foreground);
     font-size: 0.75rem;
@@ -615,7 +682,7 @@
   .callout {
     padding: 0.625rem 0.875rem;
     border-left: 3px solid var(--border-strong);
-    border-radius: 0 0.5rem 0.5rem 0;
+    border-radius: 0 var(--radius-control) var(--radius-control) 0;
     background: var(--muted);
     font-size: 0.8125rem;
     color: var(--muted-foreground);
@@ -637,7 +704,8 @@
   }
   .stat-value {
     margin-top: 0.125rem;
-    font-size: 1.5rem;
+    font-family: var(--font-heading);
+    font-size: 1.625rem;
     font-weight: 600;
     letter-spacing: -0.02em;
     line-height: 1.25;
@@ -690,6 +758,18 @@
      clipped by an ancestor's overflow -- which a popover inside .table-wrap
      would be -- and Escape, the focus trap and the backdrop come with it. */
   .modal {
+    /* Centred in the viewport. The browser does this for a modal <dialog> with
+       margin: auto, but the base reset zeroes every margin, which pinned the
+       panel to the top-left corner. */
+    position: fixed;
+    inset: 0;
+    /* A <dialog> inherits text alignment from wherever it sits in the page -- a
+       right-aligned table cell pushed every label in it to the right. */
+    text-align: left;
+    margin: auto;
+    height: fit-content;
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
     width: min(30rem, calc(100vw - 2rem));
     padding: 0;
     border: 1px solid var(--border);
@@ -712,7 +792,8 @@
     border-bottom: 1px solid var(--border);
   }
   .modal-title {
-    font-size: 0.9375rem;
+    font-family: var(--font-heading);
+    font-size: 1.0625rem;
     font-weight: 600;
     line-height: 1.35;
   }
@@ -772,6 +853,206 @@
     color: var(--primary-foreground);
   }
 
+  /* ---- Title block --------------------------------------------------------
+     A line's page and its report open with its facts laid out the way the
+     drawing's own title block lays them out -- the line number first and
+     widest, labelled cells beside it -- on one soft panel, divided by light
+     rules rather than framed in black. */
+  .title-block {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    color: var(--card-foreground);
+    box-shadow: var(--shadow-card);
+    overflow: clip;
+  }
+  @media (min-width: 768px) {
+    .title-block {
+      grid-template-columns: minmax(0, 2.6fr) repeat(4, minmax(0, 1fr));
+    }
+  }
+  .title-block-cell {
+    min-width: 0;
+    padding: 0.875rem 1.125rem;
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+  }
+  /* The line number spans the top on a phone; on a wide screen it is the
+     first, widest cell of the row. */
+  .title-block-cell.is-main {
+    grid-column: 1 / -1;
+    border-top: 0;
+    border-left: 0;
+  }
+  .title-block-cell:nth-child(2n) {
+    border-left: 0;
+  }
+  @media (min-width: 768px) {
+    .title-block-cell.is-main {
+      grid-column: auto;
+    }
+    .title-block-cell {
+      border-top: 0;
+    }
+    .title-block-cell:nth-child(2n) {
+      border-left: 1px solid var(--border);
+    }
+    .title-block-cell.is-foot {
+      border-left: 0;
+    }
+  }
+  .title-block-cell.is-foot {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    padding-block: 0.625rem;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    background: color-mix(in srgb, var(--muted) 60%, transparent);
+  }
+  .title-block-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+  .title-block-value {
+    margin-top: 0.125rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+  .title-block-value.is-tag {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 1.0625rem;
+    letter-spacing: 0;
+  }
+  .title-block-cell.is-foot .title-block-value {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+
+  /* ---- Figure strip -------------------------------------------------------
+     Headline figures in one panel, divided by light rules -- one object
+     rather than four floating tiles. */
+  .ruled-strip {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+    overflow: clip;
+  }
+  @media (min-width: 1024px) {
+    .ruled-strip {
+      grid-template-columns: repeat(var(--cells, 4), minmax(0, 1fr));
+    }
+  }
+  .ruled-strip > * {
+    min-width: 0;
+    padding: 1rem 1.25rem;
+    border-left: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+  }
+  .ruled-strip > :nth-child(odd) {
+    border-left: 0;
+  }
+  .ruled-strip > :nth-child(-n + 2) {
+    border-top: 0;
+  }
+  /* `:nth-child(n)` rather than `*`: it has to outrank the phone rules above
+     (`:nth-child(odd)` would otherwise strip the divider off every third cell). */
+  @media (min-width: 1024px) {
+    .ruled-strip > :nth-child(n) {
+      border-top: 0;
+      border-left: 1px solid var(--border);
+    }
+    .ruled-strip > :first-child {
+      border-left: 0;
+    }
+  }
+  .ruled-value {
+    font-size: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Sheet label ----------------------------------------------------------
+     Which sheet of the drawing a block belongs to, "Sheet 2 of 5", as a small
+     pill above the panel it heads. */
+  .sheet-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    padding: 0.1875rem 0.75rem;
+    border-radius: 9999px;
+    background: var(--primary-soft);
+    color: var(--link);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+  .sheet-tab > span {
+    color: color-mix(in srgb, var(--link) 70%, var(--muted-foreground));
+  }
+  .sheet-panel {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+    overflow: clip;
+  }
+
+  /* ---- Scope switch: a segmented control for what the page covers ------- */
+  .scope-tabs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.125rem;
+    padding: 0.25rem;
+    border: 1px solid var(--border);
+    border-radius: 0.625rem;
+    background: var(--muted);
+  }
+  .scope-tab {
+    display: inline-flex;
+    align-items: center;
+    height: 2rem;
+    padding: 0 0.875rem;
+    border-radius: 0.4375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+    transition:
+      color 0.15s,
+      background-color 0.15s,
+      box-shadow 0.15s;
+  }
+  .scope-tab:hover {
+    color: var(--foreground);
+  }
+  .scope-tab[aria-current="page"] {
+    background: var(--card);
+    color: var(--foreground);
+    box-shadow: var(--shadow-card);
+  }
+
+  /* ---- Report page --------------------------------------------------------
+     The report is a document, so it gets a little more room than a panel. */
+  .drawing-sheet {
+    box-shadow: var(--shadow-card);
+  }
+
   /* ---- Sign-in backdrop: a faint drawing grid ---------------------------- */
   .blueprint {
     background-color: var(--sidebar);
@@ -826,12 +1107,17 @@
     transform: none;
   }
 }
+/* Reduced motion, everywhere: every animation and transition in the app --
+   including the Tailwind utilities on individual pages -- settles instantly
+   rather than moving, for anyone who has asked their system for less motion. */
 @media (prefers-reduced-motion: reduce) {
-  .badge-live::before,
-  .drawer-panel,
-  .drawer-backdrop,
-  .modal[open] {
-    animation: none !important;
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -859,6 +1145,7 @@
   }
   body {
     background: #fff;
+    background-image: none;
     color: #000;
   }
   .card,

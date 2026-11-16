@@ -39,7 +39,7 @@ function FeatureCard({ feature }: { feature: Feature }) {
       href={feature.href}
       className="card group flex h-full flex-col gap-4 transition hover:border-border-strong hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="flex h-11 w-11 flex-none items-center justify-center rounded-xl bg-primary-soft text-link">
+      <span className="flex h-11 w-11 flex-none items-center justify-center rounded-md bg-primary-soft text-link">
         <Icon size={22} />
       </span>
       <div className="min-w-0 flex-1">

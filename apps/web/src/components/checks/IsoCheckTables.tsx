@@ -3,12 +3,26 @@ import type { IsoChecks } from "@/lib/isoChecks";
 import { ADMIN_STATUS_TONE, bomFault } from "@/lib/verifyBomCrossCheck";
 import { combineAdminText } from "@/lib/parseSheetPage";
 import { HOLD_LABEL } from "@/lib/pending";
+import { sheetLabel } from "@/lib/sheetLabel";
 import { clearItemHold, setItemHold } from "@/app/(app)/projects/[id]/holdActions";
 import type { DesignBasisRow, RoutingFittingRow, ValveMatchGroup } from "@/lib/verifyIso";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 // The tables behind an ISO's cross-document checks. Shown on the ISO's own page
 // and, for a plain user, inside a line's page -- one component each, so the two
 // places cannot drift apart.
+
+// The tab on top of a sheet's panel, labelled as a drawing set labels a sheet:
+// "Sheet 2 of 5", with the line number beside it.
+function SheetTab({ sheet, page, lineNumber }: { sheet: string; page: number | null; lineNumber: string }) {
+  const label = sheet ? sheetLabel(sheet) : page != null ? `page ${page}` : "?";
+  return (
+    <span className="sheet-tab">
+      Sheet {label}
+      <span className="font-mono text-xs font-normal text-muted-foreground">{lineNumber}</span>
+    </span>
+  );
+}
 
 type BomSheet = IsoChecks["bomBySpec"][number];
 type MtoSheet = IsoChecks["mtoBySpec"][number];
@@ -71,7 +85,7 @@ export function DesignBasisTable({ rows }: { rows: DesignBasisRow[] }) {
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={row.field}>
+              <tr key={row.field} className={row.status === "mismatch" ? "row-fault" : ""}>
                 <td className="font-medium">{row.field}</td>
                 <td className={row.status === "mismatch" ? ON_ISO : ""}>{row.isoValue ?? "-"}</td>
                 <td>{row.pllValue ?? "-"}</td>
@@ -106,7 +120,7 @@ export function RoutingTable({ rows, upRev }: { rows: RoutingFittingRow[]; upRev
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={row.field}>
+              <tr key={row.field} className={!upRev && (row.status === "mismatch" || row.status === "iso only") ? "row-fault" : ""}>
                 <td className="font-medium">{row.field}</td>
                 <td className={!upRev && (row.status === "mismatch" || row.status === "iso only") ? ON_ISO : ""}>{row.isoValue ?? "-"}</td>
                 <td>{row.pidValue ?? "-"}</td>
@@ -168,7 +182,7 @@ export function FittingsMatchGroups({ groups, upRev }: { groups: ValveMatchGroup
               </thead>
               <tbody>
                 {group.rows.map((row) => (
-                  <tr key={`${row.category}-${row.size}`}>
+                  <tr key={`${row.category}-${row.size}`} className={row.status === "match" || upRev ? "" : "row-fault"}>
                     <td className="font-medium">{row.category}</td>
                     <td className="font-mono text-xs">{row.size}</td>
                     <td className={`tabular-nums ${row.status === "match" || upRev ? "" : ON_ISO}`}>{row.isoCount || "-"}</td>
@@ -208,13 +222,11 @@ export function BomSheets({ sheets }: { sheets: BomSheet[] }) {
   return (
     <div className="flex flex-col gap-6">
       {sheets.map(({ lineNumber, sheetLabel, page, breaks, groups }) => (
-        <div key={`${lineNumber}-${page ?? sheetLabel}`} className="overflow-hidden rounded-lg border">
-          <div className="border-b bg-muted/50 px-4 py-3">
-            <p className="text-sm font-medium">
-              Sheet {sheetLabel || "?"} <span className="font-normal text-muted-foreground">&middot; line</span>{" "}
-              <span className="font-mono font-normal">{lineNumber}</span>
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
+        <section key={`${lineNumber}-${page ?? sheetLabel}`} className="flex flex-col items-start">
+          <SheetTab sheet={sheetLabel} page={page} lineNumber={lineNumber} />
+          <div className="sheet-panel w-full">
+          <div className="border-b bg-muted/40 px-4 py-2.5">
+            <p className="text-xs text-muted-foreground">
               {breaks.length > 1 ? (
                 <>Spec break: {breaks.map((b) => `${b.spec_class}${b.rating ? ` (${b.rating}#)` : ""}`).join(" → ")}</>
               ) : (
@@ -273,7 +285,8 @@ export function BomSheets({ sheets }: { sheets: BomSheet[] }) {
               </div>
             ))}
           </div>
-        </div>
+          </div>
+        </section>
       ))}
     </div>
   );
@@ -349,7 +362,7 @@ function HoldControl({ row, marking }: { row: MtoSheet["groups"][number]["rows"]
           <option value="hold">On hold</option>
         </select>
         <textarea name="remark" required rows={2} placeholder="Waiting on what? e.g. vendor datasheet from client" className="input text-xs" />
-        <button className="btn btn-secondary btn-xs self-start">Save</button>
+        <SubmitButton className="btn btn-secondary btn-xs self-start">Save</SubmitButton>
       </form>
     </details>
   );
@@ -365,12 +378,10 @@ export function MtoSheets({ sheets, marking }: { sheets: MtoSheet[]; marking?: H
   return (
     <div className="flex flex-col gap-4">
       {sheets.map(({ lineNumber, sheetLabel, page, groups }) => (
-        <div key={`${lineNumber}-${page ?? sheetLabel}`} className="overflow-hidden rounded-lg border">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/50 px-3 py-2">
-            <p className="text-sm font-medium">
-              Sheet {sheetLabel || "?"} <span className="font-normal text-muted-foreground">&middot; line</span>{" "}
-              <span className="font-mono font-normal">{lineNumber}</span>
-            </p>
+        <section key={`${lineNumber}-${page ?? sheetLabel}`} className="flex flex-col items-start">
+          <SheetTab sheet={sheetLabel} page={page} lineNumber={lineNumber} />
+          <div className="sheet-panel w-full">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-b bg-muted/40 px-3 py-2">
             <CountBadges rows={groups.flatMap((g) => g.rows)} />
           </div>
           <ReferenceNote reference="the admin spec (item list)" />
@@ -410,7 +421,16 @@ export function MtoSheets({ sheets, marking }: { sheets: MtoSheet[]; marking?: H
                     // for when the data arrives -- but it is not shown as an error.
                     const faultTone = hold ? "text-muted-foreground" : "font-medium text-danger";
                     return (
-                      <tr key={row.id} className={hold ? "bg-info-soft/40" : check.status === "wrong_spec" ? "bg-danger-soft/40" : ""}>
+                      <tr
+                        key={row.id}
+                        className={
+                          hold
+                            ? "row-pending bg-info-soft/40"
+                            : check.status === "wrong_spec" || check.status === "deviation" || check.status === "missing"
+                              ? "row-fault"
+                              : ""
+                        }
+                      >
                         <td className="tabular-nums text-muted-foreground">{row.itemNo}</td>
                         <td className="whitespace-nowrap tabular-nums">{row.size}</td>
                         <td className="tabular-nums">{row.quantity}</td>
@@ -483,7 +503,8 @@ export function MtoSheets({ sheets, marking }: { sheets: MtoSheet[]; marking?: H
               ))}
             </table>
           </div>
-        </div>
+          </div>
+        </section>
       ))}
     </div>
   );

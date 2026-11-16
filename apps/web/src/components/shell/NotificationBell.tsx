@@ -70,7 +70,7 @@ export function NotificationBell({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lg">
+        <div className="absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-md border border-border bg-card text-card-foreground shadow-[var(--shadow-pop)]">
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
             <p className="text-sm font-semibold">Drawing revisions</p>
             {markRead && unread > 0 && (

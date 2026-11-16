@@ -48,7 +48,7 @@ function Panel({ title, sub, children, className = "" }: { title: string; sub?: 
 // numbers are meant to be read.
 function Kpi({ color, label, value, unit, hint }: { color: string; label: string; value: string; unit?: string; hint: string }) {
   return (
-    <div className="rounded-xl p-4 text-white" style={{ background: color }}>
+    <div className="rounded-md p-4 text-white" style={{ background: color }}>
       <p className="text-xs font-medium text-white/90">{label}</p>
       <p className="mt-2 flex items-baseline gap-1.5 tabular-nums">
         <span className="text-4xl font-bold leading-none">{value}</span>

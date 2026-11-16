@@ -5,7 +5,12 @@ import { CollapsibleCard } from "@/components/ui/CollapsibleCard";
 import { Alert, Badge, EmptyState, Stat } from "@/components/ui/primitives";
 import { BomSheets, DesignBasisTable, FittingsMatchGroups, MtoSheets, RoutingTable } from "@/components/checks/IsoCheckTables";
 import { HookupResults } from "@/components/checks/HookupResults";
-import { IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconSpool, IconSupport, IconTable } from "@/components/ui/icons";
+import { IconArrowLeft, IconBox, IconChevronRight, IconClipboard, IconCompare, IconFile, IconGauge, IconLibrary, IconSpool, IconSupport, IconTable } from "@/components/ui/icons";
+import { TitleBlock } from "@/components/ui/TitleBlock";
+import { RevMark } from "@/components/ui/RevMark";
+
+// How a line stands, in the title block's Status cell.
+const LINE_STATE_LABEL: Record<string, string> = { done: "Checked", recheck: "Re-check", open: "Not checked" };
 import { supportProblems } from "@/lib/supports";
 import { ProgressBar } from "@/components/progress/ProgressBar";
 import { findLine, isoLinesOf, type IsoLine } from "@/lib/isoLines";
@@ -819,48 +824,66 @@ export async function LineReviewView({
     const next = prints !== null && errorCount !== null && !earlier ? nextStep(linePrints, line, errorCount) : undefined;
     const checks = summary.checks;
 
+    const lineState = rows.find((r) => r.line.key === line.key)?.state;
+
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader
-          title={<span className="break-all font-mono text-xl">{line.lineNumber}</span>}
-          back={{ href: links.list, label: projectName }}
-          description="Every review for this line. Open one to see all of its data."
-          actions={
-            <div className="flex flex-wrap items-center gap-2">
-              {/* The errors on this line, laid out to hand to the designer. */}
-              <Link href={`/projects/${projectId}/report?line=${encodeURIComponent(line.lineNumber)}`} className="btn btn-secondary">
-                <IconClipboard size={16} />
-                Error report
-              </Link>
-              {earlier ? null : progress ? (
-                <ReviewControl
-                  projectId={projectId}
-                  lineNumber={line.lineNumber}
-                  review={progress.reviews.find((r) => r.lineKey === line.key)}
-                  currentRevision={line.revision}
-                  currentSources={sources.get(line.key)}
-                  next={next}
-                  lastPrint={revisionPrints.filter((p) => p.kind === "cp").pop()}
-                  errorCount={errorCount}
-                  readOnly={!canMark}
-                />
-              ) : (
-                <MarkingNotSetUpBadge />
-              )}
-            </div>
-          }
-          meta={
-            <>
-              {viewed.revision && (
-                <Badge tone={earlier ? "warning" : "info"} title="The revision printed in this drawing's title block">
-                  REV {viewed.revision}
-                  {earlier ? " · superseded" : ""}
-                </Badge>
-              )}
-              <Badge>{plural(viewed.sheets, "sheet")}</Badge>
-              {summary.drawings.length > 1 && <Badge>{summary.drawings.length} drawings</Badge>}
-            </>
-          }
+        {/* The way back and the line's own actions sit above the title block,
+            so the block itself reads as the drawing's -- facts, not controls. */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link
+            href={links.list}
+            className="inline-flex items-center gap-1.5 text-[0.8125rem] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <IconArrowLeft size={14} />
+            {projectName}
+          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* The errors on this line, laid out to hand to the designer. */}
+            <Link href={`/projects/${projectId}/report?line=${encodeURIComponent(line.lineNumber)}`} className="btn btn-secondary">
+              <IconClipboard size={16} />
+              Error report
+            </Link>
+            {earlier ? null : progress ? (
+              <ReviewControl
+                projectId={projectId}
+                lineNumber={line.lineNumber}
+                review={progress.reviews.find((r) => r.lineKey === line.key)}
+                currentRevision={line.revision}
+                currentSources={sources.get(line.key)}
+                next={next}
+                lastPrint={revisionPrints.filter((p) => p.kind === "cp").pop()}
+                errorCount={errorCount}
+                readOnly={!canMark}
+              />
+            ) : (
+              <MarkingNotSetUpBadge />
+            )}
+          </div>
+        </div>
+
+        <TitleBlock
+          line={line.lineNumber}
+          cells={[
+            { label: "Revision", value: viewed.revision ? <RevMark rev={viewed.revision} size={28} tone={earlier ? "changed" : "neutral"} /> : "-" },
+            { label: "Sheets", value: viewed.sheets },
+            { label: "Errors", value: errorCount ?? "-" },
+            { label: "Status", value: earlier ? "Superseded" : lineState ? (LINE_STATE_LABEL[lineState] ?? lineState) : "-" },
+          ]}
+          foot={{
+            label: "Project",
+            value: projectName,
+            aside: (
+              <>
+                {earlier && (
+                  <Badge tone="warning" dot>
+                    Viewing a superseded revision
+                  </Badge>
+                )}
+                {summary.drawings.length > 1 && <Badge>{summary.drawings.length} drawings</Badge>}
+              </>
+            ),
+          }}
         />
 
         {earlier ? (

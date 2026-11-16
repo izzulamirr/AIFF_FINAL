@@ -4,6 +4,7 @@ import { lineStateOf, type LineReview } from "@/lib/progress";
 import { changeSummary, compareSources, type LineSource } from "@/lib/lineSources";
 import { checkPrintLabel, type CheckPrint, type NextStep } from "@/lib/checkPrints";
 import { issueCheckPrint, issueFinal, markLineReviewed, reopenLine } from "./progressActions";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 const when = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
@@ -99,29 +100,29 @@ export function ReviewControl({
     if (!next) {
       return (
         <form action={markLineReviewed.bind(null, projectId, lineNumber)}>
-          <button type="submit" className="btn btn-primary">
+          <SubmitButton className="btn btn-primary">
             <IconCheckCircle size={16} />
             {fallback}
-          </button>
+          </SubmitButton>
         </form>
       );
     }
     if (next.step === "final") {
       return (
         <form action={issueFinal.bind(null, projectId, lineNumber)}>
-          <button type="submit" className="btn btn-primary" title="No errors on this line. Issuing Final marks it done.">
+          <SubmitButton className="btn btn-primary" title="No errors on this line. Issuing Final marks it done.">
             <IconCheckCircle size={16} />
             Issue Final
-          </button>
+          </SubmitButton>
         </form>
       );
     }
     if (next.step === "cp") {
       return (
         <form action={issueCheckPrint.bind(null, projectId, lineNumber)}>
-          <button type="submit" className="btn btn-secondary" title={`Send the ISO back to the designer with its ${errors} error${errors === 1 ? "" : "s"}.`}>
+          <SubmitButton className="btn btn-secondary" title={`Send the ISO back to the designer with its ${errors} error${errors === 1 ? "" : "s"}.`}>
             Issue {next.label}
-          </button>
+          </SubmitButton>
         </form>
       );
     }
@@ -193,9 +194,9 @@ export function ReviewControl({
         {status}
         {mark("Mark as done again")}
         <form action={reopenLine.bind(null, projectId, lineNumber)}>
-          <button type="submit" className="btn btn-secondary btn-sm">
+          <SubmitButton className="btn btn-secondary btn-sm">
             Reopen
-          </button>
+          </SubmitButton>
         </form>
       </div>
     );
@@ -214,9 +215,9 @@ export function ReviewControl({
     <div className="flex flex-wrap items-center gap-3">
       {status}
       <form action={reopenLine.bind(null, projectId, lineNumber)}>
-        <button type="submit" className="btn btn-secondary btn-sm">
+        <SubmitButton className="btn btn-secondary btn-sm">
           Reopen
-        </button>
+        </SubmitButton>
       </form>
     </div>
   );

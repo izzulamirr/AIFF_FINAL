@@ -56,7 +56,7 @@ export default async function SupportsPage({
     return (
       <div className="flex flex-col gap-4">
         <h1 className="text-xl font-semibold">Pipe Supports</h1>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           No projects yet.{" "}
           <Link href="/projects" className="underline">
             Create one
@@ -88,7 +88,7 @@ export default async function SupportsPage({
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold">Pipe Supports</h1>
-      <p className="max-w-3xl text-sm text-gray-600">
+      <p className="max-w-3xl text-sm text-muted-foreground">
         A support span is not one figure per size. The project&apos;s span sheet draws the same pipe six ways &mdash; straight, turning
         an elbow, through a low V, carrying a branch tee, with a supported riser, and hanging a drop leg &mdash; and the permitted
         distance is different for each, because each puts a different weight between the same two supports. This checks every span
@@ -107,7 +107,7 @@ export default async function SupportsPage({
       />
 
       {isoDocs.length === 0 && (
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           No isometrics in this project yet. Upload one from the{" "}
           <Link href={`/projects/${projectId}`} className="underline">
             project page
@@ -117,7 +117,7 @@ export default async function SupportsPage({
       )}
 
       {isoDocs.length > 0 && perDoc.length === 0 && (
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           None of this project&rsquo;s isometrics carry support data yet. Run the extraction from the{" "}
           <Link href={`/projects/${projectId}`} className="underline">
             project page
@@ -131,9 +131,9 @@ export default async function SupportsPage({
           <span className="font-medium">{totals.called}</span> supports called for, <span className="font-medium">{totals.supports}</span>{" "}
           located, <span className="font-medium">{totals.spans}</span> span{totals.spans === 1 ? "" : "s"} measured across {totals.sheets}{" "}
           sheet{totals.sheets === 1 ? "" : "s"}.
-          {totals.over > 0 && <span className="text-red-600"> {totals.over} over the standard.</span>}
-          {totals.unchecked > 0 && <span className="text-amber-700"> {totals.unchecked} could not be checked.</span>}
-          {totals.unlocated > 0 && <span className="text-amber-700"> {totals.unlocated} support not located on a drawing.</span>}
+          {totals.over > 0 && <span className="text-danger"> {totals.over} over the standard.</span>}
+          {totals.unchecked > 0 && <span className="text-warning"> {totals.unchecked} could not be checked.</span>}
+          {totals.unlocated > 0 && <span className="text-warning"> {totals.unlocated} support not located on a drawing.</span>}
         </p>
       )}
 
@@ -141,7 +141,7 @@ export default async function SupportsPage({
         <section key={doc.id}>
           <h2 className="mb-2 font-medium">
             {doc.fileName}{" "}
-            <Link href={`/projects/${projectId}/documents/${doc.id}`} className="text-sm font-normal text-gray-500 underline">
+            <Link href={`/projects/${projectId}/documents/${doc.id}`} className="text-sm font-normal text-muted-foreground underline">
               open drawing
             </Link>
           </h2>

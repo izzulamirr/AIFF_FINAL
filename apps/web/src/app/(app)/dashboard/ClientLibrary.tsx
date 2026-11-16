@@ -137,7 +137,7 @@ export function ReferenceLibrarySection({
         <div className="divide-y divide-border">
           {groups.map((group) => (
             <div key={group.label} className="px-5 py-4">
-              <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <h3 className="mb-2.5 font-heading text-[0.8125rem] font-semibold text-muted-foreground">
                 {group.label} <span className="font-normal normal-case text-muted-foreground">({group.items.length})</span>
               </h3>
               <ul className="flex flex-col gap-2.5">
@@ -206,7 +206,7 @@ export function KeptLibrarySection({ clientName, items }: { clientName: string; 
             <div className="divide-y divide-border">
               {groups.map((group) => (
                 <div key={group.label} className="px-5 py-4">
-                  <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <h3 className="mb-2.5 font-heading text-[0.8125rem] font-semibold text-muted-foreground">
                     {group.label} <span className="font-normal normal-case text-muted-foreground">({group.items.length})</span>
                   </h3>
                   <ul className="flex flex-col gap-2.5">

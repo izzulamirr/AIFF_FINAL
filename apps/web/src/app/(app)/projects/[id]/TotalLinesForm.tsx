@@ -1,4 +1,5 @@
 import { setTotalLines } from "./progressActions";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 // How many lines the project holds -- Document Control's own figure, and the
 // number every percentage in the app is measured against.
@@ -29,9 +30,9 @@ export function TotalLinesForm({ projectId, total, className = "" }: { projectId
         placeholder="e.g. 40"
         className="input input-sm w-20"
       />
-      <button type="submit" className="btn btn-secondary btn-xs">
+      <SubmitButton className="btn btn-secondary btn-xs">
         Save
-      </button>
+      </SubmitButton>
     </form>
   );
 }

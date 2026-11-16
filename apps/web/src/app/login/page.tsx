@@ -5,6 +5,7 @@ import { BRAND_NAME } from "@/components/ui/Brand";
 import { IconCheckCircle } from "@/components/ui/icons";
 import { Alert } from "@/components/ui/primitives";
 import { login } from "./actions";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -66,7 +67,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           </label>
           <input id="password" name="password" type="password" required minLength={8} className="input h-10" />
         </div>
-        <button className="btn btn-primary mt-2 h-10 w-full">Sign in</button>
+        <SubmitButton className="btn btn-primary mt-2 h-10 w-full" pendingLabel="Signing in…">
+          Sign in
+        </SubmitButton>
       </form>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">

@@ -34,7 +34,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
           <p className="text-sm font-medium">
             Sheet {sheet.sheetLabel}
             {sheet.lineNumber ? (
-              <span className="ml-2 font-mono text-xs text-gray-500">
+              <span className="ml-2 font-mono text-xs text-muted-foreground">
                 {sheet.lineNumber}
               </span>
             ) : null}
@@ -43,7 +43,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
           {/* WHICH SHEET OF THE STANDARD APPLIES, and how each part of that
               was decided. A span verdict is only as good as the row it was
               looked up in, so the lookup is shown rather than assumed. */}
-          <p className="mt-1 text-xs text-gray-500">
+          <p className="mt-1 text-xs text-muted-foreground">
             Span standard for{" "}
             <span className="font-medium">
               {sheet.npsInch != null ? `${sheet.npsInch}" NPS` : "unknown size"}
@@ -56,7 +56,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
           {sheet.items.length > 0 && (
             <table className="mt-3 w-full text-left text-sm">
               <thead>
-                <tr className="border-b text-xs uppercase tracking-wide text-gray-500">
+                <tr className="border-b font-heading text-[0.8125rem] font-semibold text-muted-foreground">
                   <th className="w-16 py-1">Item</th>
                   <th>Support the BOM calls for</th>
                   <th className="w-24">Type</th>
@@ -75,12 +75,12 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                     <td>{item.description}</td>
                     <td className="font-mono text-xs">
                       {item.typeCode ?? (
-                        <span className="text-amber-700">not stated</span>
+                        <span className="text-warning">not stated</span>
                       )}
                     </td>
                     <td
                       className={
-                        item.role === "unstated" ? "text-amber-700" : ""
+                        item.role === "unstated" ? "text-warning" : ""
                       }
                     >
                       {item.role}
@@ -102,7 +102,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
             const problems = supportProblems(sheet);
             if (problems.length === 0)
               return (
-                <p className="mt-2 rounded border border-green-500 bg-green-50 px-3 py-2 text-xs text-green-900">
+                <p className="mt-2 rounded border border-success-border bg-success-soft px-3 py-2 text-xs text-success">
                   Every gap on this sheet is inside the span standard, and every
                   support the BOM calls for was found.
                 </p>
@@ -114,8 +114,8 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                     key={i}
                     className={`rounded border px-3 py-2 text-xs ${
                       problem.severity === "error"
-                        ? "border-red-500 bg-red-50 text-red-900"
-                        : "border-amber-400 bg-amber-50 text-amber-900"
+                        ? "border-danger-border bg-danger-soft text-danger"
+                        : "border-warning-border bg-warning-soft text-warning"
                     }`}
                   >
                     <div className="font-medium">
@@ -135,7 +135,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
           })()}
 
           {sheet.points.length === 0 ? (
-            <p className="mt-3 text-xs text-gray-500">
+            <p className="mt-3 text-xs text-muted-foreground">
               No supports located on this sheet, so there are no spans to
               measure. The BOM rows above are all that is known.
             </p>
@@ -145,7 +145,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                   keeping S1-9 (a support) apart from D1-9 (a 1412mm vertical
                   leg) -- the same string naming two different objects on the
                   same drawing. */}
-              <p className="mt-3 text-xs text-gray-400">
+              <p className="mt-3 text-xs text-muted-foreground">
                 <span className="font-mono">S…</span> is a support, by its cell
                 on the balloon contact sheet.{" "}
                 <span className="font-mono">D…</span> is a printed dimension, by
@@ -154,7 +154,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
               </p>
               <table className="mt-1 w-full text-left text-sm">
                 <thead>
-                  <tr className="border-b text-xs uppercase tracking-wide text-gray-500">
+                  <tr className="border-b font-heading text-[0.8125rem] font-semibold text-muted-foreground">
                     <th className="w-28 py-1">Support</th>
                     <th className="w-24">Span to</th>
                     <th className="w-24">Length</th>
@@ -181,7 +181,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                                 <span className="font-mono">
                                   {supportRef(point.cell)}
                                 </span>
-                                <div className="text-xs text-gray-500">
+                                <div className="text-xs text-muted-foreground">
                                   item {point.itemNo ?? "?"} &middot;{" "}
                                   {point.role}
                                   {point.typeCode ? ` ${point.typeCode}` : ""}
@@ -190,7 +190,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                             ) : null}
                           </td>
                           {span === null ? (
-                            <td colSpan={5} className="text-xs text-gray-500">
+                            <td colSpan={5} className="text-xs text-muted-foreground">
                               {/* Not a fault: the last support on a run starts no
                               span, and a secondary sits AT a primary rather
                               than at a point of its own. */}
@@ -209,7 +209,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                                 {span.lengthMm != null ? (
                                   `${span.lengthMm} mm`
                                 ) : (
-                                  <span className="text-gray-500">
+                                  <span className="text-muted-foreground">
                                     not read
                                   </span>
                                 )}
@@ -221,29 +221,29 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                               </td>
                               <td>
                                 {span.verdict.status === "over" ? (
-                                  <span className="text-red-600">
+                                  <span className="text-danger">
                                     over by {span.verdict.overByMm} mm
                                   </span>
                                 ) : span.verdict.status === "within" ? (
-                                  <span className="text-green-600">
+                                  <span className="text-success">
                                     within
                                     {span.verdict.slackMm != null
                                       ? ` (${span.verdict.slackMm} mm spare)`
                                       : ""}
                                   </span>
                                 ) : (
-                                  <span className="text-gray-500">
+                                  <span className="text-muted-foreground">
                                     not checked
                                   </span>
                                 )}
                                 {span.verdict.verticalLegOverByMm != null && (
-                                  <div className="text-red-600">
+                                  <div className="text-danger">
                                     vertical leg over by{" "}
                                     {span.verdict.verticalLegOverByMm} mm
                                   </div>
                                 )}
                               </td>
-                              <td className="text-xs text-gray-500">
+                              <td className="text-xs text-muted-foreground">
                                 {span.kind === "run-end" && (
                                   // Reported, not failed. The end of a dimension
                                   // chain can be an anchor, a nozzle, a dead end
@@ -251,7 +251,7 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                                   // next sheet -- and what holds it is usually
                                   // not drawn here. Saying nothing would hide the
                                   // longest unheld stretch on the sheet.
-                                  <div className="text-amber-700">
+                                  <div className="text-warning">
                                     This runs to the end of the dimensioned run,
                                     not to another support &mdash; check what
                                     holds it there.
@@ -264,12 +264,12 @@ export function SupportSheets({ sheets }: { sheets: SupportSheet[] }) {
                                 and nothing here was measured off the page.
                                 A reviewer can go and look at each one. */}
                                 {span.legs.length > 0 && (
-                                  <div className="text-gray-400">
+                                  <div className="text-muted-foreground">
                                     {span.lengthMm} = printed{" "}
                                     {span.legs.map(dimensionRef).join(" + ")}
                                   </div>
                                 )}
-                                <div className="text-gray-400">
+                                <div className="text-muted-foreground">
                                   read as{" "}
                                   {span.configurations
                                     .map((c) => SPAN_CONFIGURATION_LABEL[c])

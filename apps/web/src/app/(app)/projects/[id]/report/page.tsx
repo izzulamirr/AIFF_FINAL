@@ -10,6 +10,8 @@ import { buildIsoReport, reportSections, type DrawingReport, type Finding } from
 import { Badge } from "@/components/ui/primitives";
 import { BRAND_FULL_NAME, BRAND_NAME, BrandLockup } from "@/components/ui/Brand";
 import { IconArrowLeft } from "@/components/ui/icons";
+import { TitleBlock } from "@/components/ui/TitleBlock";
+import { RevMark } from "@/components/ui/RevMark";
 import { HOLD_LABEL } from "@/lib/pending";
 import { isMissingTable } from "@/lib/progress";
 import { checkPrintLabel, checkPrintsOf, nextStep, printsOfRevision } from "@/lib/checkPrints";
@@ -71,7 +73,7 @@ function Section({
 }) {
   return (
     <section className="mt-6">
-      <h2 className="mb-2 flex items-baseline gap-2 border-b border-foreground/40 pb-1.5 text-sm font-semibold uppercase tracking-[0.04em]">
+      <h2 className="mb-2 flex items-baseline gap-2 border-b pb-1.5 font-heading text-base font-semibold">
         <span className="tabular-nums text-muted-foreground">{n}.</span>
         {title}
         <span className="font-normal normal-case tracking-normal text-muted-foreground">
@@ -106,7 +108,7 @@ function FindingTable({ n, findings }: { n: number; findings: Finding[] }) {
       </thead>
       <tbody>
         {findings.map((f, i) => (
-          <tr key={i} className={`align-top ${f.info ? "text-muted-foreground" : ""}`}>
+          <tr key={i} className={`align-top ${f.info ? "text-muted-foreground" : "row-fault"}`}>
             <td className="tabular-nums text-muted-foreground">
               {n}.{i + 1}
             </td>
@@ -281,36 +283,30 @@ export default async function IsoReportPage({
         )}
       </div>
 
-      <article className="report card">
-        <header className="border-b-2 border-foreground pb-4">
+      <article className="report card drawing-sheet sm:p-7">
+        <header className="flex flex-col gap-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <BrandLockup size={30} full />
             <div className="text-right">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">ISO Check Report</p>
+              <p className="font-heading text-sm font-semibold text-muted-foreground">ISO check report</p>
               {/* The check print this report is, large enough to read off a printed page. */}
-              <p className="mt-1 font-mono text-lg font-semibold">
+              <p className="mt-0.5 font-mono text-lg font-semibold">
                 {checkPrint === "Not issued" ? "Check print not issued" : checkPrint === "Final" ? "FINAL" : checkPrint}
               </p>
             </div>
           </div>
-          <p className="mt-5 text-xs uppercase tracking-[0.12em] text-muted-foreground">Line number</p>
-          <h1 className="mt-1 break-all font-mono text-xl font-semibold">{line.lineNumber}</h1>
           {/* The title block of the report itself: what a reader filing it needs
-              without reading on. */}
-          <dl className="mt-4 grid grid-cols-2 border text-xs sm:grid-cols-5">
-            {[
-              ["Project", project.name],
-              ["Revision", line.revision ? `REV ${line.revision}` : "Not read"],
-              ["Sheets", String(line.sheets)],
-              ["Date", today],
-              ["Checked by", checkedBy || "—"],
-            ].map(([label, value]) => (
-              <div key={label} className="border-b border-r px-3 py-2 last:border-r-0 sm:border-b-0">
-                <dt className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{label}</dt>
-                <dd className="mt-0.5 break-words font-medium">{value}</dd>
-              </div>
-            ))}
-          </dl>
+              without reading on, laid out like the one on the drawing. */}
+          <TitleBlock
+            line={line.lineNumber}
+            cells={[
+              { label: "Revision", value: line.revision ? <RevMark rev={line.revision} size={28} /> : "Not read" },
+              { label: "Sheets", value: line.sheets },
+              { label: "Date", value: today },
+              { label: "Checked by", value: checkedBy || "-" },
+            ]}
+            foot={{ label: "Project", value: project.name }}
+          />
         </header>
 
         {!report ? (
@@ -347,7 +343,7 @@ export default async function IsoReportPage({
                 ["Approved by", ""],
               ].map(([role, name]) => (
                 <div key={role} className="border-b px-3 py-2 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
-                  <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{role}</p>
+                  <p className="text-[11px] text-muted-foreground">{role}</p>
                   <p className="mt-0.5 min-h-[1.25rem] font-medium">{name}</p>
                   <div className="mt-6 flex justify-between gap-4 border-t pt-1 text-[10px] text-muted-foreground">
                     <span>Signature</span>

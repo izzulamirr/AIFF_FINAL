@@ -48,7 +48,7 @@ export function DocumentUploadCard({ action, libraryHref }: { action: (formData:
               return (
                 <label
                   key={type.key}
-                  className={`flex cursor-pointer gap-3 rounded-xl border p-4 transition ${
+                  className={`flex cursor-pointer gap-3 rounded-md border p-4 transition ${
                     active ? "border-primary bg-primary-soft/50 shadow-sm" : "hover:border-border-strong hover:bg-muted/40"
                   }`}
                 >

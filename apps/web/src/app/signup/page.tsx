@@ -4,6 +4,7 @@ import { AuthShell } from "@/components/auth/AuthShell";
 import { IconGauge, IconUpload } from "@/components/ui/icons";
 import { Alert } from "@/components/ui/primitives";
 import { signup } from "./actions";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 export const metadata: Metadata = { title: "Create account" };
 
@@ -38,7 +39,7 @@ export default async function SignupPage({
           <p className="mt-4 text-base leading-relaxed">Document Control manages the project documents; users review the results.</p>
           <ul className="mt-8 flex flex-col gap-4">
             {ACCESS.map(({ icon: Icon, title, text }) => (
-              <li key={title} className="flex items-start gap-4 rounded-xl border border-sidebar-border bg-white/[0.03] p-4">
+              <li key={title} className="flex items-start gap-4 rounded-md border border-sidebar-border bg-white/[0.03] p-4">
                 <span className="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-sidebar-active text-sidebar-accent">
                   <Icon size={20} />
                 </span>
@@ -126,7 +127,7 @@ export default async function SignupPage({
             className="input h-10"
           />
         </div>
-        <button className="btn btn-primary mt-2 h-10 w-full">Create account</button>
+        <SubmitButton className="btn btn-primary mt-2 h-10 w-full">Create account</SubmitButton>
       </form>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">

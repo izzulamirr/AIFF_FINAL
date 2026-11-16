@@ -6,6 +6,7 @@ import { splitMergedRow } from "@/lib/verifyBomCrossCheck";
 import type { AdminAttributeMismatch } from "@/lib/parseSheetPage";
 import { instrumentPendingRemark, type HoldStatus } from "@/lib/pending";
 import { supportProblems } from "@/lib/supports";
+import { sheetLabel } from "@/lib/sheetLabel";
 
 // Every finding from one ISO line's checks -- what a checker hands to the designer.
 //
@@ -177,7 +178,7 @@ function supportIssues(doc: NonNullable<LineSummary["supports"]>["docs"][number]
   return [...doc.sheets]
     .sort((a, b) => (a.page ?? 0) - (b.page ?? 0))
     .flatMap((s) =>
-      supportProblems(s).map((p) => ({ sheet: s.sheetLabel || (s.page != null ? `page ${s.page}` : "?"), supports: s.points.length, ...p }))
+      supportProblems(s).map((p) => ({ sheet: s.sheetLabel ? sheetLabel(s.sheetLabel) : s.page != null ? `page ${s.page}` : "?", supports: s.points.length, ...p }))
     );
 }
 
@@ -228,7 +229,7 @@ function bomPending(sheets: IsoDrawingChecks["mto"]["sheetData"]): PendingNote[]
       for (const row of group.rows) {
         if (!row.hold) continue;
         out.push({
-          sheet: sheet.sheetLabel || (sheet.page != null ? `page ${sheet.page}` : "?"),
+          sheet: sheet.sheetLabel ? sheetLabel(sheet.sheetLabel) : sheet.page != null ? `page ${sheet.page}` : "?",
           status: row.hold.status,
           what: `BOM item ${row.itemNo || "-"}: ${short(row.description)}`,
           remark: row.hold.remark,
@@ -288,7 +289,7 @@ function bomIssues(sheets: IsoDrawingChecks["mto"]["sheetData"]): BomIssue[] {
                 : null;
         const action = fix && parts.length > 1 ? `Split into separate IDs. ${fix}` : fix;
         out.push({
-          sheet: sheet.sheetLabel || (sheet.page != null ? `page ${sheet.page}` : "?"),
+          sheet: sheet.sheetLabel ? sheetLabel(sheet.sheetLabel) : sheet.page != null ? `page ${sheet.page}` : "?",
           specClass: group.specClass,
           itemNo: row.itemNo || "-",
           size: row.size,
@@ -380,7 +381,7 @@ function hookupPending(drawing: NonNullable<LineSummary["hookup"]>["drawings"][n
   return drawing.verification.results
     .filter((r) => !r.sheet)
     .map((r) => ({
-      sheet: r.isoPage != null ? (sheetByPage[r.isoPage] ?? `page ${r.isoPage}`) : "?",
+      sheet: r.isoPage != null ? (sheetByPage[r.isoPage] ? sheetLabel(sheetByPage[r.isoPage]) : `page ${r.isoPage}`) : "?",
       status: "vendor" as const,
       what: `Instrument ${r.instrumentTag}`,
       remark: instrumentPendingRemark(r.instrumentLabel, r.noTypicalReason),
@@ -392,7 +393,7 @@ function spoolingIssues(sheets: NonNullable<LineSummary["spooling"]>["docs"][num
   if (!sheets) return [];
   const out: SpoolingIssue[] = [];
   for (const sheet of sheets) {
-    const label = sheet.sheetLabel || (sheet.page != null ? `page ${sheet.page}` : "?");
+    const label = sheet.sheetLabel ? sheetLabel(sheet.sheetLabel) : sheet.page != null ? `page ${sheet.page}` : "?";
     for (const group of sheet.weldsBySpool) {
       for (const w of group.welds) {
         if (w.spoolOf === "-") {
